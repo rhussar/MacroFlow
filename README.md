@@ -61,18 +61,20 @@ python app.py      # Start Flask backend
 ## File Structure
 
 ```
-MacroFlow-AI/
-├── app.py                        # Flask backend
-├── requirements.txt              # Python dependencies
-├── AI-Frontend/
-│   ├── manifest.xml             # Office Add-in config
-│   ├── taskpane.html            # Main UI
-│   ├── taskpane.js              # Frontend logic
-│   └── style.css                # Styling
-├── package.json                 # Node.js config
-├── webpack.config.js            # Build configuration
-└── README.md
-```
+MacroFlow/
+├── frontend/
+│   ├── taskpane.html
+│   ├── taskpane.js
+│   ├── style.css
+│   ├── manifest.xml
+│   ├── webpack.config.js
+│   ├── package.json
+│   └── server.js
+├── app.py
+├── requirements.txt
+├── .gitignore
+├── README.md
+
 
 ## License
 

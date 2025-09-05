@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8" />
+    <title>MacroFlow AI</title>
+    <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
+    <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <header class="header">
+            <h1>🤖 MacroFlow AI</h1>
+            <p>Generate VBA macros with AI</p>
+        </header>
+        
+        <!-- Main Content -->
+        <main class="main">
+            <!-- Input Section -->
+            <section class="generate-section">
+                <label for="prompt">What should your macro do?</label>
+                <textarea 
+                    id="prompt" 
+                    placeholder="Describe your macro... (e.g., 'Format selected cells as currency')"
+                    rows="3"
+                ></textarea>
+                
+                <div class="button-group">
+                    <button id="generateMacro" class="btn-primary">Generate</button>
+                    <button id="copyMacro" class="btn-secondary" disabled>Copy</button>
+                </div>
+            </section>
+
+            <!-- Status Message -->
+            <div id="statusMessage" class="status-message"></div>
+            
+            <!-- Code Preview Section -->
+            <section class="preview-section">
+                <label for="macroPreview">Generated VBA Code:</label>
+                <textarea 
+                    id="macroPreview" 
+                    placeholder="Your VBA macro will appear here..."
+                    rows="8" 
+                    readonly
+                ></textarea>
+                
+                <button id="insertMacro" class="btn-success" disabled>
+                    Insert into Excel
+                </button>
+            </section>
+        </main>
+        
+        <!-- Footer -->
+        <footer class="footer">
+            <small>Powered by OpenAI GPT-4</small>
+        </footer>
+    </div>
+    
+    <script src="taskpane.js"></script>
+</body>
+</html>

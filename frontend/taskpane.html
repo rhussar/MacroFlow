@@ -12,20 +12,53 @@
         <!-- Main Layout -->
         <div class="main-layout">
             <!-- Sidebar -->
-            <aside class="sidebar">
+            <aside class="sidebar" id="sidebar">
                 <div class="sidebar-header">
-                    <span class="sidebar-title">VBA MODULES</span>
+                    <span class="sidebar-title">File Editor</span>
                     <div class="sidebar-actions">
-                        <button id="addModuleBtn" class="btn-icon" title="Add Module">
+                        <button id="toggleSidebarBtn" class="btn-icon" title="Collapse Sidebar">
                             <svg width="14" height="14" viewBox="0 0 16 16">
-                                <path fill="currentColor" d="M8 1v6h6v2H8v6H6V9H0V7h6V1h2z"/>
+                                <!-- ChatGPT-style sidebar toggle: rounded square with vertical line -->
+                                <rect x="3" y="3" width="10" height="10" rx="2" ry="2" fill="none" stroke="currentColor" stroke-width="1.2"/>
+                                <line x1="6" y1="3" x2="6" y2="13" stroke="currentColor" stroke-width="1.2"/>
                             </svg>
                         </button>
                     </div>
                 </div>
-                <div class="module-list" id="moduleList">
-                    <div class="module-item loading">
-                        <span>Loading modules...</span>
+                
+                <!-- New Module Button -->
+                <div class="sidebar-section">
+                    <button id="addModuleBtn" class="new-module-btn">
+                        <div class="module-name">
+                            <svg width="16" height="16" viewBox="0 0 16 16">
+                                <!-- Square -->
+                                <rect x="2" y="4" width="10" height="10" rx="1" ry="1" fill="none" stroke="currentColor" stroke-width="1"/>
+                                <!-- Pencil -->
+                                <path fill="currentColor" d="M13.498.795l1.707 1.707c.293.293.293.767 0 1.06l-1.061 1.061-2.768-2.768L12.437.795c.293-.293.767-.293 1.061 0zM11.314 1.858l2.768 2.768-8.485 8.485c-.117.117-.273.186-.439.194l-2.927.146c-.146.007-.278-.054-.354-.162-.075-.108-.093-.248-.046-.378l.293-2.812c.029-.275.146-.536.341-.732L11.314 1.858z"/>
+                            </svg>
+                            <span>New module</span>
+                        </div>
+                    </button>
+                </div>
+                
+                <!-- Search Macros -->
+                <div class="sidebar-section">
+                    <div class="search-container">
+                        <div class="module-name">
+                            <svg class="search-icon" width="16" height="16" viewBox="0 0 16 16">
+                                <path fill="currentColor" d="M11.742 10.344a6.5 6.5 0 1 0-1.397 1.398h-.001c.03.04.062.078.098.115l3.85 3.85a1 1 0 0 0 1.415-1.414l-3.85-3.85a1.007 1.007 0 0 0-.115-.1zM12 6.5a5.5 5.5 0 1 1-11 0 5.5 5.5 0 0 1 11 0z"/>
+                            </svg>
+                            <input type="text" id="searchMacros" placeholder="Search macros" class="search-input">
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Module List -->
+                <div class="sidebar-section modules-section">
+                    <div class="module-list" id="moduleList">
+                        <div class="module-item loading">
+                            <span>Loading modules...</span>
+                        </div>
                     </div>
                 </div>
             </aside>
@@ -67,16 +100,18 @@
                 
                 <!-- Chat Input Section (Fixed at Bottom) -->
                 <div class="chat-input-section">
-                    <textarea 
-                        id="prompt" 
-                        placeholder="Describe your macro... (e.g., 'Format selected cells as currency')"
-                        rows="2"
-                    ></textarea>
-                    <button id="generateBtn" class="btn-send" title="Send message">
-                        <svg width="16" height="16" viewBox="0 0 16 16">
-                            <path fill="currentColor" d="M8 12l-4-4h3V4h2v4h3l-4 4z"/>
-                        </svg>
-                    </button>
+                    <div class="chat-input-container">
+                        <textarea 
+                            id="prompt" 
+                            placeholder="Describe your macro... (e.g., 'Format selected cells as currency')"
+                            rows="2"
+                        ></textarea>
+                        <button id="generateBtn" class="btn-send-inline" title="Send message">
+                            <svg width="16" height="16" viewBox="0 0 16 16">
+                                <path fill="currentColor" d="M8 4l4 4h-3v4H7V8H4l4-4z"/>
+                            </svg>
+                        </button>
+                    </div>
                 </div>
             </main>
         </div>

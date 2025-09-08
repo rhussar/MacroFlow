@@ -148,12 +148,13 @@ def inject_vba_to_excel(macro_code):
         wb = excel.ActiveWorkbook
         if not wb:
             wb = excel.Workbooks.Add()
-        else:
         
         # Ensure the workbook is properly initialized for VBA
         try:
             if not wb.Path:
+                pass  # Workbook is not saved, continue anyway
         except Exception as save_error:
+            pass  # Continue even if we can't check the path
         
         # Check if VBA project is accessible
         try:

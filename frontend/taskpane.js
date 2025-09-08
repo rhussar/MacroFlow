@@ -30,7 +30,11 @@ Office.onReady(() => {
         renameModuleOk: document.getElementById("renameModuleOk"),
         renameModuleCancel: document.getElementById("renameModuleCancel"),
         // Line indicator element
-        lineIndicator: document.getElementById("lineIndicator")
+        lineIndicator: document.getElementById("lineIndicator"),
+        // New sidebar elements
+        searchMacros: document.getElementById("searchMacros"),
+        toggleSidebarBtn: document.getElementById("toggleSidebarBtn"),
+        sidebar: document.getElementById("sidebar")
     };
     
     // Initialize Monaco Editor
@@ -443,7 +447,7 @@ Office.onReady(() => {
         const module = state.modules.find(m => m.name === moduleName);
         if (tab && module) {
             const span = tab.querySelector("span");
-            span.textContent = module.name + (module.isModified ? " ●" : "");
+            span.textContent = module.name;
         }
         renderModuleList(); // Update sidebar too
     }
@@ -669,7 +673,7 @@ End Sub`;
                 if (state.tabs.has(oldModule.name)) {
                     const tab = state.tabs.get(oldModule.name);
                     tab.dataset.tab = newName;
-                    tab.querySelector("span").textContent = newName + (newModule.isModified ? " ●" : "");
+                    tab.querySelector("span").textContent = newName;
                     state.tabs.delete(oldModule.name);
                     state.tabs.set(newName, tab);
                 }
@@ -980,10 +984,17 @@ End Sub`;
         }
     });
     
-    // Enter key in prompt
+    // Enter key in prompt - ChatGPT style behavior
     elements.prompt.addEventListener("keydown", (e) => {
-        if (e.key === "Enter" && e.ctrlKey) {
-            generateMacro();
+        if (e.key === "Enter") {
+            if (e.shiftKey) {
+                // Shift+Enter = new line (default behavior)
+                return;
+            } else {
+                // Enter = send message
+                e.preventDefault();
+                generateMacro();
+            }
         }
     });
     
@@ -994,6 +1005,74 @@ End Sub`;
             loadModules();
         }
     });
+    
+    // Search functionality
+    function filterModules(searchTerm) {
+        const modules = document.querySelectorAll('.module-item');
+        modules.forEach(module => {
+            const moduleName = module.textContent.toLowerCase();
+            const subroutines = module.parentElement.querySelectorAll('.subroutine-item');
+            
+            if (moduleName.includes(searchTerm.toLowerCase())) {
+                module.style.display = '';
+                // Show all subroutines for matching modules
+                subroutines.forEach(sub => sub.style.display = '');
+            } else {
+                // Check if any subroutines match
+                let hasMatchingSubroutine = false;
+                subroutines.forEach(sub => {
+                    if (sub.textContent.toLowerCase().includes(searchTerm.toLowerCase())) {
+                        sub.style.display = '';
+                        hasMatchingSubroutine = true;
+                    } else {
+                        sub.style.display = 'none';
+                    }
+                });
+                
+                // Show module if it has matching subroutines, hide otherwise
+                module.style.display = hasMatchingSubroutine ? '' : 'none';
+            }
+        });
+    }
+    
+    // Sidebar toggle functionality
+    function toggleSidebar() {
+        const sidebar = elements.sidebar;
+        const isCollapsed = sidebar.classList.toggle('collapsed');
+        
+        // Keep the same ChatGPT-style icon in both states
+        elements.toggleSidebarBtn.title = isCollapsed ? 'Expand Sidebar' : 'Collapse Sidebar';
+    }
+    
+    // Search input event listener
+    if (elements.searchMacros) {
+        elements.searchMacros.addEventListener('input', (e) => {
+            filterModules(e.target.value);
+        });
+        
+        elements.searchMacros.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') {
+                e.target.value = '';
+                filterModules('');
+            }
+        });
+    }
+    
+    // Search icon click handler for collapsed state
+    document.addEventListener('click', (e) => {
+        if (e.target.closest('.search-icon') && elements.sidebar.classList.contains('collapsed')) {
+            // Expand sidebar and focus search input
+            toggleSidebar();
+            setTimeout(() => {
+                elements.searchMacros.focus();
+            }, 100);
+        }
+    });
+    
+    // Sidebar toggle event listener
+    if (elements.toggleSidebarBtn) {
+        elements.toggleSidebarBtn.addEventListener('click', toggleSidebar);
+    }
     
     // Initialize
     initializeMonacoEditor();

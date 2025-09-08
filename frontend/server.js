@@ -5,8 +5,8 @@ const express = require('express');
 
 const app = express();
 
-// Serve static files from dist directory
-app.use(express.static(path.join(__dirname, 'dist')));
+// Serve static files from current directory
+app.use(express.static(__dirname));
 
 // Try to read the SSL certificates
 let httpsOptions;

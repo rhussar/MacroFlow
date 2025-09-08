@@ -4,56 +4,108 @@
     <meta charset="utf-8" />
     <title>MacroFlow AI</title>
     <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs/loader.js"></script>
     <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-    <div class="container">
-        <!-- Header -->
-        <header class="header">
-            <h1>🤖 MacroFlow AI</h1>
-            <p>Generate VBA macros with AI</p>
-        </header>
-        
-        <!-- Main Content -->
-        <main class="main">
-            <!-- Input Section -->
-            <section class="generate-section">
-                <label for="prompt">What should your macro do?</label>
-                <textarea 
-                    id="prompt" 
-                    placeholder="Describe your macro... (e.g., 'Format selected cells as currency')"
-                    rows="3"
-                ></textarea>
-                
-                <div class="button-group">
-                    <button id="generateMacro" class="btn-primary">Generate</button>
-                    <button id="copyMacro" class="btn-secondary" disabled>Copy</button>
+    <div class="vscode-layout">
+        <!-- Main Layout -->
+        <div class="main-layout">
+            <!-- Sidebar -->
+            <aside class="sidebar">
+                <div class="sidebar-header">
+                    <span class="sidebar-title">VBA MODULES</span>
+                    <div class="sidebar-actions">
+                        <button id="addModuleBtn" class="btn-icon" title="Add Module">
+                            <svg width="14" height="14" viewBox="0 0 16 16">
+                                <path fill="currentColor" d="M8 1v6h6v2H8v6H6V9H0V7h6V1h2z"/>
+                            </svg>
+                        </button>
+                    </div>
                 </div>
-            </section>
-
-            <!-- Status Message -->
-            <div id="statusMessage" class="status-message"></div>
+                <div class="module-list" id="moduleList">
+                    <div class="module-item loading">
+                        <span>Loading modules...</span>
+                    </div>
+                </div>
+            </aside>
             
-            <!-- Code Preview Section -->
-            <section class="preview-section">
-                <label for="macroPreview">Generated VBA Code:</label>
-                <textarea 
-                    id="macroPreview" 
-                    placeholder="Your VBA macro will appear here..."
-                    rows="8" 
-                    readonly
-                ></textarea>
+            <!-- Editor Container -->
+            <main class="editor-container">
+                <!-- Editor Tabs -->
+                <div class="editor-tabs" id="editorTabs">
+                    <div class="tab active" data-tab="welcome">
+                        <span>Welcome</span>
+                    </div>
+                </div>
                 
-                <button id="insertMacro" class="btn-success" disabled>
-                    Insert into Excel
-                </button>
-            </section>
-        </main>
+                <!-- Monaco Editor -->
+                <div class="editor-wrapper">
+                    <div id="monacoEditor" class="monaco-editor"></div>
+                    <div id="welcomeScreen" class="welcome-screen">
+                        <div class="welcome-content">
+                            <h2>Welcome to MacroFlow AI</h2>
+                            <p>Select a module from the sidebar or create a new one to start editing VBA code.</p>
+                            <div class="welcome-actions">
+                                <button id="welcomeGenerate" class="btn-primary">Generate New Macro</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Action Bar (Above Chat Input) -->
+                <div class="action-bar">
+                    <button id="runBtn" class="btn-primary btn-sm" title="Run Current Subroutine">
+                        <svg width="12" height="12" viewBox="0 0 16 16" style="margin-right: 6px;">
+                            <path fill="currentColor" d="M8 15A7 7 0 1 1 8 1a7 7 0 0 1 0 14zm0 1A8 8 0 1 0 8 0a8 8 0 0 0 0 16z"/>
+                            <path fill="currentColor" d="m6.271 5.055 3.666 2.457a.5.5 0 0 1 0 .832L6.271 10.8a.5.5 0 0 1-.771-.416V5.472a.5.5 0 0 1 .771-.416z"/>
+                        </svg>
+                        Run
+                    </button>
+                    <div id="lineIndicator" class="line-indicator hidden">Focused on lines 7-30</div>
+                </div>
+                
+                <!-- Chat Input Section (Fixed at Bottom) -->
+                <div class="chat-input-section">
+                    <textarea 
+                        id="prompt" 
+                        placeholder="Describe your macro... (e.g., 'Format selected cells as currency')"
+                        rows="2"
+                    ></textarea>
+                    <button id="generateBtn" class="btn-send" title="Send message">
+                        <svg width="16" height="16" viewBox="0 0 16 16">
+                            <path fill="currentColor" d="M8 12l-4-4h3V4h2v4h3l-4 4z"/>
+                        </svg>
+                    </button>
+                </div>
+            </main>
+        </div>
         
-        <!-- Footer -->
-        <footer class="footer">
-            <small>Powered by OpenAI GPT-4</small>
-        </footer>
+        <!-- Modal for new module name -->
+        <div id="moduleNameModal" class="modal hidden">
+            <div class="modal-content">
+                <h3>Create New Module</h3>
+                <label for="moduleNameInput">Enter module name:</label>
+                <input type="text" id="moduleNameInput" placeholder="Module1" />
+                <div class="modal-buttons">
+                    <button id="createModuleOk" class="btn-primary">Create</button>
+                    <button id="createModuleCancel" class="btn-secondary">Cancel</button>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Modal for rename module -->
+        <div id="renameModuleModal" class="modal hidden">
+            <div class="modal-content">
+                <h3>Rename Module</h3>
+                <label for="renameModuleInput">Enter new name:</label>
+                <input type="text" id="renameModuleInput" placeholder="Module1" />
+                <div class="modal-buttons">
+                    <button id="renameModuleOk" class="btn-primary">Rename</button>
+                    <button id="renameModuleCancel" class="btn-secondary">Cancel</button>
+                </div>
+            </div>
+        </div>
     </div>
     
     <script src="taskpane.js"></script>

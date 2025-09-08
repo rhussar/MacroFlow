@@ -1,4 +1,4 @@
-/* MacroFlow AI - Clean, Modern Styling */
+/* MacroFlow AI - VSCode Style Layout */
 
 * {
     margin: 0;
@@ -7,205 +7,633 @@
 }
 
 body {
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-    background: #f8f9fa;
-    color: #212529;
-    line-height: 1.5;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    font-size: 13px;
+    background: #1e1e1e;
+    color: #cccccc;
+    overflow: hidden;
 }
 
-.container {
-    max-width: 100%;
-    padding: 16px;
-    min-height: 100vh;
+/* VSCode Layout */
+.vscode-layout {
+    height: 100vh;
     display: flex;
     flex-direction: column;
+    background: #1e1e1e;
 }
 
-/* Header */
-.header {
-    text-align: center;
-    margin-bottom: 24px;
-    padding-bottom: 16px;
-    border-bottom: 2px solid #e9ecef;
-}
-
-.header h1 {
-    font-size: 24px;
-    font-weight: 700;
-    color: #0066cc;
-    margin-bottom: 8px;
-}
-
-.header p {
-    color: #6c757d;
-    font-size: 14px;
-}
-
-/* Main Content */
-.main {
+/* Main Layout */
+.main-layout {
     flex: 1;
     display: flex;
+    overflow: hidden;
+}
+
+/* Sidebar */
+.sidebar {
+    width: 240px;
+    min-width: 180px;
+    max-width: 320px;
+    background: #252526;
+    border-right: 1px solid #3e3e42;
+    display: flex;
     flex-direction: column;
-    gap: 20px;
+    resize: horizontal;
+    overflow: hidden;
 }
 
-/* Sections */
-.generate-section, .preview-section {
-    background: white;
-    border-radius: 8px;
-    padding: 20px;
-    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-    border: 1px solid #e9ecef;
+.sidebar-header {
+    padding: 8px 16px;
+    background: #2d2d30;
+    border-bottom: 1px solid #3e3e42;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    height: 35px;
+    flex-shrink: 0;
 }
 
-/* Form Elements */
-label {
-    display: block;
+.sidebar-actions {
+    display: flex;
+    gap: 4px;
+    align-items: center;
+}
+
+.sidebar-title {
+    font-size: 11px;
     font-weight: 600;
-    margin-bottom: 8px;
-    color: #495057;
+    color: #888888;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
 }
 
-textarea {
-    width: 100%;
-    padding: 12px;
-    border: 2px solid #e9ecef;
-    border-radius: 6px;
-    font-family: inherit;
-    font-size: 14px;
-    resize: vertical;
-    transition: border-color 0.2s;
+.btn-icon {
+    background: transparent;
+    border: none;
+    color: #888888;
+    padding: 4px;
+    cursor: pointer;
+    border-radius: 3px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
 }
 
-textarea:focus {
-    outline: none;
-    border-color: #0066cc;
+.btn-icon:hover {
+    background: #3e3e42;
+    color: #cccccc;
 }
 
-textarea[readonly] {
-    background: #f8f9fa;
-    font-family: 'Consolas', 'Monaco', monospace;
+/* Module List */
+.module-list {
+    flex: 1;
+    overflow-y: auto;
+    padding: 4px 0;
+}
+
+.module-item {
+    padding: 6px 16px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 13px;
+    color: #cccccc;
+    border-left: 3px solid transparent;
+    transition: all 0.1s;
+}
+
+.module-item:hover {
+    background: #2a2d2e;
+}
+
+.module-item.active {
+    background: #094771;
+    border-left-color: #007acc;
+    color: #ffffff;
+}
+
+.module-item.loading {
+    color: #888888;
+    font-style: italic;
+    cursor: default;
+}
+
+.module-item .module-name {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.module-item .expand-icon {
+    width: 16px;
+    height: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    color: #888888;
+    transition: transform 0.15s ease;
+    user-select: none;
+    font-size: 10px;
+}
+
+.module-item .expand-icon:hover {
+    color: #cccccc;
+}
+
+.module-item.expanded .expand-icon {
+    transform: rotate(90deg);
+}
+
+.module-item .module-icon {
+    width: 16px;
+    height: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+/* Subroutine List */
+.subroutine-list {
+    padding-left: 24px;
+    margin-left: 8px;
+    border-left: 1px solid #3e3e42;
+    background: #252526;
+}
+
+.subroutine-item {
+    padding: 6px 8px;
+    font-size: 12px;
+    color: #888888;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    transition: all 0.1s;
+    min-height: 24px;
+    background: transparent;
+}
+
+.subroutine-item:hover {
+    background: #2a2d2e;
+    color: #cccccc;
+}
+
+.subroutine-item .sub-icon {
+    width: 14px;
+    height: 14px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 10px;
+}
+
+.module-item .module-actions {
+    opacity: 0;
+    display: flex;
+    gap: 4px;
+    transition: opacity 0.1s;
+}
+
+.module-item:hover .module-actions {
+    opacity: 1;
+}
+
+.module-action {
+    background: transparent;
+    border: none;
+    color: #888888;
+    padding: 2px;
+    cursor: pointer;
+    border-radius: 3px;
     font-size: 12px;
 }
 
-/* Buttons */
-.button-group {
+.module-action:hover {
+    background: #3e3e42;
+    color: #cccccc;
+}
+
+/* Editor Container */
+.editor-container {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    background: #1e1e1e;
+    overflow: hidden;
+    position: relative;
+}
+
+/* Chat Input Section (Fixed at Bottom) - Simplified */
+.chat-input-section {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    background: #2d2d30;
+    border-top: 1px solid #3e3e42;
+    padding: 12px 16px;
     display: flex;
     gap: 8px;
-    margin-top: 12px;
+    align-items: flex-end;
+    z-index: 100;
 }
 
-button {
-    padding: 10px 16px;
+.chat-input-section textarea {
+    flex: 1;
+    background: #1e1e1e;
+    border: 1px solid #3e3e42;
+    border-radius: 4px;
+    color: #cccccc;
+    padding: 8px 12px;
+    font-size: 13px;
+    font-family: inherit;
+    resize: none;
+    outline: none;
+    min-height: 36px;
+    max-height: 100px;
+}
+
+.chat-input-section textarea:focus {
+    border-color: #007acc;
+    box-shadow: 0 0 0 1px #007acc;
+}
+
+.chat-input-section textarea::placeholder {
+    color: #888888;
+}
+
+/* Line Indicator - Next to Run Button */
+.line-indicator {
+    font-size: 11px;
+    color: #cccccc;
+    background: #1e1e1e;
+    border: 1px solid #3e3e42;
+    border-radius: 12px;
+    padding: 4px 10px;
+    opacity: 0;
+    transform: translateX(-10px);
+    transition: all 0.2s ease;
+    white-space: nowrap;
+}
+
+.line-indicator:not(.hidden) {
+    opacity: 1;
+    transform: translateX(0);
+}
+
+/* Send Button - Circular with Up Arrow */
+.btn-send {
+    flex-shrink: 0;
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    background: #007acc;
     border: none;
-    border-radius: 6px;
-    font-weight: 600;
+    color: #ffffff;
     cursor: pointer;
-    transition: all 0.2s;
-    font-size: 14px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s ease;
+    margin-bottom: 2px;
 }
 
-.btn-primary {
-    background: #0066cc;
-    color: white;
+.btn-send:hover:not(:disabled) {
+    background: #1177bb;
+    transform: scale(1.05);
+}
+
+.btn-send:disabled {
+    background: #464647;
+    color: #888888;
+    cursor: not-allowed;
+    transform: none;
+}
+
+/* Action Bar (Above Chat Input) */
+.action-bar {
+    position: absolute;
+    bottom: 72px; /* Above chat input */
+    left: 0;
+    right: 0;
+    background: #2d2d30;
+    border-top: 1px solid #3e3e42;
+    padding: 8px 16px;
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    z-index: 101;
+}
+
+/* Editor Tabs */
+.editor-tabs {
+    background: #2d2d30;
+    border-bottom: 1px solid #3e3e42;
+    display: flex;
+    overflow-x: auto;
+    flex-shrink: 0;
+    height: 35px; /* Match sidebar header height */
+}
+
+.tab {
+    padding: 6px 12px;
+    background: transparent;
+    border: none;
+    color: #888888;
+    font-size: 12px;
+    cursor: pointer;
+    border-right: 1px solid #3e3e42;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 100px;
+    justify-content: space-between;
+    transition: all 0.1s;
+    height: 100%;
+}
+
+.tab:hover {
+    background: #2a2d2e;
+    color: #cccccc;
+}
+
+.tab.active {
+    background: #1e1e1e;
+    color: #ffffff;
+    border-bottom: 2px solid #007acc;
+}
+
+.tab-close {
+    opacity: 0;
+    background: transparent;
+    border: none;
+    color: inherit;
+    cursor: pointer;
+    border-radius: 3px;
+    padding: 2px;
+    font-size: 16px;
+    line-height: 1;
+}
+
+.tab:hover .tab-close {
+    opacity: 1;
+}
+
+.tab-close:hover {
+    background: #3e3e42;
+}
+
+/* Editor Wrapper */
+.editor-wrapper {
+    flex: 1;
+    position: relative;
+    overflow: hidden;
+    margin-bottom: 112px; /* Space for action bar and chat input */
+}
+
+.monaco-editor {
+    width: 100%;
+    height: 100%;
+}
+
+/* Welcome Screen */
+.welcome-screen {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: #1e1e1e;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1;
+}
+
+.welcome-content {
+    text-align: center;
+    max-width: 400px;
+    padding: 32px;
+}
+
+.welcome-content h2 {
+    font-size: 24px;
+    font-weight: 300;
+    color: #cccccc;
+    margin-bottom: 16px;
+}
+
+.welcome-content p {
+    color: #888888;
+    line-height: 1.5;
+    margin-bottom: 32px;
+}
+
+.welcome-actions {
+    display: flex;
+    justify-content: center;
+    gap: 12px;
+}
+
+
+/* Buttons */
+.btn-primary, .btn-secondary, .btn-success {
+    background: #0e639c;
+    border: 1px solid #1177bb;
+    color: #ffffff;
+    padding: 6px 12px;
+    border-radius: 3px;
+    font-size: 13px;
+    cursor: pointer;
+    outline: none;
+    transition: all 0.1s;
 }
 
 .btn-primary:hover:not(:disabled) {
-    background: #0052a3;
+    background: #1177bb;
 }
 
 .btn-secondary {
-    background: #6c757d;
-    color: white;
+    background: #5a5a5a;
+    border-color: #6e6e6e;
 }
 
 .btn-secondary:hover:not(:disabled) {
-    background: #545b62;
+    background: #6e6e6e;
 }
 
 .btn-success {
-    background: #28a745;
-    color: white;
-    width: 100%;
-    margin-top: 12px;
+    background: #16825d;
+    border-color: #1e9973;
 }
 
 .btn-success:hover:not(:disabled) {
-    background: #218838;
+    background: #1e9973;
+}
+
+.btn-sm {
+    padding: 4px 8px;
+    font-size: 12px;
 }
 
 button:disabled {
-    opacity: 0.6;
+    opacity: 0.5;
     cursor: not-allowed;
 }
 
-/* Status Messages */
-.status-message {
-    padding: 10px 12px;
+/* Scrollbars */
+::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+}
+
+::-webkit-scrollbar-track {
+    background: #2d2d30;
+}
+
+::-webkit-scrollbar-thumb {
+    background: #464647;
+    border-radius: 5px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: #5a5a5a;
+}
+
+/* Context Menu */
+.context-menu {
+    position: fixed;
+    background: #2d2d30;
+    border: 1px solid #3e3e42;
+    border-radius: 3px;
+    padding: 4px 0;
+    min-width: 120px;
+    z-index: 1000;
+    box-shadow: 0 4px 8px rgba(0,0,0,0.3);
+}
+
+.context-menu-item {
+    padding: 6px 16px;
+    color: #cccccc;
+    cursor: pointer;
+    font-size: 13px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.context-menu-item:hover {
+    background: #094771;
+}
+
+.context-menu-item.danger:hover {
+    background: #742a2a;
+}
+
+/* Hidden */
+.hidden {
+    display: none !important;
+}
+
+/* Modal */
+.modal {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.7);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 2000;
+}
+
+.modal-content {
+    background: #2d2d30;
+    border: 1px solid #3e3e42;
     border-radius: 6px;
-    font-size: 14px;
-    font-weight: 500;
-    margin: 12px 0;
-    text-align: center;
+    padding: 24px;
+    min-width: 300px;
+    max-width: 90%;
+    box-shadow: 0 8px 16px rgba(0, 0, 0, 0.5);
 }
 
-.status-message.info {
-    background: #d1ecf1;
-    color: #0c5460;
-    border: 1px solid #bee5eb;
+.modal-content h3 {
+    color: #cccccc;
+    margin-bottom: 16px;
+    font-size: 16px;
+    font-weight: 600;
 }
 
-.status-message.success {
-    background: #d4edda;
-    color: #155724;
-    border: 1px solid #c3e6cb;
+.modal-content label {
+    display: block;
+    color: #cccccc;
+    margin-bottom: 8px;
+    font-size: 13px;
 }
 
-.status-message.error {
-    background: #f8d7da;
-    color: #721c24;
-    border: 1px solid #f5c6cb;
+.modal-content input {
+    width: 100%;
+    background: #1e1e1e;
+    border: 1px solid #3e3e42;
+    border-radius: 4px;
+    color: #cccccc;
+    padding: 8px 12px;
+    font-size: 13px;
+    font-family: inherit;
+    outline: none;
+    margin-bottom: 20px;
 }
 
-/* Footer */
-.footer {
-    margin-top: auto;
-    padding-top: 16px;
-    text-align: center;
-    color: #6c757d;
+.modal-content input:focus {
+    border-color: #007acc;
+    box-shadow: 0 0 0 1px #007acc;
 }
 
-/* Responsive */
-@media (max-width: 480px) {
-    .container {
-        padding: 12px;
-    }
-    
-    .header h1 {
-        font-size: 20px;
-    }
-    
-    .generate-section, .preview-section {
-        padding: 16px;
-    }
-    
-    .button-group {
-        flex-direction: column;
-    }
-}
-
-/* Loading States */
-.loading {
-    opacity: 0.7;
-    pointer-events: none;
+.modal-buttons {
+    display: flex;
+    gap: 12px;
+    justify-content: flex-end;
 }
 
 /* Animations */
 @keyframes fadeIn {
-    from { opacity: 0; transform: translateY(10px); }
-    to { opacity: 1; transform: translateY(0); }
+    from { opacity: 0; }
+    to { opacity: 1; }
 }
 
-.generate-section, .preview-section {
-    animation: fadeIn 0.3s ease-out;
+.fade-in {
+    animation: fadeIn 0.2s ease-out;
+}
+
+/* Responsive adjustments for narrow taskpane */
+@media (max-width: 400px) {
+    .sidebar {
+        width: 200px;
+        min-width: 150px;
+    }
+    
+    .header {
+        padding: 6px 12px;
+    }
+    
+    .prompt-section {
+        padding: 6px 12px;
+    }
+    
+    .action-bar {
+        padding: 6px 12px;
+    }
+    
+    .welcome-content {
+        padding: 24px 16px;
+    }
+    
+    .welcome-content h2 {
+        font-size: 20px;
+    }
 }

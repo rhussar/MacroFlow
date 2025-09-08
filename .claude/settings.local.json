@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node server.js)",
+      "Bash(py app.py)",
+      "Bash(dir)",
+      "Bash(if exist \"logs\" rmdir /s /q \"logs\")"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

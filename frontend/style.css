@@ -549,7 +549,7 @@ body {
 /* Action Bar (Above Chat Input) */
 .action-bar {
     position: absolute;
-    bottom: 86px; /* Above chat input - moved up more */
+    bottom: 76px; /* Above chat input - closer spacing */
     left: 0;
     right: 0;
     background: #2d2d30;
@@ -586,6 +586,7 @@ body {
     justify-content: space-between;
     transition: all 0.1s;
     height: 100%;
+    user-select: none;
 }
 
 .tab:hover {
@@ -597,6 +598,17 @@ body {
     background: #1e1e1e;
     color: #ffffff;
     border-bottom: 2px solid #007acc;
+}
+
+.tab.dragging {
+    opacity: 0.5;
+    transform: rotate(2deg);
+    z-index: 1000;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+}
+
+.tab[draggable="true"]:hover {
+    cursor: move;
 }
 
 .tab-close {

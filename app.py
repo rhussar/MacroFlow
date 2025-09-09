@@ -4,6 +4,7 @@ from openai import OpenAI
 import os
 import win32com.client
 import pythoncom
+import time
 
 app = Flask(__name__)
 CORS(app)  # ✅ Allow requests from localhost:3000 (Add-in)
@@ -11,6 +12,13 @@ CORS(app)  # ✅ Allow requests from localhost:3000 (Add-in)
 # OpenAI client
 api_key = os.getenv("OPENAI_API_KEY") or "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"
 client = OpenAI(api_key=api_key)
+
+# Simple cache for sheet context (to avoid repeated reads)
+sheet_context_cache = {
+    "data": None,
+    "timestamp": 0,
+    "cache_duration": 30  # Cache for 30 seconds
+}
 
 
 def generate_vba(prompt, context=None):
@@ -21,6 +29,7 @@ def generate_vba(prompt, context=None):
     user_message = prompt
     
     if context:
+        # VBA Code Context
         if context.get("hasSelection") and context.get("selectedText"):
             # User has selected code - focus on modification/enhancement
             system_prompt += " The user has selected specific code that they want you to work with. You can modify, enhance, or replace the selected code based on their request. Pay attention to the existing code structure and style."
@@ -39,6 +48,65 @@ def generate_vba(prompt, context=None):
         
         if context.get("activeModule"):
             user_message += f"\n\nACTIVE MODULE: {context['activeModule']}"
+        
+        # Sheet Context (NEW)
+        if context.get("sheetContext") and not context["sheetContext"].get("error"):
+            sheet_ctx = context["sheetContext"]
+            system_prompt += " You have access to the current Excel sheet's data and structure. Use this information to generate more relevant and data-aware VBA code."
+            
+            # Add sheet information
+            user_message += f"\n\n=== CURRENT EXCEL SHEET CONTEXT ==="
+            user_message += f"\nWorkbook: {sheet_ctx.get('workbook_name', 'Unknown')}"
+            user_message += f"\nActive Sheet: {sheet_ctx.get('sheet_name', 'Unknown')}"
+            user_message += f"\nSheet Type: {sheet_ctx.get('sheet_type', 'Unknown')}"
+            
+            # Add used range information
+            if sheet_ctx.get("used_range"):
+                used_range = sheet_ctx["used_range"]
+                user_message += f"\nUsed Range: {used_range['address']} ({used_range['rows']} rows × {used_range['columns']} columns)"
+            
+            # Add column headers
+            if sheet_ctx.get("column_headers"):
+                headers = sheet_ctx["column_headers"][:10]  # Limit to first 10
+                user_message += f"\nColumn Headers: {', '.join(headers)}"
+                if len(sheet_ctx["column_headers"]) > 10:
+                    user_message += f" (and {len(sheet_ctx['column_headers']) - 10} more...)"
+            
+            # Add data structure information
+            if sheet_ctx.get("data_structure"):
+                user_message += f"\n\nData Structure:"
+                for col_name, col_info in list(sheet_ctx["data_structure"].items())[:5]:  # Limit to 5 columns
+                    user_message += f"\n  - {col_name}: {col_info['type']}"
+                    if col_info.get("sample_values"):
+                        sample_str = ", ".join(str(v) for v in col_info["sample_values"][:2])
+                        user_message += f" (samples: {sample_str})"
+            
+            # Add named ranges
+            if sheet_ctx.get("named_ranges"):
+                ranges = [nr["name"] for nr in sheet_ctx["named_ranges"][:5]]
+                if ranges:
+                    user_message += f"\nNamed Ranges: {', '.join(ranges)}"
+            
+            # Add chart objects
+            if sheet_ctx.get("chart_objects"):
+                charts = [c["name"] for c in sheet_ctx["chart_objects"][:3]]
+                if charts:
+                    user_message += f"\nChart Objects: {', '.join(charts)}"
+            
+            # Add sample data (first few rows)
+            if sheet_ctx.get("data_sample") and len(sheet_ctx["data_sample"]) > 1:
+                user_message += f"\n\nSample Data (first few rows):"
+                headers = sheet_ctx.get("column_headers", [])
+                sample_rows = sheet_ctx["data_sample"][:4]  # Header + 3 data rows
+                
+                for i, row in enumerate(sample_rows):
+                    row_data = row[:5]  # First 5 columns only
+                    if i == 0 and headers:
+                        user_message += f"\n  Headers: {' | '.join(row_data)}"
+                    else:
+                        user_message += f"\n  Row {i}: {' | '.join(row_data)}"
+            
+            user_message += f"\n=== END SHEET CONTEXT ===\n"
     
     response = client.chat.completions.create(
         model="gpt-4o",
@@ -127,6 +195,171 @@ def parse_subroutines_from_vba(content):
     
     return subroutines
 
+def get_sheet_context():
+    """Extract context from the active Excel sheet with caching and error handling."""
+    # Check cache first
+    current_time = time.time()
+    if (sheet_context_cache["data"] and 
+        current_time - sheet_context_cache["timestamp"] < sheet_context_cache["cache_duration"]):
+        return sheet_context_cache["data"]
+    
+    try:
+        # Initialize COM for this thread
+        pythoncom.CoInitialize()
+        
+        try:
+            excel = win32com.client.GetObject(None, "Excel.Application")
+        except:
+            try:
+                excel = win32com.client.Dispatch("Excel.Application")
+            except Exception as excel_error:
+                return {"error": f"Could not connect to Excel: {str(excel_error)}"}
+        
+        wb = excel.ActiveWorkbook
+        if not wb:
+            return {"error": "No active workbook found. Please open an Excel file first."}
+        
+        ws = excel.ActiveSheet
+        if not ws:
+            return {"error": "No active worksheet found."}
+        
+        # Basic sheet information
+        sheet_info = {
+            "workbook_name": wb.Name,
+            "sheet_name": ws.Name,
+            "sheet_type": "Worksheet" if ws.Type == -4167 else "Chart" if ws.Type == 3 else "Unknown",
+            "used_range": None,
+            "data_sample": [],
+            "column_headers": [],
+            "data_structure": {},
+            "named_ranges": [],
+            "chart_objects": []
+        }
+        
+        # Get used range information
+        try:
+            used_range = ws.UsedRange
+            if used_range:
+                sheet_info["used_range"] = {
+                    "address": used_range.Address,
+                    "rows": used_range.Rows.Count,
+                    "columns": used_range.Columns.Count,
+                    "first_row": used_range.Row,
+                    "first_col": used_range.Column
+                }
+                
+                # Sample data from used range (limit to first 50 rows, 20 columns)
+                max_rows = min(50, used_range.Rows.Count)
+                max_cols = min(20, used_range.Columns.Count)
+                
+                sample_data = []
+                for row in range(1, max_rows + 1):
+                    row_data = []
+                    for col in range(1, max_cols + 1):
+                        try:
+                            cell_value = used_range.Cells(row, col).Value
+                            # Convert to string, handle None values
+                            row_data.append(str(cell_value) if cell_value is not None else "")
+                        except:
+                            row_data.append("")
+                    sample_data.append(row_data)
+                
+                sheet_info["data_sample"] = sample_data
+                
+                # Extract column headers (assume first row contains headers)
+                if max_rows > 0:
+                    headers = []
+                    for col in range(1, max_cols + 1):
+                        try:
+                            header = used_range.Cells(1, col).Value
+                            headers.append(str(header) if header is not None else f"Column{col}")
+                        except:
+                            headers.append(f"Column{col}")
+                    sheet_info["column_headers"] = headers
+                
+                # Analyze data structure
+                if len(sample_data) > 1:  # Skip header row
+                    data_structure = {}
+                    for col_idx, header in enumerate(headers):
+                        if col_idx < len(sample_data[1]):  # Check if data exists
+                            # Analyze data types in this column (sample first few non-empty values)
+                            sample_values = []
+                            for row_idx in range(1, min(10, len(sample_data))):
+                                if col_idx < len(sample_data[row_idx]):
+                                    val = sample_data[row_idx][col_idx]
+                                    if val and str(val).strip():
+                                        sample_values.append(val)
+                            
+                            # Determine data type
+                            data_type = "text"
+                            if sample_values:
+                                # Check if numeric
+                                try:
+                                    float(sample_values[0])
+                                    data_type = "number"
+                                except:
+                                    # Check if date-like
+                                    if any(char in str(sample_values[0]) for char in ['/', '-', ':']):
+                                        data_type = "date_or_text"
+                            
+                            data_structure[header] = {
+                                "type": data_type,
+                                "sample_values": sample_values[:3]  # First 3 samples
+                            }
+                    
+                    sheet_info["data_structure"] = data_structure
+        except Exception as e:
+            sheet_info["used_range_error"] = str(e)
+        
+        # Get named ranges
+        try:
+            for name in wb.Names:
+                try:
+                    sheet_info["named_ranges"].append({
+                        "name": name.Name,
+                        "refers_to": name.RefersTo,
+                        "scope": "Workbook"
+                    })
+                except:
+                    continue
+        except Exception as e:
+            sheet_info["named_ranges_error"] = str(e)
+        
+        # Get chart objects
+        try:
+            for chart in ws.ChartObjects():
+                try:
+                    sheet_info["chart_objects"].append({
+                        "name": chart.Name,
+                        "chart_type": chart.Chart.ChartType,
+                        "position": {
+                            "left": chart.Left,
+                            "top": chart.Top,
+                            "width": chart.Width,
+                            "height": chart.Height
+                        }
+                    })
+                except:
+                    continue
+        except Exception as e:
+            sheet_info["chart_objects_error"] = str(e)
+        
+        # Cache the result
+        sheet_context_cache["data"] = sheet_info
+        sheet_context_cache["timestamp"] = current_time
+        
+        return sheet_info
+        
+    except Exception as e:
+        error_result = {"error": f"Failed to get sheet context: {str(e)}"}
+        # Don't cache errors, but return them
+        return error_result
+    finally:
+        try:
+            pythoncom.CoUninitialize()
+        except:
+            pass
+
 def inject_vba_to_excel(macro_code):
     """Inject VBA code into the active Excel workbook."""
     try:
@@ -182,6 +415,15 @@ def inject_vba_to_excel(macro_code):
             pythoncom.CoUninitialize()
         except:
             pass
+
+@app.route("/get-sheet-context", methods=["GET"])
+def get_sheet_context_endpoint():
+    """Get context from the active Excel sheet."""
+    try:
+        sheet_context = get_sheet_context()
+        return jsonify(sheet_context)
+    except Exception as e:
+        return jsonify({"error": f"Failed to get sheet context: {str(e)}"}), 500
 
 @app.route("/generate", methods=["POST"])
 def generate():

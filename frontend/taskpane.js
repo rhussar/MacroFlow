@@ -382,6 +382,7 @@ Office.onReady(() => {
         const tab = document.createElement("div");
         tab.className = "tab";
         tab.dataset.tab = module.name;
+        tab.draggable = true;
         tab.innerHTML = `
             <span>${module.name}</span>
             <button class="tab-close" title="Close">×</button>
@@ -392,6 +393,30 @@ Office.onReady(() => {
             if (!e.target.classList.contains("tab-close")) {
                 const targetModule = state.modules.find(m => m.name === module.name);
                 if (targetModule) openModule(targetModule);
+            }
+        });
+        
+        // Drag and drop functionality
+        tab.addEventListener("dragstart", (e) => {
+            e.dataTransfer.setData("text/plain", module.name);
+            tab.classList.add("dragging");
+        });
+        
+        tab.addEventListener("dragend", (e) => {
+            tab.classList.remove("dragging");
+        });
+        
+        tab.addEventListener("dragover", (e) => {
+            e.preventDefault();
+        });
+        
+        tab.addEventListener("drop", (e) => {
+            e.preventDefault();
+            const draggedModuleName = e.dataTransfer.getData("text/plain");
+            const targetModuleName = module.name;
+            
+            if (draggedModuleName !== targetModuleName) {
+                reorderTabs(draggedModuleName, targetModuleName);
             }
         });
         
@@ -439,6 +464,34 @@ Office.onReady(() => {
                 updateActionButtons();
             }
         }
+    }
+    
+    // Reorder tabs by moving dragged tab to target position
+    function reorderTabs(draggedModuleName, targetModuleName) {
+        const tabsContainer = elements.editorTabs;
+        const draggedTab = state.tabs.get(draggedModuleName);
+        const targetTab = state.tabs.get(targetModuleName);
+        
+        if (!draggedTab || !targetTab) return;
+        
+        // Get all tabs in current order
+        const allTabs = Array.from(tabsContainer.children);
+        const draggedIndex = allTabs.indexOf(draggedTab);
+        const targetIndex = allTabs.indexOf(targetTab);
+        
+        // Remove dragged tab and insert it at target position
+        tabsContainer.removeChild(draggedTab);
+        
+        if (targetIndex < draggedIndex) {
+            // Insert before target
+            tabsContainer.insertBefore(draggedTab, targetTab);
+        } else {
+            // Insert after target
+            tabsContainer.insertBefore(draggedTab, targetTab.nextSibling);
+        }
+        
+        // Update tab order state if needed (for persistence)
+        // Could be extended to save tab order preferences
     }
     
     // Update tab modified state
@@ -776,6 +829,21 @@ End Sub`;
         elements.lineIndicator.classList.add("hidden");
     }
 
+    // Fetch sheet context from Excel
+    async function getSheetContext() {
+        try {
+            const response = await fetch("http://localhost:5000/get-sheet-context");
+            if (!response.ok) {
+                console.warn("Could not fetch sheet context:", response.status);
+                return null;
+            }
+            return await response.json();
+        } catch (error) {
+            console.warn("Error fetching sheet context:", error);
+            return null;
+        }
+    }
+
     // Generate macro with AI
     async function generateMacro() {
         const prompt = elements.prompt.value.trim();
@@ -792,9 +860,10 @@ End Sub`;
         // Loading state
         elements.generateBtn.disabled = true;
         
-        // Log context for debugging
-        
         try {
+            // Fetch sheet context for AI awareness
+            const sheetContext = await getSheetContext();
+            
             const requestBody = {
                 prompt,
                 context: {
@@ -803,7 +872,8 @@ End Sub`;
                     surroundingCode: context.surroundingCode,
                     currentSubroutine: context.currentSubroutine,
                     selectionRange: context.selectionRange,
-                    activeModule: state.activeModule?.name || null
+                    activeModule: state.activeModule?.name || null,
+                    sheetContext: sheetContext  // NEW: Include sheet context
                 }
             };
 
@@ -929,7 +999,7 @@ End Sub`;
     
     // Event listeners
     elements.generateBtn.addEventListener("click", generateMacro);
-    elements.welcomeGenerate.addEventListener("click", generateMacro);
+    elements.welcomeGenerate.addEventListener("click", showNewModuleModal);
     
     // Run button event listener
     if (elements.runBtn) {

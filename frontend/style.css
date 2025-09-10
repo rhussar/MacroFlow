@@ -22,24 +22,24 @@ body {
     background: #1e1e1e;
 }
 
-/* Main Layout */
+/* Main Layout - 3 Column: Sidebar + Editor + Chat */
 .main-layout {
     flex: 1;
     display: flex;
     overflow: hidden;
 }
 
-/* Sidebar */
+/* File Sidebar - Now on Right */
 .sidebar {
     width: 180px;
     min-width: 180px;
-    max-width: 320px;
+    max-width: 400px;
     background: #252526;
-    border-right: 1px solid #3e3e42;
+    border-left: 1px solid #3e3e42;
     display: flex;
     flex-direction: column;
-    resize: horizontal;
     overflow: hidden;
+    position: relative;
 }
 
 .sidebar-header {
@@ -48,10 +48,15 @@ body {
     border-bottom: 1px solid #3e3e42;
     display: flex;
     align-items: center;
-    justify-content: space-between;
     height: 35px;
     flex-shrink: 0;
     margin-bottom: 12px;
+}
+
+.sidebar-left-content {
+    display: flex;
+    align-items: center;
+    gap: 8px;
 }
 
 .sidebar-actions {
@@ -328,7 +333,6 @@ body {
     color: #888888;
     transition: transform 0.15s ease;
     user-select: none;
-    font-size: 10px;
 }
 
 .module-item .expand-icon:hover {
@@ -418,18 +422,146 @@ body {
     position: relative;
 }
 
-/* Chat Input Section (Fixed at Bottom) - ChatGPT Style */
-.chat-input-section {
-    position: absolute;
-    bottom: 0;
-    left: 0;
-    right: 0;
+/* Chat Panel - Now on Left */
+.chat-panel {
+    width: 300px;
+    min-width: 200px;
+    max-width: 500px;
+    background: #252526;
+    border-right: 1px solid #3e3e42;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.chat-panel-header {
+    padding: 8px 16px;
+    background: #2d2d30;
+    border-bottom: 1px solid #3e3e42;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    height: 35px;
+    flex-shrink: 0;
+}
+
+.chat-panel-title {
+    font-size: 11px;
+    font-weight: 600;
+    color: #888888;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.chat-panel-actions {
+    display: flex;
+    gap: 4px;
+    align-items: center;
+}
+
+/* Chat Messages Area */
+.chat-messages {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+/* Chat Welcome Screen */
+.chat-welcome {
+    text-align: center;
+    opacity: 0.7;
+}
+
+.chat-welcome-content h3 {
+    font-size: 16px;
+    font-weight: 500;
+    color: #cccccc;
+    margin-bottom: 8px;
+}
+
+.chat-welcome-content p {
+    font-size: 13px;
+    color: #888888;
+    line-height: 1.4;
+}
+
+/* Message Bubbles */
+.message {
+    display: flex;
+    flex-direction: column;
+    margin-bottom: 16px;
+}
+
+.message.user {
+    align-items: flex-end;
+}
+
+.message.assistant {
+    align-items: flex-start;
+}
+
+.message-bubble {
+    max-width: 85%;
+    padding: 12px 16px;
+    border-radius: 12px;
+    font-size: 13px;
+    line-height: 1.4;
+    word-wrap: break-word;
+}
+
+.message.user .message-bubble {
+    background: #007acc;
+    color: #ffffff;
+    border-bottom-right-radius: 4px;
+}
+
+.message.assistant .message-bubble {
+    background: #1e1e1e;
+    color: #cccccc;
+    border: 1px solid #3e3e42;
+    border-bottom-left-radius: 4px;
+}
+
+.message-timestamp {
+    font-size: 11px;
+    color: #888888;
+    margin-top: 4px;
+    opacity: 0.7;
+}
+
+
+/* Chat Input Section (Fixed at Bottom) */
+.chat-panel .chat-input-section {
     background: #2d2d30;
     border-top: 1px solid #3e3e42;
     padding: 12px 16px;
-    z-index: 100;
+    flex-shrink: 0;
 }
 
+
+/* Chat Panel Collapsed State */
+.chat-panel.collapsed {
+    width: 50px !important;
+    min-width: 50px;
+}
+
+.chat-panel.collapsed .chat-panel-title {
+    display: none;
+}
+
+.chat-panel.collapsed .chat-panel-header {
+    justify-content: center;
+}
+
+.chat-panel.collapsed .chat-messages,
+.chat-panel.collapsed .chat-input-section {
+    display: none;
+}
+
+/* Chat Input Styling */
 .chat-input-container {
     position: relative;
     display: flex;
@@ -438,6 +570,7 @@ body {
     border: 1px solid #3e3e42;
     border-radius: 12px;
     transition: border-color 0.2s ease;
+    margin: 0;
 }
 
 .chat-input-container:focus-within {
@@ -450,22 +583,29 @@ body {
     background: transparent;
     border: none;
     color: #cccccc;
-    padding: 12px 16px;
-    padding-right: 48px; /* Space for send button */
+    padding: 8px 8px 40px 8px; /* Back to original bottom padding */
     font-size: 13px;
     font-family: inherit;
     resize: none;
     outline: none;
-    min-height: 24px;
-    max-height: 120px;
+    min-height: 19px; /* Fixed to match line-height (1.4em ≈ 18.2px) */
+    max-height: calc(1.4em * 8 + 16px); /* Back to original calculation */
     line-height: 1.4;
+    overflow-y: auto;
+    transition: height 0.1s ease;
 }
 
 .chat-input-section textarea::placeholder {
     color: #888888;
 }
 
-/* Line Indicator - Next to Run Button */
+/* Chat panel positioning for resize functionality */
+.chat-panel {
+    position: relative;
+}
+
+
+/* Line Indicator */
 .line-indicator {
     font-size: 11px;
     color: #cccccc;
@@ -484,13 +624,29 @@ body {
     transform: translateX(0);
 }
 
-/* Send Button - Inline ChatGPT Style */
-.btn-send-inline {
+/* Bottom row with line indicator and send button */
+.chat-bottom-row {
     position: absolute;
-    right: 8px;
-    bottom: 8px;
-    width: 32px;
-    height: 32px;
+    bottom: 6px;
+    left: 4px;
+    right: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    height: 28px; /* Reduced height for tighter layout */
+}
+
+/* Line Indicator in bottom row */
+.chat-bottom-row .line-indicator {
+    margin: 0;
+    margin-right: auto; /* Push to left, send button stays right */
+    padding: 4px 8px;
+}
+
+/* Send Button in bottom row */
+.btn-send-inline {
+    width: 22px;
+    height: 22px;
     border-radius: 50%;
     background: #007acc;
     border: none;
@@ -501,6 +657,7 @@ body {
     justify-content: center;
     transition: all 0.2s ease;
     opacity: 0.8;
+    flex-shrink: 0;
 }
 
 .btn-send-inline:hover:not(:disabled) {
@@ -546,20 +703,6 @@ body {
     transform: none;
 }
 
-/* Action Bar (Above Chat Input) */
-.action-bar {
-    position: absolute;
-    bottom: 76px; /* Above chat input - closer spacing */
-    left: 0;
-    right: 0;
-    background: #2d2d30;
-    border-top: 1px solid #3e3e42;
-    padding: 8px 16px;
-    display: flex;
-    gap: 8px;
-    align-items: center;
-    z-index: 101;
-}
 
 /* Editor Tabs */
 .editor-tabs {
@@ -636,7 +779,6 @@ body {
     flex: 1;
     position: relative;
     overflow: hidden;
-    margin-bottom: 112px; /* Space for action bar and chat input */
 }
 
 .monaco-editor {

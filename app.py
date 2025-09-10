@@ -141,6 +141,54 @@ def extract_vba_code(text):
         return '\n'.join(vba_lines)
     return text
 
+def separate_vba_and_text(ai_response):
+    """Separate VBA code from explanatory text in AI response."""
+    lines = ai_response.split('\n')
+    vba_lines = []
+    text_lines = []
+    in_vba_block = False
+    vba_found = False
+    
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+        
+        # Check for VBA code block start
+        if line.startswith(('Sub ', 'Function ', 'Private Sub ', 'Public Sub ', 
+                          'Private Function ', 'Public Function ')):
+            in_vba_block = True
+            vba_found = True
+            vba_lines.append(lines[i])
+            
+        elif in_vba_block:
+            vba_lines.append(lines[i])
+            # Check for VBA code block end
+            if line in ['End Sub', 'End Function']:
+                in_vba_block = False
+                
+        else:
+            # This is explanatory text
+            # Skip empty lines at the beginning
+            if text_lines or line:
+                text_lines.append(lines[i])
+        
+        i += 1
+    
+    # Clean up text lines (remove excessive empty lines)
+    while text_lines and not text_lines[0].strip():
+        text_lines.pop(0)
+    while text_lines and not text_lines[-1].strip():
+        text_lines.pop()
+    
+    vba_code = '\n'.join(vba_lines) if vba_lines else ""
+    explanation = '\n'.join(text_lines) if text_lines else ""
+    
+    return {
+        "has_vba": vba_found,
+        "vba_code": vba_code,
+        "explanation": explanation
+    }
+
 def parse_subroutines_from_vba(content):
     """Parse subroutines and functions from VBA code."""
     if not content:
@@ -436,15 +484,17 @@ def generate():
 
     
     # Generate VBA with context awareness
-    macro = generate_vba(prompt, context)
+    ai_response = generate_vba(prompt, context)
     
-    # Clean up the response to extract only VBA code
-    clean_macro = extract_vba_code(macro)
+    # Separate VBA code from explanatory text
+    separated = separate_vba_and_text(ai_response)
     
     
-    # Return enhanced response with context information
+    # Return enhanced response with separated VBA and explanation
     response_data = {
-        "macro": clean_macro,
+        "has_vba": separated["has_vba"],
+        "vba_code": separated["vba_code"],
+        "explanation": separated["explanation"],
         "context": {
             "hasSelection": context.get("hasSelection", False) if context else False,
             "generationType": "modification" if (context and context.get("hasSelection")) else "generation"

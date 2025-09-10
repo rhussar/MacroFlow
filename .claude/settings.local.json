@@ -5,7 +5,9 @@
       "Bash(py app.py)",
       "Bash(dir)",
       "Bash(if exist \"logs\" rmdir /s /q \"logs\")",
-      "Bash(py -m py_compile:*)"
+      "Bash(py -m py_compile:*)",
+      "Bash(python:*)",
+      "Bash(where python py)"
     ],
     "deny": [],
     "ask": []

@@ -11,18 +11,85 @@
     <div class="vscode-layout">
         <!-- Main Layout -->
         <div class="main-layout">
-            <!-- Sidebar -->
-            <aside class="sidebar" id="sidebar">
-                <div class="sidebar-header">
-                    <span class="sidebar-title">File Editor</span>
-                    <div class="sidebar-actions">
-                        <button id="toggleSidebarBtn" class="btn-icon" title="Collapse Sidebar">
+            <!-- Chat Panel - Now on Left -->
+            <aside class="chat-panel" id="chatPanel">
+                <div class="chat-panel-header">
+                    <span class="chat-panel-title">Chat</span>
+                    <div class="chat-panel-actions">
+                        <button id="toggleChatBtn" class="btn-icon" title="Collapse Chat">
                             <svg width="14" height="14" viewBox="0 0 16 16">
-                                <!-- ChatGPT-style sidebar toggle: rounded square with vertical line -->
                                 <rect x="3" y="3" width="10" height="10" rx="2" ry="2" fill="none" stroke="currentColor" stroke-width="1.2"/>
                                 <line x1="6" y1="3" x2="6" y2="13" stroke="currentColor" stroke-width="1.2"/>
                             </svg>
                         </button>
+                    </div>
+                </div>
+                
+                <!-- Chat Messages -->
+                <div class="chat-messages" id="chatMessages">
+                    <div class="chat-welcome">
+                        <div class="chat-welcome-content">
+                            <h3>AI Assistant</h3>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Chat Input (Fixed at Bottom) -->
+                <div class="chat-input-section">
+                    <div class="chat-input-container">
+                        <textarea 
+                            id="prompt" 
+                            placeholder="Plan, search, build anything"
+                            rows="2"
+                        ></textarea>
+                        <!-- Bottom row with line indicator and send button -->
+                        <div class="chat-bottom-row">
+                            <div id="lineIndicator" class="line-indicator hidden">Focused on lines 7-30</div>
+                            <button id="generateBtn" class="btn-send-inline" title="Send message">
+                                <svg width="12" height="12" viewBox="0 0 16 16">
+                                    <path fill="currentColor" d="M8 4l4 4h-3v4H7V8H4l4-4z"/>
+                                </svg>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </aside>
+            
+            <!-- Editor Container - Stays in Middle -->
+            <main class="editor-container">
+                <!-- Editor Tabs -->
+                <div class="editor-tabs" id="editorTabs">
+                    <!-- Welcome tab removed - only show when no modules are open -->
+                </div>
+                
+                <!-- Monaco Editor -->
+                <div class="editor-wrapper">
+                    <div id="monacoEditor" class="monaco-editor"></div>
+                    <div id="welcomeScreen" class="welcome-screen">
+                        <div class="welcome-content">
+                            <h2>Welcome to MacroFlow AI</h2>
+                            <p>Let's get started</p>
+                            <div class="welcome-actions">
+                                <button id="welcomeGenerate" class="btn-primary">Create New Module</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+            </main>
+            
+            <!-- File Sidebar - Now on Right -->
+            <aside class="sidebar" id="sidebar">
+                <div class="sidebar-header">
+                    <div class="sidebar-left-content">
+                        <button id="toggleSidebarBtn" class="btn-icon" title="Collapse Explorer">
+                            <svg width="14" height="14" viewBox="0 0 16 16">
+                                <!-- Explorer toggle: rounded square with vertical line on left -->
+                                <rect x="3" y="3" width="10" height="10" rx="2" ry="2" fill="none" stroke="currentColor" stroke-width="1.2"/>
+                                <line x1="6" y1="3" x2="6" y2="13" stroke="currentColor" stroke-width="1.2"/>
+                            </svg>
+                        </button>
+                        <span class="sidebar-title">Explorer</span>
                     </div>
                 </div>
                 
@@ -33,8 +100,8 @@
                             <svg width="16" height="16" viewBox="0 0 16 16">
                                 <!-- Square -->
                                 <rect x="2" y="4" width="10" height="10" rx="1" ry="1" fill="none" stroke="currentColor" stroke-width="1"/>
-                                <!-- Pencil -->
-                                <path fill="currentColor" d="M13.498.795l1.707 1.707c.293.293.293.767 0 1.06l-1.061 1.061-2.768-2.768L12.437.795c.293-.293.767-.293 1.061 0zM11.314 1.858l2.768 2.768-8.485 8.485c-.117.117-.273.186-.439.194l-2.927.146c-.146.007-.278-.054-.354-.162-.075-.108-.093-.248-.046-.378l.293-2.812c.029-.275.146-.536.341-.732L11.314 1.858z"/>
+                                <!-- Smaller Pencil -->
+                                <path fill="currentColor" d="M13.2 1.2l1.3 1.3c.22.22.22.58 0 .8l-.8.8-2.1-2.1L12.4 1.2c.22-.22.58-.22.8 0zM11.5 2.1l2.1 2.1-6.4 6.4c-.09.09-.21.14-.33.15l-2.2.11c-.11.005-.21-.04-.27-.12-.06-.08-.07-.19-.03-.29l.22-2.1c.02-.21.11-.4.26-.55L11.5 2.1z"/>
                             </svg>
                             <span>New module</span>
                         </div>
@@ -62,56 +129,6 @@
                     </div>
                 </div>
             </aside>
-            
-            <!-- Editor Container -->
-            <main class="editor-container">
-                <!-- Editor Tabs -->
-                <div class="editor-tabs" id="editorTabs">
-                    <!-- Welcome tab removed - only show when no modules are open -->
-                </div>
-                
-                <!-- Monaco Editor -->
-                <div class="editor-wrapper">
-                    <div id="monacoEditor" class="monaco-editor"></div>
-                    <div id="welcomeScreen" class="welcome-screen">
-                        <div class="welcome-content">
-                            <h2>Welcome to MacroFlow AI</h2>
-                            <p>Select a module from the sidebar or create a new one to start editing VBA code.</p>
-                            <div class="welcome-actions">
-                                <button id="welcomeGenerate" class="btn-primary">Create New Module</button>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-                
-                <!-- Action Bar (Above Chat Input) -->
-                <div class="action-bar">
-                    <button id="runBtn" class="btn-primary btn-sm" title="Run Current Subroutine">
-                        <svg width="12" height="12" viewBox="0 0 16 16" style="margin-right: 6px;">
-                            <path fill="currentColor" d="M8 15A7 7 0 1 1 8 1a7 7 0 0 1 0 14zm0 1A8 8 0 1 0 8 0a8 8 0 0 0 0 16z"/>
-                            <path fill="currentColor" d="m6.271 5.055 3.666 2.457a.5.5 0 0 1 0 .832L6.271 10.8a.5.5 0 0 1-.771-.416V5.472a.5.5 0 0 1 .771-.416z"/>
-                        </svg>
-                        Run
-                    </button>
-                    <div id="lineIndicator" class="line-indicator hidden">Focused on lines 7-30</div>
-                </div>
-                
-                <!-- Chat Input Section (Fixed at Bottom) -->
-                <div class="chat-input-section">
-                    <div class="chat-input-container">
-                        <textarea 
-                            id="prompt" 
-                            placeholder="Describe your macro... (e.g., 'Format selected cells as currency')"
-                            rows="2"
-                        ></textarea>
-                        <button id="generateBtn" class="btn-send-inline" title="Send message">
-                            <svg width="16" height="16" viewBox="0 0 16 16">
-                                <path fill="currentColor" d="M8 4l4 4h-3v4H7V8H4l4-4z"/>
-                            </svg>
-                        </button>
-                    </div>
-                </div>
-            </main>
         </div>
         
         <!-- Modal for new module name -->

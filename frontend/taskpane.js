@@ -7,7 +7,10 @@ Office.onReady(() => {
         activeModule: null,
         editor: null,
         tabs: new Map(),
-        contextMenu: null
+        contextMenu: null,
+        // Chat state
+        conversation: [],
+        chatCollapsed: false
     };
     
     // DOM elements
@@ -20,7 +23,6 @@ Office.onReady(() => {
         generateBtn: document.getElementById("generateBtn"),
         welcomeGenerate: document.getElementById("welcomeGenerate"),
         addModuleBtn: document.getElementById("addModuleBtn"),
-        runBtn: document.getElementById("runBtn"),
         moduleNameModal: document.getElementById("moduleNameModal"),
         moduleNameInput: document.getElementById("moduleNameInput"),
         createModuleOk: document.getElementById("createModuleOk"),
@@ -31,10 +33,15 @@ Office.onReady(() => {
         renameModuleCancel: document.getElementById("renameModuleCancel"),
         // Line indicator element
         lineIndicator: document.getElementById("lineIndicator"),
-        // New sidebar elements
+        // Sidebar elements
         searchMacros: document.getElementById("searchMacros"),
         toggleSidebarBtn: document.getElementById("toggleSidebarBtn"),
-        sidebar: document.getElementById("sidebar")
+        sidebar: document.getElementById("sidebar"),
+        // Chat panel elements
+        chatPanel: document.getElementById("chatPanel"),
+        chatMessages: document.getElementById("chatMessages"),
+        toggleChatBtn: document.getElementById("toggleChatBtn"),
+        // Resize handle (no longer needed - resize handled directly on chat panel)
     };
     
     // Initialize Monaco Editor
@@ -89,6 +96,298 @@ Office.onReady(() => {
             });
             
         });
+    }
+    
+    // Chat Functions
+    function addMessage(type, content) {
+        const message = {
+            id: Date.now(),
+            type: type, // 'user' or 'assistant'
+            content: content,
+            timestamp: new Date()
+        };
+        
+        state.conversation.push(message);
+        renderMessage(message);
+        scrollToBottom();
+    }
+    
+    function renderMessage(message) {
+        const messageDiv = document.createElement('div');
+        messageDiv.className = `message ${message.type}`;
+        messageDiv.dataset.messageId = message.id;
+        
+        // Simple message bubble without code blocks
+        const messageHTML = `
+            <div class="message-bubble">
+                ${escapeHtml(message.content)}
+            </div>
+            <div class="message-timestamp">
+                ${formatTimestamp(message.timestamp)}
+            </div>
+        `;
+        
+        messageDiv.innerHTML = messageHTML;
+        
+        // Remove welcome message if it exists
+        const welcomeMsg = elements.chatMessages.querySelector('.chat-welcome');
+        if (welcomeMsg) {
+            welcomeMsg.remove();
+        }
+        
+        elements.chatMessages.appendChild(messageDiv);
+    }
+    
+    function formatTimestamp(date) {
+        return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    }
+    
+    function escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+    
+    function scrollToBottom() {
+        elements.chatMessages.scrollTop = elements.chatMessages.scrollHeight;
+    }
+    
+    function toggleChatPanel() {
+        state.chatCollapsed = !state.chatCollapsed;
+        elements.chatPanel.classList.toggle('collapsed', state.chatCollapsed);
+        elements.toggleChatBtn.title = state.chatCollapsed ? 'Expand Chat' : 'Collapse Chat';
+        
+        // If expanding, restore the previous width or default to 300px
+        if (!state.chatCollapsed) {
+            const storedWidth = elements.chatPanel.dataset.lastWidth || '300px';
+            elements.chatPanel.style.width = storedWidth;
+        } else {
+            // Store current width before collapsing
+            elements.chatPanel.dataset.lastWidth = elements.chatPanel.style.width || '300px';
+        }
+    }
+    
+    // Chat panel resize functionality
+    function initializeChatResize() {
+        let isResizing = false;
+        
+        // Add resize functionality to the chat panel's right edge
+        elements.chatPanel.addEventListener('mousedown', (e) => {
+            // Only trigger if clicking on the right edge (expanded detection area)
+            const rect = elements.chatPanel.getBoundingClientRect();
+            const isRightEdge = e.clientX >= rect.right - 8 && e.clientX <= rect.right + 8;
+            
+            if (!isRightEdge || state.chatCollapsed) return;
+            
+            e.preventDefault();
+            isResizing = true;
+            document.body.style.cursor = 'col-resize';
+            document.body.style.userSelect = 'none';
+            
+            const startX = e.clientX;
+            const startWidth = elements.chatPanel.offsetWidth;
+            
+            function handleMouseMove(e) {
+                if (!isResizing) return;
+                
+                const deltaX = e.clientX - startX;
+                const newWidth = startWidth + deltaX;
+                
+                // Apply min/max constraints
+                const minWidth = 200;
+                const maxWidth = 500;
+                const constrainedWidth = Math.min(Math.max(newWidth, minWidth), maxWidth);
+                
+                elements.chatPanel.style.width = constrainedWidth + 'px';
+            }
+            
+            function handleMouseUp() {
+                isResizing = false;
+                document.body.style.cursor = '';
+                document.body.style.userSelect = '';
+                document.removeEventListener('mousemove', handleMouseMove);
+                document.removeEventListener('mouseup', handleMouseUp);
+            }
+            
+            document.addEventListener('mousemove', handleMouseMove);
+            document.addEventListener('mouseup', handleMouseUp);
+        });
+        
+        // Add mousemove listener for cursor change when hovering over resize area
+        elements.chatPanel.addEventListener('mousemove', (e) => {
+            if (isResizing || state.chatCollapsed) return;
+            
+            const rect = elements.chatPanel.getBoundingClientRect();
+            const isRightEdge = e.clientX >= rect.right - 8 && e.clientX <= rect.right + 8;
+            
+            if (isRightEdge) {
+                elements.chatPanel.style.cursor = 'col-resize';
+            } else {
+                elements.chatPanel.style.cursor = '';
+            }
+        });
+        
+        // Reset cursor when leaving chat panel
+        elements.chatPanel.addEventListener('mouseleave', () => {
+            if (!isResizing) {
+                elements.chatPanel.style.cursor = '';
+            }
+        });
+    }
+    
+    // Sidebar resize functionality
+    function initializeSidebarResize() {
+        let isResizing = false;
+        
+        // Add resize functionality to the sidebar's left edge
+        elements.sidebar.addEventListener('mousedown', (e) => {
+            // Only trigger if clicking on the left edge (expanded detection area)
+            const rect = elements.sidebar.getBoundingClientRect();
+            const isLeftEdge = e.clientX >= rect.left - 8 && e.clientX <= rect.left + 8;
+            
+            if (!isLeftEdge || elements.sidebar.classList.contains('collapsed')) return;
+            
+            e.preventDefault();
+            isResizing = true;
+            document.body.style.cursor = 'col-resize';
+            document.body.style.userSelect = 'none';
+            
+            const startX = e.clientX;
+            const startWidth = elements.sidebar.offsetWidth;
+            
+            function handleMouseMove(e) {
+                if (!isResizing) return;
+                
+                const deltaX = startX - e.clientX; // Inverted for left edge
+                const newWidth = startWidth + deltaX;
+                
+                // Apply min/max constraints
+                const minWidth = 180;
+                const maxWidth = 400;
+                const constrainedWidth = Math.min(Math.max(newWidth, minWidth), maxWidth);
+                
+                elements.sidebar.style.width = constrainedWidth + 'px';
+            }
+            
+            function handleMouseUp() {
+                isResizing = false;
+                document.body.style.cursor = '';
+                document.body.style.userSelect = '';
+                document.removeEventListener('mousemove', handleMouseMove);
+                document.removeEventListener('mouseup', handleMouseUp);
+            }
+            
+            document.addEventListener('mousemove', handleMouseMove);
+            document.addEventListener('mouseup', handleMouseUp);
+        });
+        
+        // Add mousemove listener for cursor change when hovering over resize area
+        elements.sidebar.addEventListener('mousemove', (e) => {
+            if (isResizing || elements.sidebar.classList.contains('collapsed')) return;
+            
+            const rect = elements.sidebar.getBoundingClientRect();
+            const isLeftEdge = e.clientX >= rect.left - 8 && e.clientX <= rect.left + 8;
+            
+            if (isLeftEdge) {
+                elements.sidebar.style.cursor = 'col-resize';
+            } else {
+                elements.sidebar.style.cursor = '';
+            }
+        });
+        
+        // Reset cursor when leaving sidebar
+        elements.sidebar.addEventListener('mouseleave', () => {
+            if (!isResizing) {
+                elements.sidebar.style.cursor = '';
+            }
+        });
+    }
+    
+    // Automatic VBA code insertion function
+    async function insertVBACode(vbaCode, context, isModification = false) {
+        try {
+            // If no active module, create a new one
+            if (!state.activeModule) {
+                const moduleName = `Generated${Date.now()}`;
+                try {
+                    const createResponse = await fetch("http://localhost:5000/create-module", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                            name: moduleName,
+                            content: vbaCode
+                        })
+                    });
+                    
+                    if (createResponse.ok) {
+                        const newModule = {
+                            name: moduleName,
+                            content: vbaCode,
+                            isModified: false
+                        };
+                        state.modules.push(newModule);
+                        renderModuleList();
+                        openModule(newModule);
+                        return { success: true, moduleName: moduleName };
+                    } else {
+                        return { success: false, message: "Failed to create new module for the code." };
+                    }
+                } catch (createError) {
+                    return { success: false, message: "Could not create new module. Please select or create a module first." };
+                }
+            }
+            
+            // Insert into existing active module
+            if (state.editor) {
+                if (isModification && context.hasSelection && context.selectionRange) {
+                    // Replace selected text with VBA code
+                    const selection = new monaco.Selection(
+                        context.selectionRange.startLine,
+                        context.selectionRange.startColumn,
+                        context.selectionRange.endLine,
+                        context.selectionRange.endColumn
+                    );
+                    state.editor.executeEdits("auto-vba-insertion", [{
+                        range: selection,
+                        text: vbaCode
+                    }]);
+                } else if (context.cursorPosition) {
+                    // Insert VBA code at cursor position
+                    state.editor.executeEdits("auto-vba-insertion", [{
+                        range: new monaco.Range(
+                            context.cursorPosition.lineNumber,
+                            context.cursorPosition.column,
+                            context.cursorPosition.lineNumber,
+                            context.cursorPosition.column
+                        ),
+                        text: "\n" + vbaCode + "\n"
+                    }]);
+                } else {
+                    // Fallback: Replace entire content
+                    state.editor.setValue(vbaCode);
+                }
+                
+                // Update module content and save
+                state.activeModule.content = state.editor.getValue();
+                state.activeModule.isModified = true;
+                updateTabModifiedState(state.activeModule.name);
+                await saveModuleToExcel(state.activeModule);
+                
+                return { success: true, moduleName: state.activeModule.name };
+            } else {
+                // No editor available, update module content directly
+                state.activeModule.content = vbaCode;
+                state.activeModule.isModified = true;
+                updateTabModifiedState(state.activeModule.name);
+                await saveModuleToExcel(state.activeModule);
+                
+                return { success: true, moduleName: state.activeModule.name };
+            }
+            
+        } catch (error) {
+            console.error("VBA insertion error:", error);
+            return { success: false, message: `Failed to insert code: ${error.message}` };
+        }
     }
     
     
@@ -168,7 +467,11 @@ Office.onReady(() => {
             
             moduleItem.innerHTML = `
                 <div class="module-name">
-                    <div class="expand-icon" ${hasSubroutines ? '' : 'style="visibility: hidden"'}>▶</div>
+                    <div class="expand-icon" ${hasSubroutines ? '' : 'style="visibility: hidden"'}>
+                        <svg width="16" height="16" viewBox="0 0 16 16">
+                            <path fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" d="M6 4l4 4-4 4"/>
+                        </svg>
+                    </div>
                     <span>${module.name}</span>
                 </div>
             `;
@@ -252,97 +555,7 @@ Office.onReady(() => {
         }
     }
     
-    // Find which subroutine the cursor is currently in
-    function getCurrentSubroutine() {
-        if (!state.editor || !state.activeModule) return null;
-        
-        const position = state.editor.getPosition();
-        if (!position) return null;
-        
-        const currentLine = position.lineNumber;
-        const content = state.editor.getValue();
-        const lines = content.split('\n');
-        
-        let currentSub = null;
-        
-        // Look backwards from current line to find the subroutine we're in
-        for (let i = currentLine - 1; i >= 0; i--) {
-            const line = lines[i].trim().toLowerCase();
-            
-            // If we hit an End Sub/Function, we're not in a subroutine
-            if (line.includes('end sub') || line.includes('end function')) {
-                break;
-            }
-            
-            // If we find a Sub or Function declaration
-            if ((line.includes('sub ') || line.includes('function ')) && 
-                !line.startsWith("'")) {
-                // Extract the subroutine name
-                const words = lines[i].trim().split(/\s+/);
-                for (let j = 0; j < words.length; j++) {
-                    if (words[j].toLowerCase() === 'sub' || words[j].toLowerCase() === 'function') {
-                        if (j + 1 < words.length) {
-                            const subName = words[j + 1].split('(')[0];
-                            currentSub = subName;
-                            break;
-                        }
-                    }
-                }
-                break;
-            }
-        }
-        
-        return currentSub;
-    }
     
-    // Run the current subroutine
-    async function runCurrentSubroutine() {
-        if (!state.activeModule) {
-            console.error("Please open a module first");
-            return;
-        }
-        
-        const currentSub = getCurrentSubroutine();
-        if (!currentSub) {
-            console.error("Place cursor inside a subroutine to run it");
-            return;
-        }
-        
-        try {
-            elements.runBtn.disabled = true;
-            
-            const response = await fetch("http://localhost:5000/run-subroutine", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    module: state.activeModule.name,
-                    subroutine: currentSub
-                })
-            });
-            
-            if (!response.ok) {
-                const errorData = await response.json();
-                throw new Error(errorData.error || `HTTP ${response.status}`);
-            }
-            
-            const data = await response.json();
-            
-            if (data.success) {
-            } else {
-                throw new Error(data.error || "Execution failed");
-            }
-            
-        } catch (error) {
-            console.error("Error running subroutine:", error);
-            if (error.message.includes("fetch")) {
-                console.error("Cannot connect to backend");
-            } else {
-                console.error(`Error: ${error.message}`);
-            }
-        } finally {
-            elements.runBtn.disabled = false;
-        }
-    }
     
     // Open module in editor
     function openModule(module) {
@@ -781,7 +994,7 @@ End Sub`;
             selectedText: selectedText,
             cursorPosition: position,
             surroundingCode: surroundingCode,
-            currentSubroutine: getCurrentSubroutine(),
+            currentSubroutine: null,
             fullCode: model.getValue(),
             selectionRange: selection && !selection.isEmpty() ? {
                 startLine: selection.startLineNumber,
@@ -844,21 +1057,36 @@ End Sub`;
         }
     }
 
-    // Generate macro with AI
+    // Generate macro with AI - Updated for chat system
     async function generateMacro() {
         const prompt = elements.prompt.value.trim();
         
         if (!prompt) {
-            console.error("Please enter a prompt");
+            addMessage('assistant', 'Please enter a message to get started.');
             elements.prompt.focus();
             return;
         }
+
+        // Add user message to chat
+        addMessage('user', prompt);
+        
+        // Clear input immediately for better UX
+        elements.prompt.value = "";
 
         // Get editor context for enhanced AI generation
         const context = getEditorContext();
         
         // Loading state
         elements.generateBtn.disabled = true;
+        
+        // Add loading message
+        const loadingMessage = {
+            id: Date.now(),
+            type: 'assistant',
+            content: 'Generating VBA code...',
+            timestamp: new Date()
+        };
+        renderMessage(loadingMessage);
         
         try {
             // Fetch sheet context for AI awareness
@@ -870,10 +1098,10 @@ End Sub`;
                     hasSelection: context.hasSelection,
                     selectedText: context.selectedText,
                     surroundingCode: context.surroundingCode,
-                    currentSubroutine: context.currentSubroutine,
+                    currentSubroutine: null,
                     selectionRange: context.selectionRange,
                     activeModule: state.activeModule?.name || null,
-                    sheetContext: sheetContext  // NEW: Include sheet context
+                    sheetContext: sheetContext
                 }
             };
 
@@ -889,108 +1117,54 @@ End Sub`;
             
             const data = await response.json();
             
-            if (data.macro) {
-                const generatedCode = data.macro;
+            // Remove loading message
+            const loadingDiv = document.querySelector(`[data-message-id="${loadingMessage.id}"]`);
+            if (loadingDiv) loadingDiv.remove();
+            
+            // Handle the separated VBA and explanation response
+            if (data.has_vba && data.vba_code) {
+                const vbaCode = data.vba_code;
+                const explanation = data.explanation;
                 const isModification = context.hasSelection && data.context?.generationType === "modification";
 
-                // If no active module, create a new one for the generated code
-                if (!state.activeModule) {
-                    const moduleName = `Generated${Date.now()}`;
-                    try {
-                        const createResponse = await fetch("http://localhost:5000/create-module", {
-                            method: "POST",
-                            headers: { "Content-Type": "application/json" },
-                            body: JSON.stringify({
-                                name: moduleName,
-                                content: generatedCode
-                            })
-                        });
-                        
-                        if (createResponse.ok) {
-                            const newModule = {
-                                name: moduleName,
-                                content: generatedCode,
-                                isModified: false
-                            };
-                            state.modules.push(newModule);
-                            renderModuleList();
-                            openModule(newModule);
-                            elements.prompt.value = ""; // Clear prompt
-                            return;
-                        } else {
-                            throw new Error("Failed to create module for generated code");
-                        }
-                    } catch (createError) {
-                        console.error("Please select or create a module first");
-                        return;
-                    }
+                // Show explanation in chat if present
+                if (explanation && explanation.trim()) {
+                    addMessage('assistant', explanation);
                 }
 
-                // Handle code insertion based on context
-                if (state.editor) {
-                    if (isModification && context.selectionRange) {
-                        // Replace selected text with generated code
-                        const selection = new monaco.Selection(
-                            context.selectionRange.startLine,
-                            context.selectionRange.startColumn,
-                            context.selectionRange.endLine,
-                            context.selectionRange.endColumn
-                        );
-                        state.editor.executeEdits("ai-generation", [{
-                            range: selection,
-                            text: generatedCode
-                        }]);
-                        
-                        // Update module content
-                        state.activeModule.content = state.editor.getValue();
-                        
-                    } else if (context.cursorPosition) {
-                        // Insert generated code at cursor position
-                        state.editor.executeEdits("ai-generation", [{
-                            range: new monaco.Range(
-                                context.cursorPosition.lineNumber,
-                                context.cursorPosition.column,
-                                context.cursorPosition.lineNumber,
-                                context.cursorPosition.column
-                            ),
-                            text: "\n" + generatedCode + "\n"
-                        }]);
-                        
-                        // Update module content
-                        state.activeModule.content = state.editor.getValue();
-                        
-                    } else {
-                        // Fallback: Replace entire content
-                        state.editor.setValue(generatedCode);
-                        state.activeModule.content = generatedCode;
-                    }
+                // Automatically insert VBA code
+                const insertionResult = await insertVBACode(vbaCode, context, isModification);
+                
+                // Show insertion status in chat
+                if (insertionResult.success) {
+                    addMessage('assistant', `✓ Code ${isModification ? 'modified' : 'inserted'} into ${insertionResult.moduleName}`);
                 } else {
-                    // No editor available, update module content directly
-                    state.activeModule.content = generatedCode;
+                    addMessage('assistant', `⚠ ${insertionResult.message}`);
                 }
                 
-                state.activeModule.isModified = true;
-                
-                // Update tab and sidebar
-                updateTabModifiedState(state.activeModule.name);
-                
-                // Auto-save to Excel
-                await saveModuleToExcel(state.activeModule);
-                
-                const actionType = isModification ? "modified" : "generated";
-                elements.prompt.value = ""; // Clear prompt
+            } else if (data.explanation && data.explanation.trim()) {
+                // No VBA code, just show the explanation
+                addMessage('assistant', data.explanation);
             } else {
-                throw new Error("No macro received");
+                throw new Error("No response received");
             }
             
         } catch (error) {
             console.error("Generation error:", error);
             
+            // Remove loading message
+            const loadingDiv = document.querySelector(`[data-message-id="${loadingMessage.id}"]`);
+            if (loadingDiv) loadingDiv.remove();
+            
+            // Show error in chat
+            let errorMessage = "Sorry, I encountered an error while generating the code.";
             if (error.message.includes("fetch")) {
-                console.error("Cannot connect to backend. Is Flask server running?");
+                errorMessage = "Cannot connect to the backend server. Please make sure the Flask server is running.";
             } else {
-                console.error(`Error: ${error.message}`);
+                errorMessage = `Error: ${error.message}`;
             }
+            
+            addMessage('assistant', errorMessage);
         } finally {
             elements.generateBtn.disabled = false;
         }
@@ -1001,12 +1175,6 @@ End Sub`;
     elements.generateBtn.addEventListener("click", generateMacro);
     elements.welcomeGenerate.addEventListener("click", showNewModuleModal);
     
-    // Run button event listener
-    if (elements.runBtn) {
-        elements.runBtn.addEventListener("click", runCurrentSubroutine);
-    } else {
-        console.error("Run button not found!");
-    }
 
     
     // Debug: Check if addModuleBtn exists
@@ -1054,16 +1222,48 @@ End Sub`;
         }
     });
     
+    // Auto-resize textarea function
+    function autoResizeTextarea(textarea) {
+        textarea.style.height = 'auto';
+        
+        // Calculate max height for 8 rows - text stops at bottom row boundary
+        const lineHeight = 1.4 * 13; // 1.4em * 13px font-size = 18.2px per line
+        const topPadding = 8; // Top padding
+        const bottomPadding = 40; // Keep original total height, but text stops at bottom row
+        const maxHeight = (lineHeight * 8) + topPadding + bottomPadding; // 8 full rows
+        
+        const newHeight = Math.min(textarea.scrollHeight, maxHeight);
+        textarea.style.height = newHeight + 'px';
+        
+        // Enable scrolling when at max height (row 9+)
+        if (textarea.scrollHeight > maxHeight) {
+            textarea.style.overflowY = 'auto';
+        } else {
+            textarea.style.overflowY = 'hidden';
+        }
+    }
+
+    // Auto-resize on input
+    elements.prompt.addEventListener('input', (e) => {
+        autoResizeTextarea(e.target);
+    });
+
     // Enter key in prompt - ChatGPT style behavior
     elements.prompt.addEventListener("keydown", (e) => {
         if (e.key === "Enter") {
             if (e.shiftKey) {
                 // Shift+Enter = new line (default behavior)
+                // Let it add the line, then resize
+                setTimeout(() => autoResizeTextarea(e.target), 0);
                 return;
             } else {
                 // Enter = send message
                 e.preventDefault();
                 generateMacro();
+                // Reset height after sending
+                setTimeout(() => {
+                    e.target.style.height = 'auto';
+                }, 0);
             }
         }
     });
@@ -1111,7 +1311,7 @@ End Sub`;
         const isCollapsed = sidebar.classList.toggle('collapsed');
         
         // Keep the same ChatGPT-style icon in both states
-        elements.toggleSidebarBtn.title = isCollapsed ? 'Expand Sidebar' : 'Collapse Sidebar';
+        elements.toggleSidebarBtn.title = isCollapsed ? 'Expand Explorer' : 'Collapse Explorer';
     }
     
     // Search input event listener
@@ -1143,6 +1343,17 @@ End Sub`;
     if (elements.toggleSidebarBtn) {
         elements.toggleSidebarBtn.addEventListener('click', toggleSidebar);
     }
+    
+    // Chat panel toggle event listener
+    if (elements.toggleChatBtn) {
+        elements.toggleChatBtn.addEventListener('click', toggleChatPanel);
+    }
+    
+    // Initialize chat resize functionality
+    initializeChatResize();
+    
+    // Initialize sidebar resize functionality
+    initializeSidebarResize();
     
     // Initialize
     initializeMonacoEditor();

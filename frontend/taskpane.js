@@ -1102,7 +1102,8 @@ End Sub`;
                     selectionRange: context.selectionRange,
                     activeModule: state.activeModule?.name || null,
                     sheetContext: sheetContext
-                }
+                },
+                conversation_history: state.conversation || []
             };
 
             const response = await fetch("http://localhost:5000/generate", {
@@ -1121,11 +1122,12 @@ End Sub`;
             const loadingDiv = document.querySelector(`[data-message-id="${loadingMessage.id}"]`);
             if (loadingDiv) loadingDiv.remove();
             
-            // Handle the separated VBA and explanation response
-            if (data.has_vba && data.vba_code) {
+            // Handle dual-agent responses
+            if (data.type === 'vba' && data.has_vba && data.vba_code) {
+                // VBA Agent response with code
                 const vbaCode = data.vba_code;
                 const explanation = data.explanation;
-                const isModification = context.hasSelection && data.context?.generationType === "modification";
+                const isModification = context.hasSelection && data.context?.generationType === 'vba_modification';
 
                 // Show explanation in chat if present
                 if (explanation && explanation.trim()) {
@@ -1142,8 +1144,17 @@ End Sub`;
                     addMessage('assistant', `⚠ ${insertionResult.message}`);
                 }
                 
+            } else if (data.type === 'conversation' || data.content) {
+                // Chat Agent response (conversational)
+                const content = data.content || data.explanation;
+                if (content && content.trim()) {
+                    addMessage('assistant', content);
+                } else {
+                    addMessage('assistant', 'I understood your message, but I'm not sure how to respond. Could you try rephrasing?');
+                }
+                
             } else if (data.explanation && data.explanation.trim()) {
-                // No VBA code, just show the explanation
+                // Fallback: Legacy format support
                 addMessage('assistant', data.explanation);
             } else {
                 throw new Error("No response received");

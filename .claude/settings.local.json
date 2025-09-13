@@ -7,7 +7,11 @@
       "Bash(if exist \"logs\" rmdir /s /q \"logs\")",
       "Bash(py -m py_compile:*)",
       "Bash(python:*)",
-      "Bash(where python py)"
+      "Bash(where python py)",
+      "Bash(git checkout:*)",
+      "Bash(git push:*)",
+      "Bash(mkdir:*)",
+      "Bash(git add:*)"
     ],
     "deny": [],
     "ask": []

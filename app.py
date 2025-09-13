@@ -6,10 +6,18 @@ import win32com.client
 import pythoncom
 import time
 
+# Import our new agent architecture
+from agents import IntentClassifier, ChatAgent, VBAAgent
+
 app = Flask(__name__)
 CORS(app)  # ✅ Allow requests from localhost:3000 (Add-in)
 
-# OpenAI client
+# Initialize agents
+intent_classifier = IntentClassifier()
+chat_agent = ChatAgent()
+vba_agent = VBAAgent()
+
+# Legacy OpenAI client (keeping for backward compatibility with existing endpoints)
 api_key = os.getenv("OPENAI_API_KEY") or "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"
 client = OpenAI(api_key=api_key)
 
@@ -475,33 +483,45 @@ def get_sheet_context_endpoint():
 
 @app.route("/generate", methods=["POST"])
 def generate():
-    data = request.json
-    prompt = data.get("prompt", "")
-    context = data.get("context", None)
-    
-    if not prompt:
-        return jsonify({"error": "No prompt provided"}), 400
+    """Enhanced generate endpoint using dual-agent architecture"""
+    try:
+        data = request.json
+        prompt = data.get("prompt", "")
+        context = data.get("context", None)
+        conversation_history = data.get("conversation_history", [])
+        
+        if not prompt:
+            return jsonify({"error": "No prompt provided"}), 400
 
-    
-    # Generate VBA with context awareness
-    ai_response = generate_vba(prompt, context)
-    
-    # Separate VBA code from explanatory text
-    separated = separate_vba_and_text(ai_response)
-    
-    
-    # Return enhanced response with separated VBA and explanation
-    response_data = {
-        "has_vba": separated["has_vba"],
-        "vba_code": separated["vba_code"],
-        "explanation": separated["explanation"],
-        "context": {
-            "hasSelection": context.get("hasSelection", False) if context else False,
-            "generationType": "modification" if (context and context.get("hasSelection")) else "generation"
+        # Step 1: Classify intent using Intent Classifier Agent
+        classification_result = intent_classifier.process(prompt, context, conversation_history)
+        intent = classification_result['intent']
+        
+        # Step 2: Route to appropriate agent based on intent
+        if intent in ['vba_generation', 'vba_modification']:
+            # Use VBA Agent for code generation/modification
+            response_data = vba_agent.process(prompt, context, conversation_history, intent)
+        else:
+            # Use Chat Agent for conversation/help
+            response_data = chat_agent.process(prompt, context, conversation_history)
+        
+        # Add classification metadata to response
+        response_data['classification'] = {
+            'intent': intent,
+            'confidence': classification_result.get('confidence', 'medium'),
+            'classifier': classification_result.get('classifier', 'keyword')
         }
-    }
-    
-    return jsonify(response_data)
+        
+        return jsonify(response_data)
+        
+    except Exception as e:
+        return jsonify({
+            "error": f"Generation failed: {str(e)}",
+            "type": "error",
+            "has_vba": False,
+            "vba_code": "",
+            "explanation": f"I encountered an error while processing your request: {str(e)}"
+        }), 500
 
 @app.route("/inject", methods=["POST"])
 def inject():

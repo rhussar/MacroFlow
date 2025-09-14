@@ -74,6 +74,7 @@ Office.onReady(() => {
         // Sidebar elements
         searchMacros: document.getElementById("searchMacros"),
         toggleSidebarBtn: document.getElementById("toggleSidebarBtn"),
+        themeToggleBtn: document.getElementById("themeToggleBtn"),
         sidebar: document.getElementById("sidebar"),
         // Chat panel elements
         chatPanel: document.getElementById("chatPanel"),
@@ -87,10 +88,14 @@ Office.onReady(() => {
         require.config({ paths: { vs: 'https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs' } });
         
         require(['vs/editor/editor.main'], function () {
+            // Get current theme for Monaco
+            const currentTheme = document.body.getAttribute('data-theme') || 'dark';
+            const monacoTheme = currentTheme === 'light' ? 'vs' : 'vs-dark';
+
             state.editor = monaco.editor.create(elements.monacoEditor, {
                 value: '// Select a module to start editing VBA code',
                 language: 'vb',
-                theme: 'vs-dark',
+                theme: monacoTheme,
                 automaticLayout: true,
                 minimap: { enabled: false },
                 fontSize: 13,
@@ -987,21 +992,82 @@ Office.onReady(() => {
     function hideNewModuleModal() {
         elements.moduleNameModal.classList.add("hidden");
         elements.moduleNameInput.value = "";
+        clearModalError('create');
     }
     
     // Create new module in Excel
+    // Validate module name according to VBA naming rules
+    function validateModuleName(name) {
+        // Check if empty
+        if (!name) {
+            return { valid: false, error: "Please enter a module name" };
+        }
+
+        // Check length (max 255 characters)
+        if (name.length > 255) {
+            return { valid: false, error: "Module name cannot exceed 255 characters" };
+        }
+
+        // Check first character is a letter
+        if (!/^[a-zA-Z]/.test(name)) {
+            return { valid: false, error: "Module name must start with a letter" };
+        }
+
+        // Check for invalid characters (space, ., !, @, &, $, #)
+        if (/[\s.!@&$#]/.test(name)) {
+            return { valid: false, error: "Module name cannot contain spaces or special characters (. ! @ & $ #)" };
+        }
+
+        // Check if it's a valid VBA identifier (letters, numbers, underscore only)
+        if (!/^[a-zA-Z][a-zA-Z0-9_]*$/.test(name)) {
+            return { valid: false, error: "Module name can only contain letters, numbers, and underscores" };
+        }
+
+        return { valid: true };
+    }
+
+    // Function to show error message in modal
+    function showModalError(modalId, message) {
+        const modal = modalId === 'create' ? elements.moduleNameModal : elements.renameModuleModal;
+        const existingError = modal.querySelector('.modal-error');
+
+        if (existingError) {
+            existingError.textContent = message;
+        } else {
+            const errorDiv = document.createElement('div');
+            errorDiv.className = 'modal-error';
+            errorDiv.textContent = message;
+            const modalContent = modal.querySelector('.modal-content');
+            const buttons = modal.querySelector('.modal-buttons');
+            modalContent.insertBefore(errorDiv, buttons);
+        }
+    }
+
+    // Function to clear error message
+    function clearModalError(modalId) {
+        const modal = modalId === 'create' ? elements.moduleNameModal : elements.renameModuleModal;
+        const existingError = modal.querySelector('.modal-error');
+        if (existingError) {
+            existingError.remove();
+        }
+    }
+
     async function createNewModule() {
         const name = elements.moduleNameInput.value.trim();
-        
-        if (!name) {
-            console.error("Please enter a module name");
+
+        // Clear any previous errors
+        clearModalError('create');
+
+        // Validate module name
+        const validation = validateModuleName(name);
+        if (!validation.valid) {
+            showModalError('create', validation.error);
             return;
         }
-        
-        
+
         // Check for duplicate names
         if (state.modules.some(m => m.name === name)) {
-            console.error("Module name already exists");
+            showModalError('create', "A module with this name already exists");
             return;
         }
         
@@ -1072,27 +1138,32 @@ End Sub`;
         elements.renameModuleModal.classList.add("hidden");
         elements.renameModuleInput.value = "";
         state.moduleToRename = null;
+        clearModalError('rename');
     }
     
     // Rename module by creating new one with new name and copying content
     async function renameModule() {
         const newName = elements.renameModuleInput.value.trim();
         const oldModule = state.moduleToRename;
-        
-        if (!newName) {
-            console.error("Please enter a module name");
+
+        // Clear any previous errors
+        clearModalError('rename');
+
+        // Validate module name
+        const validation = validateModuleName(newName);
+        if (!validation.valid) {
+            showModalError('rename', validation.error);
             return;
         }
-        
+
         if (newName === oldModule.name) {
             hideRenameModuleModal();
             return;
         }
-        
-        
+
         // Check for duplicate names
         if (state.modules.some(m => m.name === newName && m !== oldModule)) {
-            console.error("Module name already exists");
+            showModalError('rename', "A module with this name already exists");
             return;
         }
         
@@ -1806,14 +1877,49 @@ End Sub`;
                 hideNewModuleModal();
             }
         });
+
+        // Add real-time validation
+        elements.moduleNameInput.addEventListener("input", (e) => {
+            const value = e.target.value.trim();
+            if (value) {
+                const validation = validateModuleName(value);
+                if (!validation.valid) {
+                    showModalError('create', validation.error);
+                } else if (state.modules.some(m => m.name === value)) {
+                    showModalError('create', "A module with this name already exists");
+                } else {
+                    clearModalError('create');
+                }
+            } else {
+                clearModalError('create');
+            }
+        });
     }
-    
+
     if (elements.renameModuleInput) {
         elements.renameModuleInput.addEventListener("keydown", (e) => {
             if (e.key === "Enter") {
                 renameModule();
             } else if (e.key === "Escape") {
                 hideRenameModuleModal();
+            }
+        });
+
+        // Add real-time validation
+        elements.renameModuleInput.addEventListener("input", (e) => {
+            const value = e.target.value.trim();
+            const oldModule = state.moduleToRename;
+            if (value && oldModule) {
+                const validation = validateModuleName(value);
+                if (!validation.valid) {
+                    showModalError('rename', validation.error);
+                } else if (value !== oldModule.name && state.modules.some(m => m.name === value)) {
+                    showModalError('rename', "A module with this name already exists");
+                } else {
+                    clearModalError('rename');
+                }
+            } else {
+                clearModalError('rename');
             }
         });
     }
@@ -1951,9 +2057,51 @@ End Sub`;
     function toggleSidebar() {
         const sidebar = elements.sidebar;
         const isCollapsed = sidebar.classList.toggle('collapsed');
-        
+
         // Keep the same ChatGPT-style icon in both states
         elements.toggleSidebarBtn.title = isCollapsed ? 'Expand Explorer' : 'Collapse Explorer';
+    }
+
+    // Theme toggle functionality
+    function toggleTheme() {
+        const body = document.body;
+        const currentTheme = body.getAttribute('data-theme') || 'dark';
+        const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
+
+        body.setAttribute('data-theme', newTheme);
+
+        // Update icon based on theme
+        const themeIcon = elements.themeToggleBtn.querySelector('svg');
+        if (newTheme === 'light') {
+            // Show moon icon for light mode (user clicks to go dark)
+            themeIcon.innerHTML = `
+                <path d="M6 2.5A7.5 7.5 0 0 1 13.5 10c0 4.14-3.36 7.5-7.5 7.5A7.5 7.5 0 0 1 3.4 4.9c.82-.27 1.69-.4 2.6-.4Z" fill="currentColor" stroke="none"/>
+            `;
+            elements.themeToggleBtn.title = 'Switch to Dark Mode';
+        } else {
+            // Show sun icon for dark mode (user clicks to go light)
+            themeIcon.innerHTML = `
+                <circle cx="8" cy="8" r="3" fill="none" stroke="currentColor" stroke-width="1.2"/>
+                <line x1="8" y1="1" x2="8" y2="3" stroke="currentColor" stroke-width="1.2"/>
+                <line x1="8" y1="13" x2="8" y2="15" stroke="currentColor" stroke-width="1.2"/>
+                <line x1="15" y1="8" x2="13" y2="8" stroke="currentColor" stroke-width="1.2"/>
+                <line x1="3" y1="8" x2="1" y2="8" stroke="currentColor" stroke-width="1.2"/>
+                <line x1="12.24" y1="3.76" x2="10.83" y2="5.17" stroke="currentColor" stroke-width="1.2"/>
+                <line x1="5.17" y1="10.83" x2="3.76" y2="12.24" stroke="currentColor" stroke-width="1.2"/>
+                <line x1="12.24" y1="12.24" x2="10.83" y2="10.83" stroke="currentColor" stroke-width="1.2"/>
+                <line x1="5.17" y1="5.17" x2="3.76" y2="3.76" stroke="currentColor" stroke-width="1.2"/>
+            `;
+            elements.themeToggleBtn.title = 'Switch to Light Mode';
+        }
+
+        // Save theme preference
+        localStorage.setItem('macroflow-theme', newTheme);
+
+        // Update Monaco editor theme if it exists
+        if (state.editor) {
+            const monacoTheme = newTheme === 'light' ? 'vs' : 'vs-dark';
+            state.editor.updateOptions({ theme: monacoTheme });
+        }
     }
     
     // Search input event listener
@@ -1985,18 +2133,46 @@ End Sub`;
     if (elements.toggleSidebarBtn) {
         elements.toggleSidebarBtn.addEventListener('click', toggleSidebar);
     }
+
+    // Theme toggle event listener
+    if (elements.themeToggleBtn) {
+        elements.themeToggleBtn.addEventListener('click', toggleTheme);
+    }
     
     // Chat panel toggle event listener
     if (elements.toggleChatBtn) {
         elements.toggleChatBtn.addEventListener('click', toggleChatPanel);
     }
     
+    // Initialize theme
+    function initializeTheme() {
+        const savedTheme = localStorage.getItem('macroflow-theme') || 'dark';
+        document.body.setAttribute('data-theme', savedTheme);
+
+        // Update icon based on saved theme
+        if (elements.themeToggleBtn) {
+            const themeIcon = elements.themeToggleBtn.querySelector('svg');
+            if (savedTheme === 'light') {
+                // Show moon icon for light mode (user clicks to go dark)
+                themeIcon.innerHTML = `
+                    <path d="M6 2.5A7.5 7.5 0 0 1 13.5 10c0 4.14-3.36 7.5-7.5 7.5A7.5 7.5 0 0 1 3.4 4.9c.82-.27 1.69-.4 2.6-.4Z" fill="currentColor" stroke="none"/>
+                `;
+                elements.themeToggleBtn.title = 'Switch to Dark Mode';
+            } else {
+                elements.themeToggleBtn.title = 'Switch to Light Mode';
+            }
+        }
+    }
+
+    // Initialize theme first
+    initializeTheme();
+
     // Initialize chat resize functionality
     initializeChatResize();
-    
+
     // Initialize sidebar resize functionality
     initializeSidebarResize();
-    
+
     // Initialize
     initializeMonacoEditor();
     loadModules();

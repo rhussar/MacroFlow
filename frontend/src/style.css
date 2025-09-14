@@ -1,5 +1,54 @@
 /* MacroFlow AI - VSCode Style Layout */
 
+/* CSS Variables for Theme Colors */
+:root {
+    /* Dark Theme (Default) */
+    --bg-primary: #1e1e1e;
+    --bg-secondary: #252526;
+    --bg-tertiary: #2d2d30;
+    --bg-hover: #3e3e42;
+    --text-primary: #cccccc;
+    --text-secondary: #888888;
+    --text-muted: #6c6c6c;
+    --border-color: #3e3e42;
+    --accent-blue: #007acc;
+    --accent-green: #4caf50;
+    --accent-orange: #ff9800;
+    --accent-red: #f44336;
+    --shadow: rgba(0, 0, 0, 0.3);
+
+    /* Monaco Editor Theme Colors */
+    --editor-bg: #1e1e1e;
+    --editor-fg: #d4d4d4;
+    --editor-line-bg: #252526;
+    --editor-selection: #264f78;
+    --editor-gutter: #1e1e1e;
+}
+
+/* Light Theme */
+[data-theme="light"] {
+    --bg-primary: #ffffff;
+    --bg-secondary: #f3f3f3;
+    --bg-tertiary: #e8e8e8;
+    --bg-hover: #e0e0e0;
+    --text-primary: #333333;
+    --text-secondary: #666666;
+    --text-muted: #999999;
+    --border-color: #d0d0d0;
+    --accent-blue: #0078d4;
+    --accent-green: #107c10;
+    --accent-orange: #ff8c00;
+    --accent-red: #d13438;
+    --shadow: rgba(0, 0, 0, 0.1);
+
+    /* Monaco Editor Light Theme Colors */
+    --editor-bg: #ffffff;
+    --editor-fg: #000000;
+    --editor-line-bg: #f8f8f8;
+    --editor-selection: #add6ff;
+    --editor-gutter: #f5f5f5;
+}
+
 * {
     margin: 0;
     padding: 0;
@@ -9,9 +58,10 @@
 body {
     font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
     font-size: 13px;
-    background: #1e1e1e;
-    color: #cccccc;
+    background: var(--bg-primary);
+    color: var(--text-primary);
     overflow: hidden;
+    transition: background-color 0.2s ease, color 0.2s ease;
 }
 
 /* VSCode Layout */
@@ -19,7 +69,7 @@ body {
     height: 100vh;
     display: flex;
     flex-direction: column;
-    background: #1e1e1e;
+    background: var(--bg-primary);
 }
 
 /* Main Layout - 3 Column: Sidebar + Editor + Chat */
@@ -34,23 +84,26 @@ body {
     width: 180px;
     min-width: 180px;
     max-width: 400px;
-    background: #252526;
-    border-left: 1px solid #3e3e42;
+    background: var(--bg-secondary);
+    border-left: 1px solid var(--border-color);
     display: flex;
     flex-direction: column;
     overflow: hidden;
     position: relative;
+    transition: background-color 0.2s ease, border-color 0.2s ease;
 }
 
 .sidebar-header {
     padding: 8px 16px;
-    background: #2d2d30;
-    border-bottom: 1px solid #3e3e42;
+    background: var(--bg-tertiary);
+    border-bottom: 1px solid var(--border-color);
     display: flex;
     align-items: center;
+    justify-content: space-between;
     height: 35px;
     flex-shrink: 0;
     margin-bottom: 12px;
+    transition: background-color 0.2s ease, border-color 0.2s ease;
 }
 
 .sidebar-left-content {
@@ -68,26 +121,28 @@ body {
 .sidebar-title {
     font-size: 11px;
     font-weight: 600;
-    color: #888888;
+    color: var(--text-secondary);
     text-transform: uppercase;
     letter-spacing: 0.5px;
+    transition: color 0.2s ease;
 }
 
 .btn-icon {
     background: transparent;
     border: none;
-    color: #888888;
+    color: var(--text-secondary);
     padding: 4px;
     cursor: pointer;
     border-radius: 3px;
     display: flex;
     align-items: center;
     justify-content: center;
+    transition: background-color 0.2s ease, color 0.2s ease;
 }
 
 .btn-icon:hover {
-    background: #3e3e42;
-    color: #cccccc;
+    background: var(--bg-hover);
+    color: var(--text-primary);
 }
 
 /* Sidebar Sections */
@@ -116,7 +171,7 @@ body {
     width: 100%;
     background: transparent;
     border: none;
-    color: #cccccc;
+    color: var(--text-primary);
     padding: 6px 16px;
     margin-top: 12px;
     cursor: pointer;
@@ -125,7 +180,7 @@ body {
     justify-content: space-between;
     font-size: 13px;
     border-left: 3px solid transparent;
-    transition: all 0.1s;
+    transition: all 0.2s ease;
     border-radius: 0;
     text-align: left;
     font-family: inherit;
@@ -133,7 +188,7 @@ body {
 }
 
 .new-module-btn:hover {
-    background: #2a2d2e;
+    background: var(--bg-hover);
 }
 
 .new-module-btn .module-name {
@@ -161,14 +216,15 @@ body {
     border-left: 3px solid transparent;
     transition: all 0.1s;
     width: 100%;
-    color: #cccccc;
+    color: var(--text-primary);
     font-size: 13px;
     font-family: inherit;
     line-height: inherit;
+    transition: background-color 0.2s ease;
 }
 
 .search-container:hover {
-    background: #2a2d2e;
+    background: var(--bg-hover);
 }
 
 .search-container .module-name {
@@ -182,11 +238,11 @@ body {
     width: 100%;
     background: transparent;
     border: none;
-    color: #cccccc;
+    color: var(--text-primary);
     padding: 0;
     font-size: 13px;
     outline: none;
-    transition: all 0.1s;
+    transition: all 0.2s ease;
 }
 
 .search-input:focus {
@@ -194,11 +250,11 @@ body {
 }
 
 .search-input::placeholder {
-    color: #888888;
+    color: var(--text-secondary);
 }
 
 .search-icon {
-    color: #888888;
+    color: var(--text-secondary);
     pointer-events: none;
     width: 16px;
     height: 16px;
@@ -295,23 +351,23 @@ body {
     align-items: center;
     justify-content: space-between;
     font-size: 13px;
-    color: #cccccc;
+    color: var(--text-primary);
     border-left: 3px solid transparent;
-    transition: all 0.1s;
+    transition: all 0.2s ease;
 }
 
 .module-item:hover {
-    background: #2a2d2e;
+    background: var(--bg-hover);
 }
 
 .module-item.active {
-    background: #094771;
-    border-left-color: #007acc;
+    background: var(--accent-blue);
+    border-left-color: var(--accent-blue);
     color: #ffffff;
 }
 
 .module-item.loading {
-    color: #888888;
+    color: var(--text-secondary);
     font-style: italic;
     cursor: default;
 }
@@ -330,13 +386,13 @@ body {
     align-items: center;
     justify-content: center;
     cursor: pointer;
-    color: #888888;
-    transition: transform 0.15s ease;
+    color: var(--text-secondary);
+    transition: transform 0.15s ease, color 0.2s ease;
     user-select: none;
 }
 
 .module-item .expand-icon:hover {
-    color: #cccccc;
+    color: var(--text-primary);
 }
 
 .module-item.expanded .expand-icon {
@@ -417,9 +473,10 @@ body {
     flex: 1;
     display: flex;
     flex-direction: column;
-    background: #1e1e1e;
+    background: var(--bg-primary);
     overflow: hidden;
     position: relative;
+    transition: background-color 0.2s ease;
 }
 
 /* Chat Panel - Now on Left */
@@ -427,28 +484,30 @@ body {
     width: 300px;
     min-width: 200px;
     max-width: 500px;
-    background: #252526;
-    border-right: 1px solid #3e3e42;
+    background: var(--bg-secondary);
+    border-right: 1px solid var(--border-color);
     display: flex;
     flex-direction: column;
     overflow: hidden;
+    transition: background-color 0.2s ease, border-color 0.2s ease;
 }
 
 .chat-panel-header {
     padding: 8px 16px;
-    background: #2d2d30;
-    border-bottom: 1px solid #3e3e42;
+    background: var(--bg-tertiary);
+    border-bottom: 1px solid var(--border-color);
     display: flex;
     align-items: center;
     justify-content: space-between;
     height: 35px;
     flex-shrink: 0;
+    transition: background-color 0.2s ease, border-color 0.2s ease;
 }
 
 .chat-panel-title {
     font-size: 11px;
     font-weight: 600;
-    color: #888888;
+    color: var(--text-secondary);
     text-transform: uppercase;
     letter-spacing: 0.5px;
 }
@@ -478,14 +537,16 @@ body {
 .chat-welcome-content h3 {
     font-size: 16px;
     font-weight: 500;
-    color: #cccccc;
+    color: var(--text-primary);
     margin-bottom: 8px;
+    transition: color 0.2s ease;
 }
 
 .chat-welcome-content p {
     font-size: 13px;
-    color: #888888;
+    color: var(--text-secondary);
     line-height: 1.4;
+    transition: color 0.2s ease;
 }
 
 /* Cursor AI Style Messages */
@@ -513,9 +574,9 @@ body {
 .message.user .message-bubble {
     width: 100%;
     max-width: none;
-    background: #2d2d30;
-    border: 1px solid #3e3e42;
-    color: #cccccc;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    color: var(--text-primary);
     text-align: left;
     border-radius: 6px;
     padding: 12px 16px;
@@ -529,8 +590,9 @@ body {
     border: none;
     padding: 0;
     border-radius: 0;
-    color: #cccccc;
+    color: var(--text-primary);
     line-height: 1.6;
+    transition: color 0.2s ease;
 }
 
 /* Markdown formatting for AI responses */
@@ -561,13 +623,15 @@ body {
 }
 
 .message.assistant .message-bubble strong {
-    color: #ffffff;
+    color: var(--text-primary);
     font-weight: 600;
+    transition: color 0.2s ease;
 }
 
 .message.assistant .message-bubble .section-header {
     font-weight: 600;
-    color: #ffffff;
+    color: var(--text-primary);
+    transition: color 0.2s ease;
     margin: 16px 0 8px 0;
     font-size: 14px;
 }
@@ -583,10 +647,11 @@ body {
 
 /* Chat Input Section (Fixed at Bottom) */
 .chat-panel .chat-input-section {
-    background: #2d2d30;
-    border-top: 1px solid #3e3e42;
+    background: var(--bg-tertiary);
+    border-top: 1px solid var(--border-color);
     padding: 12px 16px;
     flex-shrink: 0;
+    transition: background-color 0.2s ease, border-color 0.2s ease;
 }
 
 
@@ -614,23 +679,23 @@ body {
     position: relative;
     display: flex;
     align-items: flex-end;
-    background: #1e1e1e;
-    border: 1px solid #3e3e42;
+    background: var(--bg-primary);
+    border: 1px solid var(--border-color);
     border-radius: 12px;
-    transition: border-color 0.2s ease;
+    transition: border-color 0.2s ease, background-color 0.2s ease, box-shadow 0.2s ease;
     margin: 0;
 }
 
 .chat-input-container:focus-within {
-    border-color: #007acc;
-    box-shadow: 0 0 0 1px #007acc;
+    border-color: var(--accent-blue);
+    box-shadow: 0 0 0 1px var(--accent-blue);
 }
 
 .chat-input-section textarea {
     flex: 1;
     background: transparent;
     border: none;
-    color: #cccccc;
+    color: var(--text-primary);
     padding: 8px 8px 40px 8px; /* Back to original bottom padding */
     font-size: 13px;
     font-family: inherit;
@@ -644,7 +709,7 @@ body {
 }
 
 .chat-input-section textarea::placeholder {
-    color: #888888;
+    color: var(--text-secondary);
 }
 
 /* Chat panel positioning for resize functionality */
@@ -656,10 +721,11 @@ body {
 /* Line Indicator */
 .line-indicator {
     font-size: 11px;
-    color: #cccccc;
-    background: #1e1e1e;
-    border: 1px solid #3e3e42;
+    color: var(--text-primary);
+    background: var(--bg-primary);
+    border: 1px solid var(--border-color);
     border-radius: 12px;
+    transition: color 0.2s ease, background-color 0.2s ease, border-color 0.2s ease;
     padding: 4px 10px;
     opacity: 0;
     transform: translateX(-10px);
@@ -754,41 +820,42 @@ body {
 
 /* Editor Tabs */
 .editor-tabs {
-    background: #2d2d30;
-    border-bottom: 1px solid #3e3e42;
+    background: var(--bg-tertiary);
+    border-bottom: 1px solid var(--border-color);
     display: flex;
     overflow-x: auto;
     flex-shrink: 0;
     height: 35px; /* Match sidebar header height */
+    transition: background-color 0.2s ease, border-color 0.2s ease;
 }
 
 .tab {
     padding: 6px 12px;
     background: transparent;
     border: none;
-    color: #888888;
+    color: var(--text-secondary);
     font-size: 12px;
     cursor: pointer;
-    border-right: 1px solid #3e3e42;
+    border-right: 1px solid var(--border-color);
     display: flex;
     align-items: center;
     gap: 6px;
     min-width: 100px;
     justify-content: space-between;
-    transition: all 0.1s;
+    transition: all 0.2s ease;
     height: 100%;
     user-select: none;
 }
 
 .tab:hover {
-    background: #2a2d2e;
-    color: #cccccc;
+    background: var(--bg-hover);
+    color: var(--text-primary);
 }
 
 .tab.active {
-    background: #1e1e1e;
-    color: #ffffff;
-    border-bottom: 2px solid #007acc;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    border-bottom: 2px solid var(--accent-blue);
 }
 
 .tab.dragging {
@@ -841,11 +908,12 @@ body {
     left: 0;
     width: 100%;
     height: 100%;
-    background: #1e1e1e;
+    background: var(--bg-primary);
     display: flex;
     align-items: center;
     justify-content: center;
     z-index: 1;
+    transition: background-color 0.2s ease;
 }
 
 .welcome-content {
@@ -857,14 +925,16 @@ body {
 .welcome-content h2 {
     font-size: 24px;
     font-weight: 300;
-    color: #cccccc;
+    color: var(--text-primary);
     margin-bottom: 16px;
+    transition: color 0.2s ease;
 }
 
 .welcome-content p {
-    color: #888888;
+    color: var(--text-secondary);
     line-height: 1.5;
     margin-bottom: 32px;
+    transition: color 0.2s ease;
 }
 
 .welcome-actions {
@@ -1010,51 +1080,79 @@ button:disabled {
 }
 
 .modal-content {
-    background: #2d2d30;
-    border: 1px solid #3e3e42;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
     border-radius: 6px;
     padding: 24px;
     min-width: 300px;
     max-width: 90%;
-    box-shadow: 0 8px 16px rgba(0, 0, 0, 0.5);
+    box-shadow: 0 8px 16px var(--shadow);
+    transition: background-color 0.2s ease, border-color 0.2s ease;
 }
 
 .modal-content h3 {
-    color: #cccccc;
+    color: var(--text-primary);
     margin-bottom: 16px;
     font-size: 16px;
     font-weight: 600;
+    transition: color 0.2s ease;
 }
 
 .modal-content label {
     display: block;
-    color: #cccccc;
+    color: var(--text-primary);
     margin-bottom: 8px;
     font-size: 13px;
+    transition: color 0.2s ease;
 }
 
 .modal-content input {
     width: 100%;
-    background: #1e1e1e;
-    border: 1px solid #3e3e42;
+    background: var(--bg-primary);
+    border: 1px solid var(--border-color);
     border-radius: 4px;
-    color: #cccccc;
+    color: var(--text-primary);
     padding: 8px 12px;
     font-size: 13px;
     font-family: inherit;
     outline: none;
     margin-bottom: 20px;
+    transition: background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease;
 }
 
 .modal-content input:focus {
-    border-color: #007acc;
-    box-shadow: 0 0 0 1px #007acc;
+    border-color: var(--accent-blue);
+    box-shadow: 0 0 0 1px var(--accent-blue);
 }
 
 .modal-buttons {
     display: flex;
     gap: 12px;
     justify-content: flex-end;
+}
+
+/* Modal error message */
+.modal-error {
+    color: var(--accent-red);
+    background: rgba(244, 67, 54, 0.1);
+    border: 1px solid var(--accent-red);
+    border-radius: 4px;
+    padding: 8px 12px;
+    margin-bottom: 16px;
+    font-size: 12px;
+    line-height: 1.4;
+    animation: shake 0.3s ease-in-out;
+}
+
+/* Light theme specific error styling */
+[data-theme="light"] .modal-error {
+    background: rgba(211, 52, 56, 0.1);
+}
+
+@keyframes shake {
+    0%, 100% { transform: translateX(0); }
+    25% { transform: translateX(-5px); }
+    75% { transform: translateX(5px); }
 }
 
 /* Animations */

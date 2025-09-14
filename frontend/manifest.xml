@@ -80,7 +80,7 @@
       <bt:ShortStrings>
         <bt:String id="MacroFlowTab.Label" DefaultValue="MacroFlow"/>
         <bt:String id="MacroFlowGroup.Label" DefaultValue="Build"/>
-        <bt:String id="OpenTaskpane.Label" DefaultValue="MacroFlow Editor"/>
+        <bt:String id="OpenTaskpane.Label" DefaultValue="Editor"/>
       </bt:ShortStrings>
 
       <bt:LongStrings>

@@ -13,6 +13,44 @@ Office.onReady(() => {
         chatCollapsed: false
     };
     
+    // State management for ribbon communication
+    function saveStateToStorage() {
+        try {
+            const stateToSave = {
+                activeModule: state.activeModule ? {
+                    name: state.activeModule.name,
+                    content: state.activeModule.content,
+                    isModified: state.activeModule.isModified
+                } : null,
+                modules: state.modules.map(module => ({
+                    name: module.name,
+                    content: module.content,
+                    isModified: module.isModified
+                })),
+                timestamp: Date.now()
+            };
+            localStorage.setItem('macroflow-state', JSON.stringify(stateToSave));
+        } catch (error) {
+            console.warn('Failed to save state to localStorage:', error);
+        }
+    }
+    
+    function loadStateFromStorage() {
+        try {
+            const savedState = localStorage.getItem('macroflow-state');
+            if (savedState) {
+                const parsed = JSON.parse(savedState);
+                // Only load if it's recent (within 1 hour)
+                if (Date.now() - parsed.timestamp < 3600000) {
+                    return parsed;
+                }
+            }
+        } catch (error) {
+            console.warn('Failed to load state from localStorage:', error);
+        }
+        return null;
+    }
+    
     // DOM elements
     const elements = {
         moduleList: document.getElementById("moduleList"),
@@ -107,8 +145,11 @@ Office.onReady(() => {
             timestamp: new Date()
         };
         
+        console.log('🔍 Adding message:', type, 'ID:', message.id);
         state.conversation.push(message);
         renderMessage(message);
+        console.log('📊 Total messages in DOM:', elements.chatMessages.children.length);
+        console.log('📊 User messages in DOM:', elements.chatMessages.querySelectorAll('.message.user').length);
         scrollToBottom();
     }
     
@@ -117,10 +158,14 @@ Office.onReady(() => {
         messageDiv.className = `message ${message.type}`;
         messageDiv.dataset.messageId = message.id;
         
-        // Simple message bubble without code blocks
+        // Render message content with proper formatting
+        const content = message.type === 'assistant' ? 
+            renderMarkdown(message.content) : 
+            escapeHtml(message.content);
+            
         const messageHTML = `
             <div class="message-bubble">
-                ${escapeHtml(message.content)}
+                ${content}
             </div>
             <div class="message-timestamp">
                 ${formatTimestamp(message.timestamp)}
@@ -148,8 +193,63 @@ Office.onReady(() => {
         return div.innerHTML;
     }
     
+    function renderMarkdown(text) {
+        // Simple markdown rendering for AI responses
+        let html = escapeHtml(text);
+        
+        // Convert **bold** to <strong>
+        html = html.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+        
+        // Convert • bullet points to proper list items
+        const lines = html.split('\n');
+        let result = [];
+        let inList = false;
+        
+        for (let line of lines) {
+            const trimmedLine = line.trim();
+            
+            if (trimmedLine.startsWith('•') || trimmedLine.startsWith('-')) {
+                if (!inList) {
+                    result.push('<ul>');
+                    inList = true;
+                }
+                const content = trimmedLine.substring(1).trim();
+                result.push(`<li>${content}</li>`);
+            } else if (trimmedLine.startsWith('**') && trimmedLine.endsWith('**')) {
+                // Handle standalone bold headers
+                if (inList) {
+                    result.push('</ul>');
+                    inList = false;
+                }
+                result.push(`<div class="section-header">${trimmedLine}</div>`);
+            } else {
+                if (inList) {
+                    result.push('</ul>');
+                    inList = false;
+                }
+                if (trimmedLine) {
+                    result.push(`<p>${trimmedLine}</p>`);
+                }
+            }
+        }
+        
+        if (inList) {
+            result.push('</ul>');
+        }
+        
+        return result.join('');
+    }
+    
     function scrollToBottom() {
-        elements.chatMessages.scrollTop = elements.chatMessages.scrollHeight;
+        // Use requestAnimationFrame for better timing with DOM updates
+        requestAnimationFrame(() => {
+            // Small delay to ensure DOM content is fully rendered
+            setTimeout(() => {
+                if (elements.chatMessages) {
+                    elements.chatMessages.scrollTop = elements.chatMessages.scrollHeight;
+                }
+            }, 10);
+        });
     }
     
     function toggleChatPanel() {
@@ -303,12 +403,55 @@ Office.onReady(() => {
         });
     }
     
+    // Helper function to generate next module name
+    function generateNextModuleName() {
+        // Find all existing module names that match the pattern ModuleN
+        const moduleNumbers = state.modules
+            .map(module => {
+                const match = module.name.match(/^Module(\d+)$/);
+                return match ? parseInt(match[1]) : 0;
+            })
+            .filter(num => num > 0);
+        
+        // Find the highest number, default to 0 if no modules exist
+        const maxNumber = moduleNumbers.length > 0 ? Math.max(...moduleNumbers) : 0;
+        
+        // Return the next number
+        return `Module${maxNumber + 1}`;
+    }
+    
+    // Smart function replacement for code modifications
+    function smartFunctionReplacement(originalCode, newCode) {
+        // Extract function name from the new code
+        const newFunctionMatch = newCode.match(/(?:Sub|Function)\s+(\w+)/i);
+        if (!newFunctionMatch) {
+            // If no function detected, append to existing code
+            return originalCode + "\n\n" + newCode;
+        }
+        
+        const functionName = newFunctionMatch[1];
+        
+        // Find and replace the existing function in original code
+        const functionPattern = new RegExp(
+            `(?:Private\\s+|Public\\s+)?(?:Sub|Function)\\s+${functionName}\\b.*?\\n(?:End\\s+(?:Sub|Function)\\b.*?\\n)`,
+            'gis'
+        );
+        
+        if (functionPattern.test(originalCode)) {
+            // Replace the existing function
+            return originalCode.replace(functionPattern, newCode + '\n');
+        } else {
+            // Function not found, append to existing code
+            return originalCode + "\n\n" + newCode;
+        }
+    }
+
     // Automatic VBA code insertion function
     async function insertVBACode(vbaCode, context, isModification = false) {
         try {
             // If no active module, create a new one
             if (!state.activeModule) {
-                const moduleName = `Generated${Date.now()}`;
+                const moduleName = generateNextModuleName();
                 try {
                     const createResponse = await fetch("http://localhost:5000/create-module", {
                         method: "POST",
@@ -351,6 +494,10 @@ Office.onReady(() => {
                         range: selection,
                         text: vbaCode
                     }]);
+                } else if (isModification && context.fullCode) {
+                    // Smart function replacement for modifications
+                    const modifiedCode = smartFunctionReplacement(context.fullCode, vbaCode);
+                    state.editor.setValue(modifiedCode);
                 } else if (context.cursorPosition) {
                     // Insert VBA code at cursor position
                     state.editor.executeEdits("auto-vba-insertion", [{
@@ -403,7 +550,7 @@ Office.onReady(() => {
             
             const data = await response.json();
             state.modules = data.modules || [];
-            
+            saveStateToStorage();
             
             renderModuleList();
             
@@ -562,6 +709,7 @@ Office.onReady(() => {
         if (state.activeModule === module) return;
         
         state.activeModule = module;
+        saveStateToStorage();
         
         // Hide welcome screen
         elements.welcomeScreen.classList.add("hidden");
@@ -769,8 +917,8 @@ Office.onReady(() => {
     // Show modal for new module name
     function showNewModuleModal() {
         
-        // Set default name
-        elements.moduleNameInput.value = `Module${state.modules.length + 1}`;
+        // Set default name using the same logic as automatic module creation
+        elements.moduleNameInput.value = generateNextModuleName();
         
         // Show modal
         elements.moduleNameModal.classList.remove("hidden");
@@ -959,6 +1107,82 @@ End Sub`;
     }
     
     // Get editor selection and context
+    // Extract VBA metadata from code
+    function extractVBAMetadata(code) {
+        const lines = code.split('\n');
+        const subroutines = [];
+        const functions = [];
+        const variables = [];
+        const comments = [];
+        
+        lines.forEach((line, index) => {
+            const trimmed = line.trim();
+            
+            // Extract Subroutines (Sub declarations)
+            const subMatch = trimmed.match(/^(Private\s+|Public\s+)?Sub\s+(\w+)/i);
+            if (subMatch) {
+                subroutines.push({
+                    name: subMatch[2],
+                    lineNumber: index + 1,
+                    visibility: subMatch[1] ? subMatch[1].trim() : 'Public',
+                    type: 'subroutine'
+                });
+            }
+            
+            // Extract Functions (Function declarations)
+            const funcMatch = trimmed.match(/^(Private\s+|Public\s+)?Function\s+(\w+)/i);
+            if (funcMatch) {
+                functions.push({
+                    name: funcMatch[2],
+                    lineNumber: index + 1,
+                    visibility: funcMatch[1] ? funcMatch[1].trim() : 'Public',
+                    type: 'function'
+                });
+            }
+            
+            // Extract Dim/Variable declarations
+            const varMatch = trimmed.match(/^(Dim|Private|Public)\s+(\w+)\s+As\s+(\w+)/i);
+            if (varMatch) {
+                variables.push({
+                    name: varMatch[2],
+                    dataType: varMatch[3],
+                    scope: varMatch[1],
+                    lineNumber: index + 1
+                });
+            }
+            
+            // Extract meaningful comments (not just apostrophes)
+            if (trimmed.startsWith("'") && trimmed.length > 5) {
+                comments.push({
+                    text: trimmed.substring(1).trim(),
+                    lineNumber: index + 1
+                });
+            }
+        });
+        
+        return {
+            subroutines: subroutines,
+            functions: functions,
+            procedures: [...subroutines, ...functions], // Combined for easy access
+            variables: variables,
+            comments: comments,
+            totalLines: lines.length,
+            currentSubroutine: null // Will be set based on cursor position if needed
+        };
+    }
+
+    // Get information about all available modules
+    function getModulesList() {
+        return state.modules.map(module => ({
+            name: module.name,
+            isActive: module === state.activeModule,
+            hasContent: module.content && module.content.trim().length > 0,
+            contentLength: module.content ? module.content.length : 0,
+            // Basic metadata without full parsing (for performance)
+            preview: module.content ? module.content.split('\n').slice(0, 3).join('\n') : ''
+        }));
+    }
+
     function getEditorContext() {
         if (!state.editor || !state.activeModule) {
             return {
@@ -989,13 +1213,17 @@ End Sub`;
             endColumn: model.getLineMaxColumn(endLine)
         });
 
+        const fullCode = model.getValue();
+        const moduleMetadata = extractVBAMetadata(fullCode);
+
         return {
             hasSelection: selectedText.length > 0,
             selectedText: selectedText,
             cursorPosition: position,
             surroundingCode: surroundingCode,
-            currentSubroutine: null,
-            fullCode: model.getValue(),
+            currentSubroutine: moduleMetadata.currentSubroutine,
+            fullCode: fullCode,
+            moduleMetadata: moduleMetadata,
             selectionRange: selection && !selection.isEmpty() ? {
                 startLine: selection.startLineNumber,
                 endLine: selection.endLineNumber,
@@ -1098,9 +1326,12 @@ End Sub`;
                     hasSelection: context.hasSelection,
                     selectedText: context.selectedText,
                     surroundingCode: context.surroundingCode,
-                    currentSubroutine: null,
+                    fullCode: context.fullCode,
+                    moduleMetadata: context.moduleMetadata,
+                    currentSubroutine: context.currentSubroutine,
                     selectionRange: context.selectionRange,
                     activeModule: state.activeModule?.name || null,
+                    availableModules: getModulesList(),
                     sheetContext: sheetContext
                 },
                 conversation_history: state.conversation || []
@@ -1120,9 +1351,19 @@ End Sub`;
             
             // Remove loading message
             const loadingDiv = document.querySelector(`[data-message-id="${loadingMessage.id}"]`);
-            if (loadingDiv) loadingDiv.remove();
+            if (loadingDiv) {
+                console.log('🗑️ Removing loading message ID:', loadingMessage.id);
+                console.log('📊 DOM children before loading removal:', elements.chatMessages.children.length);
+                console.log('📊 User messages before loading removal:', elements.chatMessages.querySelectorAll('.message.user').length);
+                loadingDiv.remove();
+                console.log('📊 DOM children after loading removal:', elements.chatMessages.children.length);
+                console.log('📊 User messages after loading removal:', elements.chatMessages.querySelectorAll('.message.user').length);
+                // Ensure chat stays scrolled to bottom after loading message removal
+                scrollToBottom();
+            }
             
             // Handle dual-agent responses
+            console.log('📨 Processing AI response, type:', data.type);
             if (data.type === 'vba' && data.has_vba && data.vba_code) {
                 // VBA Agent response with code
                 const vbaCode = data.vba_code;
@@ -1131,6 +1372,7 @@ End Sub`;
 
                 // Show explanation in chat if present
                 if (explanation && explanation.trim()) {
+                    console.log('💬 Adding VBA explanation message');
                     addMessage('assistant', explanation);
                 }
 
@@ -1146,11 +1388,12 @@ End Sub`;
                 
             } else if (data.type === 'conversation' || data.content) {
                 // Chat Agent response (conversational)
+                console.log('💬 Adding conversational response');
                 const content = data.content || data.explanation;
                 if (content && content.trim()) {
                     addMessage('assistant', content);
                 } else {
-                    addMessage('assistant', 'I understood your message, but I'm not sure how to respond. Could you try rephrasing?');
+                    addMessage('assistant', 'I understood your message, but I\'m not sure how to respond. Could you try rephrasing?');
                 }
                 
             } else if (data.explanation && data.explanation.trim()) {
@@ -1165,7 +1408,11 @@ End Sub`;
             
             // Remove loading message
             const loadingDiv = document.querySelector(`[data-message-id="${loadingMessage.id}"]`);
-            if (loadingDiv) loadingDiv.remove();
+            if (loadingDiv) {
+                loadingDiv.remove();
+                // Ensure chat stays scrolled to bottom after loading message removal
+                scrollToBottom();
+            }
             
             // Show error in chat
             let errorMessage = "Sorry, I encountered an error while generating the code.";
@@ -1178,60 +1425,96 @@ End Sub`;
             addMessage('assistant', errorMessage);
         } finally {
             elements.generateBtn.disabled = false;
+            console.log('✅ Request complete. Final DOM state:');
+            console.log('📊 Total messages in DOM:', elements.chatMessages.children.length);
+            console.log('📊 User messages in DOM:', elements.chatMessages.querySelectorAll('.message.user').length);
+            console.log('📊 Assistant messages in DOM:', elements.chatMessages.querySelectorAll('.message.assistant').length);
         }
     }
     
     
-    // Event listeners
-    elements.generateBtn.addEventListener("click", generateMacro);
-    elements.welcomeGenerate.addEventListener("click", showNewModuleModal);
+    // Event listeners - with safety checks
+    if (elements.generateBtn) {
+        elements.generateBtn.addEventListener("click", generateMacro);
+    } else {
+        console.error("Generate button not found!");
+    }
     
-
+    if (elements.welcomeGenerate) {
+        elements.welcomeGenerate.addEventListener("click", showNewModuleModal);
+    } else {
+        console.error("Welcome generate button not found!");
+    }
     
-    // Debug: Check if addModuleBtn exists
     if (elements.addModuleBtn) {
         elements.addModuleBtn.addEventListener("click", showNewModuleModal);
     } else {
         console.error("Add module button not found!");
     }
     
-    // Modal event listeners
-    elements.createModuleOk.addEventListener("click", createNewModule);
-    elements.createModuleCancel.addEventListener("click", hideNewModuleModal);
+    // Modal event listeners - with safety checks
+    if (elements.createModuleOk) {
+        elements.createModuleOk.addEventListener("click", createNewModule);
+    } else {
+        console.error("Create module OK button not found!");
+    }
+    
+    if (elements.createModuleCancel) {
+        elements.createModuleCancel.addEventListener("click", hideNewModuleModal);
+    } else {
+        console.error("Create module Cancel button not found!");
+    }
     
     // Rename modal event listeners
-    elements.renameModuleOk.addEventListener("click", renameModule);
-    elements.renameModuleCancel.addEventListener("click", hideRenameModuleModal);
+    if (elements.renameModuleOk) {
+        elements.renameModuleOk.addEventListener("click", renameModule);
+    } else {
+        console.error("Rename module OK button not found!");
+    }
     
-    // Close modal when clicking outside
-    elements.moduleNameModal.addEventListener("click", (e) => {
-        if (e.target === elements.moduleNameModal) {
-            hideNewModuleModal();
-        }
-    });
+    if (elements.renameModuleCancel) {
+        elements.renameModuleCancel.addEventListener("click", hideRenameModuleModal);
+    } else {
+        console.error("Rename module Cancel button not found!");
+    }
     
-    elements.renameModuleModal.addEventListener("click", (e) => {
-        if (e.target === elements.renameModuleModal) {
-            hideRenameModuleModal();
-        }
-    });
+    // Close modal when clicking outside - with safety checks
+    if (elements.moduleNameModal) {
+        elements.moduleNameModal.addEventListener("click", (e) => {
+            if (e.target === elements.moduleNameModal) {
+                hideNewModuleModal();
+            }
+        });
+    }
     
-    // Enter key in modal inputs
-    elements.moduleNameInput.addEventListener("keydown", (e) => {
-        if (e.key === "Enter") {
-            createNewModule();
-        } else if (e.key === "Escape") {
-            hideNewModuleModal();
-        }
-    });
+    if (elements.renameModuleModal) {
+        elements.renameModuleModal.addEventListener("click", (e) => {
+            if (e.target === elements.renameModuleModal) {
+                hideRenameModuleModal();
+            }
+        });
+    }
     
-    elements.renameModuleInput.addEventListener("keydown", (e) => {
-        if (e.key === "Enter") {
-            renameModule();
-        } else if (e.key === "Escape") {
-            hideRenameModuleModal();
-        }
-    });
+    // Enter key in modal inputs - with safety checks
+    if (elements.moduleNameInput) {
+        elements.moduleNameInput.addEventListener("keydown", (e) => {
+            if (e.key === "Enter") {
+                createNewModule();
+            } else if (e.key === "Escape") {
+                hideNewModuleModal();
+            }
+        });
+    }
+    
+    if (elements.renameModuleInput) {
+        elements.renameModuleInput.addEventListener("keydown", (e) => {
+            if (e.key === "Enter") {
+                renameModule();
+            } else if (e.key === "Escape") {
+                hideRenameModuleModal();
+            }
+        });
+    }
     
     // Auto-resize textarea function
     function autoResizeTextarea(textarea) {
@@ -1254,30 +1537,34 @@ End Sub`;
         }
     }
 
-    // Auto-resize on input
-    elements.prompt.addEventListener('input', (e) => {
-        autoResizeTextarea(e.target);
-    });
+    // Auto-resize on input - with safety check
+    if (elements.prompt) {
+        elements.prompt.addEventListener('input', (e) => {
+            autoResizeTextarea(e.target);
+        });
 
-    // Enter key in prompt - ChatGPT style behavior
-    elements.prompt.addEventListener("keydown", (e) => {
-        if (e.key === "Enter") {
-            if (e.shiftKey) {
-                // Shift+Enter = new line (default behavior)
-                // Let it add the line, then resize
-                setTimeout(() => autoResizeTextarea(e.target), 0);
-                return;
-            } else {
-                // Enter = send message
-                e.preventDefault();
-                generateMacro();
-                // Reset height after sending
-                setTimeout(() => {
-                    e.target.style.height = 'auto';
-                }, 0);
+        // Enter key in prompt - ChatGPT style behavior
+        elements.prompt.addEventListener("keydown", (e) => {
+            if (e.key === "Enter") {
+                if (e.shiftKey) {
+                    // Shift+Enter = new line (default behavior)
+                    // Let it add the line, then resize
+                    setTimeout(() => autoResizeTextarea(e.target), 0);
+                    return;
+                } else {
+                    // Enter = send message
+                    e.preventDefault();
+                    generateMacro();
+                    // Reset height after sending
+                    setTimeout(() => {
+                        e.target.style.height = 'auto';
+                    }, 0);
+                }
             }
-        }
-    });
+        });
+    } else {
+        console.error("Prompt textarea not found!");
+    }
     
     // Refresh modules button (hidden, for debugging)
     document.addEventListener("keydown", (e) => {
@@ -1371,3 +1658,67 @@ End Sub`;
     loadModules();
     
 });
+
+// Run Active Macro function (called from ribbon button)
+// This function must be in global scope for Office ExecuteFunction to access it
+window.runActiveMacro = async function(event) {
+    try {
+        // Check if there's an active module
+        if (!state.activeModule || !state.activeModule.content.trim()) {
+            // Show notification
+            await Excel.run(async (context) => {
+                context.application.showNotification("No Active Macro", "Please select a module with VBA code to run.");
+                await context.sync();
+            });
+            event.completed();
+            return;
+        }
+
+        // Extract the first subroutine from the active module
+        const vbaCode = state.activeModule.content;
+        const subMatch = vbaCode.match(/Sub\s+(\w+)/i);
+        
+        if (!subMatch) {
+            await Excel.run(async (context) => {
+                context.application.showNotification("No Subroutine Found", "The active module doesn't contain a valid Sub routine to execute.");
+                await context.sync();
+            });
+            event.completed();
+            return;
+        }
+
+        const subroutineName = subMatch[1];
+
+        // Run the macro using Excel's VBA execution
+        await Excel.run(async (context) => {
+            try {
+                // First ensure the module is saved to Excel
+                await saveModuleToExcel(state.activeModule);
+                
+                // Run the macro by calling the subroutine
+                const workbook = context.workbook;
+                workbook.evaluate(`Application.Run("${state.activeModule.name}.${subroutineName}")`);
+                await context.sync();
+                
+                // Show success notification
+                context.application.showNotification("Macro Executed", `Successfully ran ${subroutineName} from ${state.activeModule.name}`);
+                await context.sync();
+                
+            } catch (runError) {
+                console.error("Macro execution error:", runError);
+                context.application.showNotification("Execution Error", `Failed to run macro: ${runError.message || "Unknown error"}`);
+                await context.sync();
+            }
+        });
+
+    } catch (error) {
+        console.error("runActiveMacro error:", error);
+        await Excel.run(async (context) => {
+            context.application.showNotification("Error", `An error occurred: ${error.message || "Unknown error"}`);
+            await context.sync();
+        });
+    }
+    
+    // Signal that the function has completed
+    event.completed();
+};

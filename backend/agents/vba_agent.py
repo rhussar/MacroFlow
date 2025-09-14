@@ -26,7 +26,7 @@ class VBAAgent(BaseAgent):
         Returns:
             Customized system prompt
         """
-        base_prompt = "You are an expert VBA assistant for Excel. Return ONLY the VBA code without any explanations, markdown formatting, or additional text."
+        base_prompt = "You are an expert VBA assistant for Excel. Return ONLY clean, well-formatted VBA code without any explanations, markdown formatting, or additional text."
         
         if not context:
             return base_prompt
@@ -47,6 +47,53 @@ class VBAAgent(BaseAgent):
         
         return base_prompt
     
+    def _build_modification_instructions(self, context: Dict[str, Any], 
+                                      conversation_history: Optional[List[Dict]] = None) -> str:
+        """
+        Build specific instructions for code modification tasks
+        
+        Args:
+            context: Context with full code and metadata
+            conversation_history: Recent conversation for targeting
+            
+        Returns:
+            Additional system prompt instructions for modifications
+        """
+        instructions = "\n\nMODIFICATION INSTRUCTIONS:"
+        instructions += "\n- You MUST modify existing code, not add new functions"
+        instructions += "\n- Replace the ENTIRE existing function that needs modification"
+        instructions += "\n- Do NOT add new functions alongside existing ones"
+        instructions += "\n- Preserve all other functions exactly as they are"
+        
+        # Try to identify which function needs modification from conversation
+        target_function = None
+        if conversation_history:
+            recent_messages = conversation_history[-5:]  # Look at last 5 messages
+            for msg in recent_messages:
+                content = msg.get('content', '').lower()
+                # Look for function mentions
+                if 'customizesheet' in content:
+                    target_function = 'CustomizeSheet'
+                    break
+                # Look for other function patterns
+                import re
+                func_match = re.search(r'(function|sub)\s+(\w+)', content, re.IGNORECASE)
+                if func_match:
+                    target_function = func_match.group(2)
+                    break
+        
+        # Add function-specific targeting
+        if target_function:
+            instructions += f"\n- FOCUS ON MODIFYING THE {target_function} function specifically"
+            instructions += f"\n- Return ONLY the modified {target_function} function, not the entire module"
+        
+        # If we have metadata, list available functions
+        if context.get('moduleMetadata') and context['moduleMetadata'].get('procedures'):
+            procs = [p['name'] for p in context['moduleMetadata']['procedures'][:5]]
+            instructions += f"\n- Available functions to modify: {', '.join(procs)}"
+        
+        return instructions
+    
     def _build_vba_user_message(self, prompt: str, context: Optional[Dict[str, Any]] = None,
                               conversation_history: Optional[List[Dict]] = None) -> str:
         """
@@ -65,7 +112,7 @@ class VBAAgent(BaseAgent):
         if not context:
             return user_message
         
-        # Add code context
+        # Add code context - now with full module visibility
         if context.get("hasSelection") and context.get("selectedText"):
             user_message += f"\n\nSELECTED CODE TO WORK WITH:\n{context['selectedText']}"
             
@@ -73,7 +120,36 @@ class VBAAgent(BaseAgent):
                 user_message += f"\n\nSURROUNDING CONTEXT (for reference):\n{context['surroundingCode']}"
         
         elif context.get("surroundingCode"):
-            user_message += f"\n\nEXISTING CODE CONTEXT:\n{context['surroundingCode']}"
+            user_message += f"\n\nSURROUNDING CONTEXT:\n{context['surroundingCode']}"
+        
+        # Add full module code for comprehensive analysis (with size management)
+        if context.get("fullCode") and context["fullCode"].strip():
+            full_code = context["fullCode"]
+            # Basic size management - truncate very large modules
+            if len(full_code) > 8000:  # About 2000 tokens
+                lines = full_code.split('\n')
+                # Keep first 100 lines and add truncation note
+                truncated_code = '\n'.join(lines[:100])
+                user_message += f"\n\nFULL MODULE CODE (truncated - showing first 100 lines):\n{truncated_code}\n\n[Note: Module has {len(lines)} total lines, showing first 100 for analysis]"
+            else:
+                user_message += f"\n\nFULL MODULE CODE:\n{full_code}"
+        
+        # Add module metadata for better understanding
+        if context.get("moduleMetadata"):
+            metadata = context["moduleMetadata"]
+            if metadata.get("procedures"):
+                procedures_info = []
+                for proc in metadata["procedures"]:
+                    procedures_info.append(f"- {proc['type'].title()}: {proc['name']} (line {proc['lineNumber']})")
+                if procedures_info:
+                    user_message += f"\n\nMODULE PROCEDURES:\n" + "\n".join(procedures_info)
+            
+            if metadata.get("variables"):
+                vars_info = []
+                for var in metadata["variables"][:5]:  # Limit to first 5 variables
+                    vars_info.append(f"- {var['name']} As {var['dataType']} ({var['scope']})")
+                if vars_info:
+                    user_message += f"\n\nMODULE VARIABLES:\n" + "\n".join(vars_info)
         
         # Add module context
         if context.get("currentSubroutine"):
@@ -82,16 +158,31 @@ class VBAAgent(BaseAgent):
         if context.get("activeModule"):
             user_message += f"\n\nACTIVE MODULE: {context['activeModule']}"
         
+        # Add available modules context
+        if context.get("availableModules"):
+            modules_info = []
+            for module in context["availableModules"]:
+                status = "ACTIVE" if module["isActive"] else "available"
+                content_info = f"({module['contentLength']} chars)" if module["hasContent"] else "(empty)"
+                modules_info.append(f"- {module['name']} {status} {content_info}")
+            if modules_info:
+                user_message += f"\n\nAVAILABLE MODULES:\n" + "\n".join(modules_info)
+        
         # Add sheet context
         sheet_ctx = context.get("sheetContext")
         if sheet_ctx and not sheet_ctx.get("error"):
             user_message += self._format_sheet_context(sheet_ctx)
         
-        # Add recent conversation context for VBA generation
+        # Add recent conversation context for VBA generation/modification
         if conversation_history:
             recent_vba_context = self._extract_vba_context_from_history(conversation_history)
             if recent_vba_context:
                 user_message += f"\n\nRECENT CONTEXT: {recent_vba_context}"
+            
+            # For modifications, add specific discussion context
+            modification_context = self._extract_modification_context(conversation_history)
+            if modification_context:
+                user_message += f"\n\nMODIFICATION DISCUSSION: {modification_context}"
         
         return user_message
     
@@ -164,6 +255,30 @@ class VBAAgent(BaseAgent):
         
         return " | ".join(vba_context) if vba_context else ""
     
+    def _extract_modification_context(self, conversation_history: List[Dict]) -> str:
+        """Extract specific modification requests from conversation"""
+        # Look for recent modification discussions
+        recent_messages = conversation_history[-5:] if len(conversation_history) > 5 else conversation_history
+        modification_context = []
+        
+        for msg in recent_messages:
+            content = msg.get('content', '').lower()
+            msg_type = msg.get('type', '')
+            
+            # Look for specific modification requests
+            if 'turn gridlines on' in content or 'make it turn gridlines on' in content:
+                modification_context.append("User wants to turn gridlines ON (change False to True)")
+            elif 'turn gridlines off' in content:
+                modification_context.append("User wants to turn gridlines OFF (change True to False)")
+            elif 'customizesheet' in content and msg_type == 'assistant':
+                modification_context.append("Discussion about CustomizeSheet subroutine")
+            elif any(phrase in content for phrase in ['change', 'modify', 'update', 'fix']):
+                # Extract the change request
+                change_snippet = content[:100] + "..." if len(content) > 100 else content
+                modification_context.append(f"Change requested: {change_snippet}")
+        
+        return " | ".join(modification_context) if modification_context else ""
+    
     def _separate_vba_and_text(self, ai_response: str) -> Dict[str, Any]:
         """
         Separate VBA code from explanatory text in AI response
@@ -230,6 +345,10 @@ class VBAAgent(BaseAgent):
         """
         # Build system prompt based on context and intent
         system_prompt = self._build_vba_system_prompt(context, intent)
+        
+        # For modifications, add specific targeting instructions
+        if intent == 'vba_modification' and context and context.get('fullCode'):
+            system_prompt += self._build_modification_instructions(context, conversation_history)
         
         # Build enhanced user message with context
         user_message = self._build_vba_user_message(prompt, context, conversation_history)

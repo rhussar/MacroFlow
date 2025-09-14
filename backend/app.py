@@ -1,6 +1,5 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from openai import OpenAI
 import os
 import win32com.client
 import pythoncom
@@ -8,8 +7,10 @@ import time
 
 # Import our new agent architecture
 from agents import IntentClassifier, ChatAgent, VBAAgent
+from config import Config
 
 app = Flask(__name__)
+app.config.from_object(Config)
 CORS(app)  # ✅ Allow requests from localhost:3000 (Add-in)
 
 # Initialize agents
@@ -17,9 +18,13 @@ intent_classifier = IntentClassifier()
 chat_agent = ChatAgent()
 vba_agent = VBAAgent()
 
-# Legacy OpenAI client (keeping for backward compatibility with existing endpoints)
-api_key = os.getenv("OPENAI_API_KEY") or "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"
-client = OpenAI(api_key=api_key)
+
+# Global variable to track active module for ribbon functionality
+active_module_tracker = {
+    "name": None,
+    "content": None,
+    "last_updated": 0
+}
 
 # Simple cache for sheet context (to avoid repeated reads)
 sheet_context_cache = {
@@ -29,173 +34,8 @@ sheet_context_cache = {
 }
 
 
-def generate_vba(prompt, context=None):
-    # Build enhanced system prompt based on context
-    system_prompt = "You are an expert VBA assistant for Excel. Return ONLY the VBA code without any explanations, markdown formatting, or additional text."
-    
-    # Build user message with context
-    user_message = prompt
-    
-    if context:
-        # VBA Code Context
-        if context.get("hasSelection") and context.get("selectedText"):
-            # User has selected code - focus on modification/enhancement
-            system_prompt += " The user has selected specific code that they want you to work with. You can modify, enhance, or replace the selected code based on their request. Pay attention to the existing code structure and style."
-            user_message += f"\n\nSELECTED CODE TO WORK WITH:\n{context['selectedText']}"
-            
-            if context.get("surroundingCode"):
-                user_message += f"\n\nSURROUNDING CONTEXT (for reference):\n{context['surroundingCode']}"
-        
-        elif context.get("surroundingCode"):
-            # User is in a module with existing code - be context-aware
-            system_prompt += " The user is working in an existing VBA module. Generate code that integrates well with the existing code structure, follows the same naming conventions, and doesn't conflict with existing subroutines."
-            user_message += f"\n\nEXISTING CODE CONTEXT:\n{context['surroundingCode']}"
-        
-        if context.get("currentSubroutine"):
-            user_message += f"\n\nCURRENT SUBROUTINE: {context['currentSubroutine']}"
-        
-        if context.get("activeModule"):
-            user_message += f"\n\nACTIVE MODULE: {context['activeModule']}"
-        
-        # Sheet Context (NEW)
-        if context.get("sheetContext") and not context["sheetContext"].get("error"):
-            sheet_ctx = context["sheetContext"]
-            system_prompt += " You have access to the current Excel sheet's data and structure. Use this information to generate more relevant and data-aware VBA code."
-            
-            # Add sheet information
-            user_message += f"\n\n=== CURRENT EXCEL SHEET CONTEXT ==="
-            user_message += f"\nWorkbook: {sheet_ctx.get('workbook_name', 'Unknown')}"
-            user_message += f"\nActive Sheet: {sheet_ctx.get('sheet_name', 'Unknown')}"
-            user_message += f"\nSheet Type: {sheet_ctx.get('sheet_type', 'Unknown')}"
-            
-            # Add used range information
-            if sheet_ctx.get("used_range"):
-                used_range = sheet_ctx["used_range"]
-                user_message += f"\nUsed Range: {used_range['address']} ({used_range['rows']} rows × {used_range['columns']} columns)"
-            
-            # Add column headers
-            if sheet_ctx.get("column_headers"):
-                headers = sheet_ctx["column_headers"][:10]  # Limit to first 10
-                user_message += f"\nColumn Headers: {', '.join(headers)}"
-                if len(sheet_ctx["column_headers"]) > 10:
-                    user_message += f" (and {len(sheet_ctx['column_headers']) - 10} more...)"
-            
-            # Add data structure information
-            if sheet_ctx.get("data_structure"):
-                user_message += f"\n\nData Structure:"
-                for col_name, col_info in list(sheet_ctx["data_structure"].items())[:5]:  # Limit to 5 columns
-                    user_message += f"\n  - {col_name}: {col_info['type']}"
-                    if col_info.get("sample_values"):
-                        sample_str = ", ".join(str(v) for v in col_info["sample_values"][:2])
-                        user_message += f" (samples: {sample_str})"
-            
-            # Add named ranges
-            if sheet_ctx.get("named_ranges"):
-                ranges = [nr["name"] for nr in sheet_ctx["named_ranges"][:5]]
-                if ranges:
-                    user_message += f"\nNamed Ranges: {', '.join(ranges)}"
-            
-            # Add chart objects
-            if sheet_ctx.get("chart_objects"):
-                charts = [c["name"] for c in sheet_ctx["chart_objects"][:3]]
-                if charts:
-                    user_message += f"\nChart Objects: {', '.join(charts)}"
-            
-            # Add sample data (first few rows)
-            if sheet_ctx.get("data_sample") and len(sheet_ctx["data_sample"]) > 1:
-                user_message += f"\n\nSample Data (first few rows):"
-                headers = sheet_ctx.get("column_headers", [])
-                sample_rows = sheet_ctx["data_sample"][:4]  # Header + 3 data rows
-                
-                for i, row in enumerate(sample_rows):
-                    row_data = row[:5]  # First 5 columns only
-                    if i == 0 and headers:
-                        user_message += f"\n  Headers: {' | '.join(row_data)}"
-                    else:
-                        user_message += f"\n  Row {i}: {' | '.join(row_data)}"
-            
-            user_message += f"\n=== END SHEET CONTEXT ===\n"
-    
-    response = client.chat.completions.create(
-        model="gpt-4o",
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_message}
-        ],
-        temperature=0
-    )
-    return response.choices[0].message.content
 
-def extract_vba_code(text):
-    """Extract only VBA code from the response, removing any explanatory text."""
-    lines = text.split('\n')
-    vba_lines = []
-    in_vba_block = False
-    
-    for line in lines:
-        # Start collecting when we see 'Sub' or 'Function'
-        if line.strip().startswith(('Sub ', 'Function ', 'Private Sub ', 'Public Sub ', 'Private Function ', 'Public Function ')):
-            in_vba_block = True
-        
-        if in_vba_block:
-            vba_lines.append(line)
-            
-        # Stop collecting when we see 'End Sub' or 'End Function'
-        if line.strip() in ['End Sub', 'End Function']:
-            break
-    
-    # If we found VBA code, return it; otherwise return the original text
-    if vba_lines:
-        return '\n'.join(vba_lines)
-    return text
 
-def separate_vba_and_text(ai_response):
-    """Separate VBA code from explanatory text in AI response."""
-    lines = ai_response.split('\n')
-    vba_lines = []
-    text_lines = []
-    in_vba_block = False
-    vba_found = False
-    
-    i = 0
-    while i < len(lines):
-        line = lines[i].strip()
-        
-        # Check for VBA code block start
-        if line.startswith(('Sub ', 'Function ', 'Private Sub ', 'Public Sub ', 
-                          'Private Function ', 'Public Function ')):
-            in_vba_block = True
-            vba_found = True
-            vba_lines.append(lines[i])
-            
-        elif in_vba_block:
-            vba_lines.append(lines[i])
-            # Check for VBA code block end
-            if line in ['End Sub', 'End Function']:
-                in_vba_block = False
-                
-        else:
-            # This is explanatory text
-            # Skip empty lines at the beginning
-            if text_lines or line:
-                text_lines.append(lines[i])
-        
-        i += 1
-    
-    # Clean up text lines (remove excessive empty lines)
-    while text_lines and not text_lines[0].strip():
-        text_lines.pop(0)
-    while text_lines and not text_lines[-1].strip():
-        text_lines.pop()
-    
-    vba_code = '\n'.join(vba_lines) if vba_lines else ""
-    explanation = '\n'.join(text_lines) if text_lines else ""
-    
-    return {
-        "has_vba": vba_found,
-        "vba_code": vba_code,
-        "explanation": explanation
-    }
 
 def parse_subroutines_from_vba(content):
     """Parse subroutines and functions from VBA code."""
@@ -841,7 +681,63 @@ def run_subroutine():
         except:
             pass
 
+@app.route("/get-active-module", methods=["GET"])
+def get_active_module():
+    """Get the currently active module for ribbon functionality."""
+    try:
+        pythoncom.CoInitialize()
+        excel = win32com.client.Dispatch("Excel.Application")
+        
+        if not excel.Workbooks.Count:
+            return jsonify({"error": "No workbook is currently open"}), 400
+        
+        workbook = excel.ActiveWorkbook
+        
+        # Get all VBA modules
+        modules = []
+        try:
+            vba_project = workbook.VBProject
+            for component in vba_project.VBComponents:
+                if component.Type == 1:  # vbext_ct_StdModule
+                    module_content = component.CodeModule.Lines(1, component.CodeModule.CountOfLines)
+                    modules.append({
+                        "name": component.Name,
+                        "content": module_content
+                    })
+        except Exception as vba_error:
+            return jsonify({"error": "VBA project not accessible. Please enable 'Trust access to VBA project object model' in Excel Trust Center"}), 403
+        
+        if not modules:
+            return jsonify({"activeModule": None, "modules": []})
+        
+        # Return the first module with content, or just the first module
+        active_module = None
+        for module in modules:
+            if module["content"].strip():
+                active_module = module
+                break
+        
+        if not active_module and modules:
+            active_module = modules[0]
+        
+        return jsonify({
+            "activeModule": active_module,
+            "modules": modules
+        })
+        
+    except Exception as e:
+        return jsonify({"error": f"Server error: {str(e)}"}), 500
+    finally:
+        try:
+            pythoncom.CoUninitialize()
+        except:
+            pass
+
 if __name__ == "__main__":
-    app.run(host="localhost", port=5000, debug=True)
+    app.run(
+        host=app.config.get('HOST', 'localhost'), 
+        port=app.config.get('PORT', 5000), 
+        debug=app.config.get('DEBUG', True)
+    )
 
 

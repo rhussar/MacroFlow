@@ -2,14 +2,16 @@
   "name": "macroflow-ai",
   "version": "1.0.0",
   "description": "Generate VBA macros with AI",
-  "main": "AI-Frontend/taskpane.html",
+  "main": "taskpane.html",
   "scripts": {
-    "start": "office-addin-debugging start AI-Frontend/manifest.xml",
-    "stop": "office-addin-debugging stop AI-Frontend/manifest.xml",
+    "start": "cd .. && scripts\\sideload-production.bat",
+    "stop": "cd .. && scripts\\remove-sideload.bat",
+    "sideload": "cd .. && scripts\\sideload-production.bat",
+    "remove": "cd .. && scripts\\remove-sideload.bat",
     "build": "webpack --mode production",
     "dev": "webpack serve --mode development",
-    "validate": "office-addin-manifest validate AI-Frontend/manifest.xml",
-    "lint": "eslint AI-Frontend/*.js"
+    "validate": "office-addin-manifest validate manifest.xml",
+    "lint": "eslint *.js"
   },
   "dependencies": {
     "core-js": "^3.36.0",

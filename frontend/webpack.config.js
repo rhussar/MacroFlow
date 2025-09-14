@@ -11,7 +11,7 @@ module.exports = async (env, options) => {
     devtool: dev ? "eval-source-map" : "source-map",
     entry: {
       polyfill: ["core-js/stable", "regenerator-runtime/runtime"],
-      taskpane: ["./AI-Frontend/taskpane.js", "./AI-Frontend/style.css"]
+      taskpane: ["./src/taskpane.js", "./src/style.css"]
     },
     output: {
       path: path.resolve(__dirname, "dist"),
@@ -41,13 +41,13 @@ module.exports = async (env, options) => {
     plugins: [
       new HtmlWebpackPlugin({
         filename: "taskpane.html",
-        template: "./AI-Frontend/taskpane.html",
+        template: "./src/taskpane.html",
         chunks: ["polyfill", "taskpane"],
       }),
       new CopyWebpackPlugin({
         patterns: [
           {
-            from: "./AI-Frontend/manifest.xml",
+            from: "./manifest.xml",
             to: "manifest.xml",
             transform(content) {
               if (dev) {
@@ -56,6 +56,10 @@ module.exports = async (env, options) => {
                 return content.toString().replace(new RegExp(urlDev, "g"), urlProd);
               }
             },
+          },
+          {
+            from: "./assets",
+            to: "assets",
           },
         ],
       }),

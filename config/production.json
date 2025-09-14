@@ -1,0 +1,27 @@
+{
+  "environment": "production",
+  "debug": false,
+  "backend": {
+    "host": "0.0.0.0",
+    "port": 5000,
+    "cors_origins": ["https://your-domain.com"]
+  },
+  "frontend": {
+    "host": "0.0.0.0",
+    "port": 3000,
+    "https": true
+  },
+  "openai": {
+    "model": "gpt-4o",
+    "temperature": 0,
+    "max_tokens": 1500
+  },
+  "cache": {
+    "sheet_context_duration": 60,
+    "conversation_history_limit": 10
+  },
+  "logging": {
+    "level": "INFO",
+    "format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  }
+}

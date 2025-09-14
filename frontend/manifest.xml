@@ -7,12 +7,12 @@
 
   <Id>fba090d8-b4fc-4f86-a421-fa32126eda1a</Id>
   <Version>1.0.0.0</Version>
-  <ProviderName>MacroFlow AI</ProviderName>
+  <ProviderName>MacroFlow</ProviderName>
   <DefaultLocale>en-US</DefaultLocale>
-  <DisplayName DefaultValue="MacroFlow AI"/>
+  <DisplayName DefaultValue="MacroFlow"/>
   <Description DefaultValue="Generate VBA macros with AI"/>
-  <IconUrl DefaultValue="https://localhost:3000/icon-32.png"/>
-  <HighResolutionIconUrl DefaultValue="https://localhost:3000/icon-64.png"/>
+  <IconUrl DefaultValue="https://localhost:3000/assets/icons/icon-32.png"/>
+  <HighResolutionIconUrl DefaultValue="https://localhost:3000/assets/icons/icon-64.png"/>
   <SupportUrl DefaultValue="https://github.com/macroflow-ai"/>
 
   <AppDomains>
@@ -24,7 +24,7 @@
   </Hosts>
 
   <DefaultSettings>
-    <SourceLocation DefaultValue="https://localhost:3000/taskpane.html"/>
+    <SourceLocation DefaultValue="https://localhost:3000/src/taskpane.html"/>
   </DefaultSettings>
 
   <Permissions>ReadWriteDocument</Permissions>
@@ -68,19 +68,19 @@
 
     <Resources>
       <bt:Images>
-        <bt:Image id="Icon.16x16" DefaultValue="https://localhost:3000/icon-16.png"/>
-        <bt:Image id="Icon.32x32" DefaultValue="https://localhost:3000/icon-32.png"/>
-        <bt:Image id="Icon.80x80" DefaultValue="https://localhost:3000/icon-80.png"/>
+        <bt:Image id="Icon.16x16" DefaultValue="https://localhost:3000/assets/icons/icon-16.png"/>
+        <bt:Image id="Icon.32x32" DefaultValue="https://localhost:3000/assets/icons/icon-32.png"/>
+        <bt:Image id="Icon.80x80" DefaultValue="https://localhost:3000/assets/icons/icon-80.png"/>
       </bt:Images>
 
       <bt:Urls>
-        <bt:Url id="Taskpane.Url" DefaultValue="https://localhost:3000/taskpane.html"/>
+        <bt:Url id="Taskpane.Url" DefaultValue="https://localhost:3000/src/taskpane.html"/>
       </bt:Urls>
 
       <bt:ShortStrings>
-        <bt:String id="MacroFlowTab.Label" DefaultValue="MacroFlow AI"/>
-        <bt:String id="MacroFlowGroup.Label" DefaultValue="AI Tools"/>
-        <bt:String id="OpenTaskpane.Label" DefaultValue="Open MacroFlow"/>
+        <bt:String id="MacroFlowTab.Label" DefaultValue="MacroFlow"/>
+        <bt:String id="MacroFlowGroup.Label" DefaultValue="Build"/>
+        <bt:String id="OpenTaskpane.Label" DefaultValue="MacroFlow Editor"/>
       </bt:ShortStrings>
 
       <bt:LongStrings>

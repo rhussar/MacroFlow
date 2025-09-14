@@ -38,6 +38,16 @@ class IntentClassifier(BaseAgent):
                 r'\b(error|bug|issue|problem)\b.*\b(in|with)\b',
                 r'\b(change|modify|update|edit)\b.*\b(code|macro|function)\b',
                 r'\b(add|remove|delete)\b.*\b(to|from)\b.*\b(code|function)\b',
+                
+                # Follow-up modification requests (crucial for "do it for me" scenarios)
+                r'\b(do it|make the change|apply|implement|update)\b.*\b(for me|please|now)\b',
+                r'^(do it|make it|change it|update it|fix it)(\s+for me|\s+please|$)',
+                r'\b(go ahead|please do|make that change)\b',
+                r'\b(apply that|implement that|do that change)\b',
+                
+                # Direct modification commands
+                r'\b(turn\s+(on|off)|enable|disable|set\s+to)\b.*\b(gridlines|formatting|option)\b',
+                r'\b(make\s+it|change\s+it\s+to|set\s+it\s+to)\b',
             ],
             
             'conversation': [
@@ -49,6 +59,11 @@ class IntentClassifier(BaseAgent):
                 r'\b(what|how|why|when|where|can|will|does|is)\b',
                 r'\b(explain|tell me|show me|help)\b',
                 r'\b(understand|know|learn)\b',
+                
+                # Code discussion and explanation (when code exists)
+                r'\b(what does.*do|explain.*code|describe.*function)\b',
+                r'\b(this (module|code|function|sub|macro))\b',
+                r'\b(analyze|review|look at|check)\b.*\b(code|module)\b',
                 
                 # MacroFlow-specific help
                 r'\b(macroflow|this tool|this app|this program)\b',
@@ -63,7 +78,8 @@ class IntentClassifier(BaseAgent):
             ]
         }
     
-    def _keyword_classify(self, prompt: str, context: Optional[Dict[str, Any]] = None) -> str:
+    def _keyword_classify(self, prompt: str, context: Optional[Dict[str, Any]] = None, 
+                        conversation_history: Optional[List[Dict]] = None) -> str:
         """
         Classify intent using keyword patterns
         
@@ -76,14 +92,57 @@ class IntentClassifier(BaseAgent):
         """
         prompt_lower = prompt.lower()
         
-        # Check for code modification context (user has selected code)
-        if context and context.get('hasSelection') and context.get('selectedText'):
-            # If user has selected code, likely wants modification
-            for pattern in self.intent_patterns['vba_modification']:
+        # Check conversation history for recent code discussions
+        discussed_code_recently = False
+        if conversation_history:
+            recent_messages = conversation_history[-3:]  # Last 3 messages
+            for msg in recent_messages:
+                content = msg.get('content', '').lower()
+                if any(word in content for word in ['function', 'sub', 'macro', 'code', 'vba']):
+                    discussed_code_recently = True
+                    break
+        
+        # Enhanced context-aware classification
+        has_code = False
+        if context:
+            # Check if user has selected code or module has content
+            if context.get('hasSelection') and context.get('selectedText'):
+                has_code = True
+                # If user has selected code, likely wants modification
+                for pattern in self.intent_patterns['vba_modification']:
+                    if re.search(pattern, prompt_lower, re.IGNORECASE):
+                        return 'vba_modification'
+                # Check for conversation patterns when code exists
+                for pattern in self.intent_patterns['conversation']:
+                    if re.search(pattern, prompt_lower, re.IGNORECASE):
+                        return 'conversation'
+                # Default to VBA generation if code selected but no clear intent
+                return 'vba_generation'
+            
+            # Check if current module has code content
+            elif context.get('fullCode') and context['fullCode'].strip():
+                has_code = True
+                
+                # Check for modification requests when code exists
+                for pattern in self.intent_patterns['vba_modification']:
+                    if re.search(pattern, prompt_lower, re.IGNORECASE):
+                        return 'vba_modification'
+                
+                # When discussing existing code, prioritize conversation
+                for pattern in self.intent_patterns['conversation']:
+                    if re.search(pattern, prompt_lower, re.IGNORECASE):
+                        return 'conversation'
+        
+        # Special handling for "do it for me" type requests when code was discussed recently
+        if discussed_code_recently:
+            simple_action_patterns = [
+                r'^(do it|make it|change it|update it|fix it)(\s+for me|\s+please|$)',
+                r'^(go ahead|please do|apply that|implement that)$',
+                r'^(yes|ok|okay)\s*(do it|please|for me)$'
+            ]
+            for pattern in simple_action_patterns:
                 if re.search(pattern, prompt_lower, re.IGNORECASE):
                     return 'vba_modification'
-            # Even without modification keywords, selected code suggests VBA work
-            return 'vba_generation'
         
         # Score each intent based on pattern matches
         intent_scores = {}
@@ -125,10 +184,19 @@ Respond with ONLY the classification category, nothing else."""
         user_message = f"User input: {prompt}"
         
         if context:
+            context_info = []
             if context.get('hasSelection'):
-                user_message += "\nContext: User has selected code in the editor"
+                context_info.append("User has selected code in the editor")
             if context.get('activeModule'):
-                user_message += f"\nContext: User is working in module '{context['activeModule']}'"
+                context_info.append(f"User is working in module '{context['activeModule']}'")
+            if context.get('fullCode') and context['fullCode'].strip():
+                context_info.append("Current module contains existing VBA code")
+            if context.get('moduleMetadata') and context['moduleMetadata'].get('procedures'):
+                proc_count = len(context['moduleMetadata']['procedures'])
+                context_info.append(f"Module has {proc_count} procedures")
+            
+            if context_info:
+                user_message += f"\nContext: {' | '.join(context_info)}"
         
         messages = [
             {"role": "system", "content": system_prompt},
@@ -158,8 +226,8 @@ Respond with ONLY the classification category, nothing else."""
         Returns:
             Dictionary with intent classification and confidence
         """
-        # Primary classification using keywords
-        intent = self._keyword_classify(prompt, context)
+        # Primary classification using keywords with conversation history
+        intent = self._keyword_classify(prompt, context, conversation_history)
         
         # Add confidence scoring
         confidence = 'high' if intent in ['vba_generation', 'vba_modification'] else 'medium'

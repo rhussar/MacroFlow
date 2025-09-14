@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8" />
+    <title>MacroFlow AI Debug</title>
+    <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
+    <style>
+        body { font-family: Arial, sans-serif; padding: 20px; }
+        button { padding: 10px 20px; margin: 10px 0; display: block; }
+        #log { background: #f0f0f0; padding: 10px; max-height: 400px; overflow-y: auto; }
+    </style>
+</head>
+<body>
+    <h1>MacroFlow Debug</h1>
+    <button id="testBtn">Test Button</button>
+    <button id="generateBtn">Generate Button</button>
+    <button id="addModuleBtn">Add Module Button</button>
+    <div id="log"></div>
+    
+    <script>
+        function log(message) {
+            const logDiv = document.getElementById('log');
+            logDiv.innerHTML += '<div>' + new Date().toLocaleTimeString() + ': ' + message + '</div>';
+            console.log(message);
+        }
+        
+        log('Script starting...');
+        
+        Office.onReady(() => {
+            log('Office.onReady called');
+            
+            // Test basic button functionality
+            const testBtn = document.getElementById('testBtn');
+            const generateBtn = document.getElementById('generateBtn'); 
+            const addModuleBtn = document.getElementById('addModuleBtn');
+            
+            log('Elements found: testBtn=' + !!testBtn + ', generateBtn=' + !!generateBtn + ', addModuleBtn=' + !!addModuleBtn);
+            
+            if (testBtn) {
+                testBtn.addEventListener('click', () => {
+                    log('Test button clicked!');
+                    alert('Test button works!');
+                });
+                log('Test button event listener added');
+            }
+            
+            if (generateBtn) {
+                generateBtn.addEventListener('click', () => {
+                    log('Generate button clicked!');
+                    alert('Generate button works!');
+                });
+                log('Generate button event listener added');
+            }
+            
+            if (addModuleBtn) {
+                addModuleBtn.addEventListener('click', () => {
+                    log('Add module button clicked!');
+                    alert('Add module button works!');
+                });
+                log('Add module button event listener added');
+            }
+            
+            log('All event listeners set up');
+        });
+        
+        log('Script loaded');
+    </script>
+</body>
+</html>

@@ -27,19 +27,44 @@ class VBAAgent(BaseAgent):
             Customized system prompt
         """
         base_prompt = "You are an expert VBA assistant for Excel. Return ONLY clean, well-formatted VBA code without any explanations, markdown formatting, or additional text."
-        
+
+        # Always add unique naming requirements
+        base_prompt += "\n\nIMPORTANT NAMING RULES:"
+        base_prompt += "\n- ALWAYS generate descriptive, relevant subroutine names based on the requested functionality"
+        base_prompt += "\n- NEVER use generic names like 'Module1Macro', 'Macro1', or 'TestSub'"
+        base_prompt += "\n- Examples of good names: 'FormatSalesReport', 'CalculateMonthlyTotals', 'ImportCustomerData'"
+        base_prompt += "\n- Check existing subroutines and ensure your new subroutine names are COMPLETELY UNIQUE"
+
         if not context:
             return base_prompt
-        
-        # Add context-specific instructions
-        if context.get("hasSelection") and context.get("selectedText"):
+
+        # Add existing subroutines context for unique naming
+        if context.get("moduleMetadata") and context["moduleMetadata"].get("procedures"):
+            existing_names = [proc["name"] for proc in context["moduleMetadata"]["procedures"]]
+            if existing_names:
+                base_prompt += f"\n- EXISTING SUBROUTINE NAMES TO AVOID: {', '.join(existing_names)}"
+
+        # Add context-specific instructions based on user's editing context
+        if context.get("currentSubroutine") and intent == 'vba_modification':
+            # User's cursor is inside an existing subroutine - this is the key scenario to fix
+            current_sub = context["currentSubroutine"]
+            base_prompt += f"\n\nCRITICAL: The user is editing inside the existing subroutine '{current_sub['name']}'. This is a MODIFICATION request."
+            base_prompt += f"\n\nMODIFICATION RULES FOR '{current_sub['name']}':"
+            base_prompt += f"\n- You MUST modify the existing '{current_sub['name']}' subroutine, NOT create a new one"
+            base_prompt += f"\n- Return the COMPLETE modified '{current_sub['name']}' subroutine with your changes integrated"
+            base_prompt += f"\n- Keep the same subroutine name: '{current_sub['name']}'"
+            base_prompt += f"\n- Preserve the existing code structure and add/modify as requested"
+            base_prompt += f"\n- DO NOT create any new subroutines or functions"
+            base_prompt += f"\n\nCURRENT SUBROUTINE TO MODIFY:\n{current_sub.get('content', '')}"
+
+        elif context.get("hasSelection") and context.get("selectedText"):
             if intent == 'vba_modification':
-                base_prompt += " The user has selected specific code that they want you to modify, enhance, or fix. Pay attention to the existing code structure and style. Maintain compatibility with the surrounding code."
+                base_prompt += "\n\nThe user has selected specific code that they want you to modify, enhance, or fix. Pay attention to the existing code structure and style. Maintain compatibility with the surrounding code."
             else:
-                base_prompt += " The user has selected code as a reference. You can modify, enhance, or replace the selected code based on their request. Pay attention to the existing code structure and style."
-        
+                base_prompt += "\n\nThe user has selected code as a reference. You can modify, enhance, or replace the selected code based on their request. Pay attention to the existing code structure and style."
+
         elif context.get("surroundingCode"):
-            base_prompt += " The user is working in an existing VBA module. Generate code that integrates well with the existing code structure, follows the same naming conventions, and doesn't conflict with existing subroutines."
+            base_prompt += "\n\nThe user is working in an existing VBA module. Generate code that integrates well with the existing code structure, follows the same naming conventions, and doesn't conflict with existing subroutines."
         
         # Add sheet context awareness
         if context.get("sheetContext") and not context["sheetContext"].get("error"):
@@ -68,15 +93,11 @@ class VBAAgent(BaseAgent):
         # Try to identify which function needs modification from conversation
         target_function = None
         if conversation_history:
+            import re
             recent_messages = conversation_history[-5:]  # Look at last 5 messages
             for msg in recent_messages:
                 content = msg.get('content', '').lower()
-                # Look for function mentions
-                if 'customizesheet' in content:
-                    target_function = 'CustomizeSheet'
-                    break
-                # Look for other function patterns
-                import re
+                # Look for function patterns in conversation
                 func_match = re.search(r'(function|sub)\s+(\w+)', content, re.IGNORECASE)
                 if func_match:
                     target_function = func_match.group(2)

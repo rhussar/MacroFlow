@@ -105,7 +105,38 @@ class IntentClassifier(BaseAgent):
         # Enhanced context-aware classification
         has_code = False
         if context:
-            # Check if user has selected code or module has content
+            # Priority 1: Check if cursor is inside existing subroutine (strongest modification signal)
+            if context.get('isInsideSubroutine') or context.get('currentSubroutine'):
+                # Cursor inside existing function strongly suggests modification intent
+                # Check for modification patterns OR general requests that could modify existing code
+                modification_indicators = [
+                    r'\b(add|change|modify|update|fix|improve|enhance|optimize)\b',
+                    r'\b(make it|make this|change it to|set it to|turn on|turn off)\b',
+                    r'\b(include|exclude|remove|delete|insert)\b',
+                    r'\b(handle|check|validate|ensure)\b',  # Common modification requests
+                    r'\b(make.*where|change.*to|set.*to)\b',  # Broader "make" patterns
+                    r'^(make|change|set|add|remove|delete|fix|update|modify)',  # Start of sentence patterns
+                ]
+
+                # If cursor is inside subroutine, be very aggressive about detecting modifications
+                for pattern in modification_indicators:
+                    if re.search(pattern, prompt_lower, re.IGNORECASE):
+                        return 'vba_modification'
+
+                # If cursor is inside subroutine, also check standard modification patterns
+                for pattern in self.intent_patterns['vba_modification']:
+                    if re.search(pattern, prompt_lower, re.IGNORECASE):
+                        return 'vba_modification'
+
+                # AGGRESSIVE: If cursor is inside subroutine and prompt is short (< 10 words)
+                # and contains action words, assume modification
+                word_count = len(prompt_lower.split())
+                if word_count <= 10:
+                    action_words = ['make', 'change', 'add', 'set', 'put', 'use', 'get', 'take', 'move', 'do']
+                    if any(word in prompt_lower.split() for word in action_words):
+                        return 'vba_modification'
+
+            # Priority 2: Check if user has selected code (medium modification signal)
             if context.get('hasSelection') and context.get('selectedText'):
                 has_code = True
                 # If user has selected code, likely wants modification

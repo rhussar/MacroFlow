@@ -178,12 +178,17 @@ npm run lint           # ESLint checks
 
 ## 🔧 Configuration
 
-### Environment Variables (.env)
+### Environment Variables
+**Required:** Set your OpenAI API key as an environment variable:
 ```bash
-# OpenAI Configuration
-OPENAI_API_KEY=your_openai_api_key_here
+# Windows
+set OPENAI_API_KEY=your_openai_api_key_here
 
-# Environment
+# macOS/Linux
+export OPENAI_API_KEY=your_openai_api_key_here
+
+# Or create .env file in backend/ directory
+OPENAI_API_KEY=your_openai_api_key_here
 FLASK_ENV=development
 
 # Server Configuration

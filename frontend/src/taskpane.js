@@ -103,10 +103,14 @@ Office.onReady(() => {
                 matchBrackets: 'always',
                 wordWrap: 'on',
                 contextmenu: true,
-                selectOnLineNumbers: true
+                selectOnLineNumbers: true,
+                glyphMargin: true,  // Enable glyph margin for run buttons
+                lineNumbersMinChars: 2,  // Minimize line number width even more
+                glyphMarginWidth: 18  // Set narrower glyph margin width
             });
             
             // Listen for content changes
+            let updateTimeout = null;
             state.editor.onDidChangeModelContent(() => {
                 updateActionButtons();
                 if (state.activeModule) {
@@ -120,6 +124,15 @@ Office.onReady(() => {
                             saveModuleToExcel(state.activeModule);
                         }
                     }, 2000);
+
+                    // Update subroutines with debouncing
+                    clearTimeout(updateTimeout);
+                    updateTimeout = setTimeout(() => {
+                        const metadata = extractVBAMetadata(state.activeModule.content);
+                        state.activeModule.subroutines = metadata.subroutines;
+                        renderModuleList();
+                        updateRunButtons();
+                    }, 500);
                 }
             });
 
@@ -145,11 +158,8 @@ Office.onReady(() => {
             timestamp: new Date()
         };
         
-        console.log('🔍 Adding message:', type, 'ID:', message.id);
         state.conversation.push(message);
         renderMessage(message);
-        console.log('📊 Total messages in DOM:', elements.chatMessages.children.length);
-        console.log('📊 User messages in DOM:', elements.chatMessages.querySelectorAll('.message.user').length);
         scrollToBottom();
     }
     
@@ -420,7 +430,30 @@ Office.onReady(() => {
         return `Module${maxNumber + 1}`;
     }
     
-    // Smart function replacement for code modifications
+    // Replace a specific subroutine in the full code (for cursor-based modifications)
+    function replaceSubroutineInCode(fullCode, currentSubroutine, newCode) {
+        if (!currentSubroutine || !currentSubroutine.startLine || !currentSubroutine.endLine) {
+            console.warn('Invalid subroutine data for replacement:', currentSubroutine);
+            return smartFunctionReplacement(fullCode, newCode);
+        }
+
+        const lines = fullCode.split('\n');
+
+        // Replace the lines from startLine to endLine with the new code
+        const beforeLines = lines.slice(0, currentSubroutine.startLine - 1);
+        const afterLines = lines.slice(currentSubroutine.endLine);
+
+        // Split new code into lines and clean up
+        const newCodeLines = newCode.split('\n');
+
+        // Combine: before + new code + after
+        const result = [...beforeLines, ...newCodeLines, ...afterLines].join('\n');
+
+        // Subroutine replaced successfully
+        return result;
+    }
+
+    // Smart function replacement for code modifications (legacy function)
     function smartFunctionReplacement(originalCode, newCode) {
         // Extract function name from the new code
         const newFunctionMatch = newCode.match(/(?:Sub|Function)\s+(\w+)/i);
@@ -480,10 +513,16 @@ Office.onReady(() => {
                 }
             }
             
-            // Insert into existing active module
+            // Insert into existing active module with enhanced logic
             if (state.editor) {
-                if (isModification && context.hasSelection && context.selectionRange) {
-                    // Replace selected text with VBA code
+                if (isModification && context.currentSubroutine) {
+                    // PRIORITY 1: Cursor inside subroutine - replace the entire subroutine
+                    const currentSub = context.currentSubroutine;
+                    const modifiedCode = replaceSubroutineInCode(context.fullCode, currentSub, vbaCode);
+                    state.editor.setValue(modifiedCode);
+
+                } else if (isModification && context.hasSelection && context.selectionRange) {
+                    // PRIORITY 2: User selected specific text to replace
                     const selection = new monaco.Selection(
                         context.selectionRange.startLine,
                         context.selectionRange.startColumn,
@@ -494,12 +533,24 @@ Office.onReady(() => {
                         range: selection,
                         text: vbaCode
                     }]);
+
                 } else if (isModification && context.fullCode) {
-                    // Smart function replacement for modifications
+                    // PRIORITY 3: General modification - smart function replacement
                     const modifiedCode = smartFunctionReplacement(context.fullCode, vbaCode);
                     state.editor.setValue(modifiedCode);
+
+                } else if (context.currentSubroutine) {
+                    // AVOID: Never insert new code inside existing subroutine
+                    // Instead, append after the current subroutine
+                    const currentSub = context.currentSubroutine;
+                    const insertLine = currentSub.endLine + 1;
+                    state.editor.executeEdits("auto-vba-insertion", [{
+                        range: new monaco.Range(insertLine, 1, insertLine, 1),
+                        text: "\n" + vbaCode + "\n"
+                    }]);
+
                 } else if (context.cursorPosition) {
-                    // Insert VBA code at cursor position
+                    // Safe cursor position insertion (only when not inside existing function)
                     state.editor.executeEdits("auto-vba-insertion", [{
                         range: new monaco.Range(
                             context.cursorPosition.lineNumber,
@@ -509,6 +560,7 @@ Office.onReady(() => {
                         ),
                         text: "\n" + vbaCode + "\n"
                     }]);
+
                 } else {
                     // Fallback: Replace entire content
                     state.editor.setValue(vbaCode);
@@ -707,35 +759,39 @@ Office.onReady(() => {
     // Open module in editor
     function openModule(module) {
         if (state.activeModule === module) return;
-        
+
         state.activeModule = module;
         saveStateToStorage();
-        
+
         // Hide welcome screen
         elements.welcomeScreen.classList.add("hidden");
-        
+
         // Update editor content
         if (state.editor) {
             state.editor.setValue(module.content || "");
         }
-        
+
         // Create or show tab
         if (!state.tabs.has(module.name)) {
             createTab(module);
         }
-        
+
         // Activate tab
         activateTab(module.name);
-        
+
         // Update sidebar
         renderModuleList();
-        
+
         // Update buttons
         updateActionButtons();
-        
+
         // Update line indicator
         updateLineIndicator();
-        
+
+        // Update run buttons in glyph margin
+        setTimeout(() => {
+            updateRunButtons();
+        }, 100);
     }
     
     // Create editor tab
@@ -955,9 +1011,9 @@ Office.onReady(() => {
         try {
             
             const initialContent = `Sub ${name}Macro()
-    ' Generated by MacroFlow AI
-    ' Add your VBA code here
-    
+    ' Start writing your VBA code here
+    ' Use the chat on the left for help
+
 End Sub`;
             
             const response = await fetch("http://localhost:5000/create-module", {
@@ -1183,6 +1239,93 @@ End Sub`;
         }));
     }
 
+    // Detect which subroutine the cursor is currently inside
+    function getCurrentSubroutine() {
+        if (!state.editor || !state.activeModule) return null;
+
+        const model = state.editor.getModel();
+        const position = state.editor.getPosition();
+        const currentLine = position.lineNumber;
+        const fullCode = model.getValue();
+        const lines = fullCode.split('\n');
+
+        let currentSub = null;
+        let subStartLine = -1;
+        let subEndLine = -1;
+        let indentLevel = 0;
+
+        // Scan from top to find the subroutine containing current line
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i].trim();
+            const lineNumber = i + 1;
+
+            // Check for Sub/Function start
+            const subMatch = line.match(/^(Private\s+|Public\s+)?(Sub|Function)\s+(\w+)/i);
+            if (subMatch) {
+                // If we were already in a sub and haven't hit End yet, this is a nested situation
+                if (currentSub && lineNumber <= currentLine) {
+                    // Update to this sub as we're deeper nested
+                    currentSub = {
+                        name: subMatch[3],
+                        type: subMatch[2].toLowerCase(),
+                        startLine: lineNumber,
+                        endLine: -1, // Will be set when we find End Sub/Function
+                        content: ''
+                    };
+                    subStartLine = lineNumber;
+                    indentLevel++;
+                } else if (lineNumber <= currentLine) {
+                    // First sub we've encountered
+                    currentSub = {
+                        name: subMatch[3],
+                        type: subMatch[2].toLowerCase(),
+                        startLine: lineNumber,
+                        endLine: -1,
+                        content: ''
+                    };
+                    subStartLine = lineNumber;
+                    indentLevel = 1;
+                }
+            }
+
+            // Check for End Sub/Function
+            if (line.match(/^End\s+(Sub|Function)$/i)) {
+                if (currentSub && lineNumber >= currentLine && subEndLine === -1) {
+                    // This End belongs to our current sub
+                    currentSub.endLine = lineNumber;
+                    subEndLine = lineNumber;
+                    break;
+                }
+                indentLevel = Math.max(0, indentLevel - 1);
+            }
+        }
+
+        // If we found a current sub, extract its full content
+        if (currentSub && subStartLine > 0) {
+            // Find the actual end line if not found yet
+            if (currentSub.endLine === -1) {
+                // Look forward to find End Sub/Function
+                for (let i = subStartLine; i < lines.length; i++) {
+                    if (lines[i].trim().match(/^End\s+(Sub|Function)$/i)) {
+                        currentSub.endLine = i + 1;
+                        break;
+                    }
+                }
+            }
+
+            // Extract the full subroutine content
+            if (currentSub.endLine > 0) {
+                currentSub.content = lines.slice(subStartLine - 1, currentSub.endLine).join('\n');
+            } else {
+                // No end found, take from start to end of file
+                currentSub.content = lines.slice(subStartLine - 1).join('\n');
+                currentSub.endLine = lines.length;
+            }
+        }
+
+        return currentSub;
+    }
+
     function getEditorContext() {
         if (!state.editor || !state.activeModule) {
             return {
@@ -1215,13 +1358,24 @@ End Sub`;
 
         const fullCode = model.getValue();
         const moduleMetadata = extractVBAMetadata(fullCode);
+        const currentSubroutine = getCurrentSubroutine();
+
+        // Determine if cursor is inside an existing subroutine
+        const isInsideSubroutine = currentSubroutine !== null;
+
+        // Enhanced surrounding code: if inside subroutine, use entire subroutine as context
+        let enhancedSurroundingCode = surroundingCode;
+        if (currentSubroutine) {
+            enhancedSurroundingCode = currentSubroutine.content;
+        }
 
         return {
             hasSelection: selectedText.length > 0,
             selectedText: selectedText,
             cursorPosition: position,
-            surroundingCode: surroundingCode,
-            currentSubroutine: moduleMetadata.currentSubroutine,
+            surroundingCode: enhancedSurroundingCode,
+            currentSubroutine: currentSubroutine,
+            isInsideSubroutine: isInsideSubroutine,
             fullCode: fullCode,
             moduleMetadata: moduleMetadata,
             selectionRange: selection && !selection.isEmpty() ? {
@@ -1229,7 +1383,10 @@ End Sub`;
                 endLine: selection.endLineNumber,
                 startColumn: selection.startColumn,
                 endColumn: selection.endColumn
-            } : null
+            } : null,
+            // Additional context for better modification detection
+            contextType: isInsideSubroutine ? 'modification' : (selectedText.length > 0 ? 'selection' : 'generation'),
+            targetFunction: currentSubroutine ? currentSubroutine.name : null
         };
     }
 
@@ -1268,6 +1425,146 @@ End Sub`;
     // Hide line indicator
     function hideLineIndicator() {
         elements.lineIndicator.classList.add("hidden");
+    }
+
+    // Update run buttons in glyph margin
+    function updateRunButtons() {
+        if (!state.editor || !state.activeModule) return;
+
+        // Clear existing decorations
+        if (state.runButtonDecorations) {
+            state.editor.deltaDecorations(state.runButtonDecorations, []);
+        }
+
+        const content = state.editor.getValue();
+        const lines = content.split('\n');
+        const decorations = [];
+
+        // Find all Sub and Function declarations
+        lines.forEach((line, index) => {
+            const trimmed = line.trim();
+            const subMatch = trimmed.match(/^(Private\s+|Public\s+)?Sub\s+(\w+)/i);
+            const funcMatch = trimmed.match(/^(Private\s+|Public\s+)?Function\s+(\w+)/i);
+
+            if (subMatch || funcMatch) {
+                const name = subMatch ? subMatch[2] : funcMatch[2];
+                const lineNumber = index + 1;
+
+                decorations.push({
+                    range: new monaco.Range(lineNumber, 1, lineNumber, 1),
+                    options: {
+                        isWholeLine: false,
+                        glyphMarginClassName: 'run-button-glyph',
+                        glyphMarginHoverMessage: { value: `Run ${name}` }
+                    }
+                });
+            }
+        });
+
+        // Apply decorations
+        state.runButtonDecorations = state.editor.deltaDecorations([], decorations);
+
+        // Add click handler for glyph margin
+        if (!state.glyphMarginClickHandler) {
+            state.glyphMarginClickHandler = state.editor.onMouseDown((e) => {
+                if (e.target.type === monaco.editor.MouseTargetType.GUTTER_GLYPH_MARGIN) {
+                    const lineNumber = e.target.position.lineNumber;
+                    const line = state.editor.getModel().getLineContent(lineNumber);
+                    const subMatch = line.trim().match(/^(Private\s+|Public\s+)?Sub\s+(\w+)/i);
+                    const funcMatch = line.trim().match(/^(Private\s+|Public\s+)?Function\s+(\w+)/i);
+
+                    if (subMatch) {
+                        runSubroutine(subMatch[2]);
+                    } else if (funcMatch) {
+                        // Functions can't be run directly, show a message
+                        showChatMessage('system', `Functions cannot be run directly. Call "${funcMatch[2]}" from a Sub to execute it.`);
+                    } else {
+                        console.log('No Sub or Function found on this line');
+                    }
+                }
+            });
+        }
+    }
+
+    // Show message in chat panel
+    function showChatMessage(type, content) {
+        const message = {
+            id: 'run-' + Date.now(),
+            role: type === 'system' ? 'assistant' : 'user',
+            content: content,
+            timestamp: new Date().toISOString(),
+            type: type
+        };
+        addMessage(message.role, content);
+    }
+
+    // Run a specific subroutine
+    async function runSubroutine(subroutineName) {
+        try {
+            // Check for duplicate module names first
+            console.log('Active module name:', state.activeModule.name);
+            console.log('All module names:', state.modules.map(m => m.name));
+
+            const duplicateModules = state.modules.filter(module =>
+                module.name === state.activeModule.name
+            );
+
+            console.log('Found duplicates:', duplicateModules.length, 'modules with name:', state.activeModule.name);
+
+            if (duplicateModules.length > 1) {
+                showChatMessage('error', `Cannot run ${subroutineName}: There are ${duplicateModules.length} modules named "${state.activeModule.name}". Please rename the duplicate modules to have unique names.`);
+                return;
+            }
+
+            // Save current module first
+            if (state.activeModule && state.activeModule.isModified) {
+                await saveModuleToExcel(state.activeModule);
+            }
+
+
+            const response = await fetch("http://localhost:5000/run-subroutine", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    module: state.activeModule.name,
+                    subroutine: subroutineName
+                })
+            });
+
+            const data = await response.json();
+
+            if (response.ok && data.success) {
+                showChatMessage('system', `✅ ${subroutineName} executed successfully`);
+            } else {
+                let errorMsg = data.message || data.error || `HTTP ${response.status}: ${response.statusText}`;
+
+                // Check for common Excel macro errors and provide friendly messages
+                if (errorMsg.includes("Cannot run the macro") && errorMsg.includes("The macro may not be available")) {
+                    // Check if there are duplicate module/subroutine names
+                    const duplicateModules = state.modules.filter(m => m.name === state.activeModule.name).length > 1;
+                    const duplicateSubroutines = state.modules.some(m =>
+                        m.subroutines && m.subroutines.filter(s => s.name === subroutineName).length > 0 &&
+                        m !== state.activeModule &&
+                        m.subroutines.some(s => s.name === subroutineName)
+                    );
+
+                    if (duplicateModules || duplicateSubroutines) {
+                        errorMsg = `Multiple subroutines named "${subroutineName}" found. Please rename them to have unique names.`;
+                    } else {
+                        errorMsg = `Cannot run ${subroutineName}: The macro was not found. Make sure the subroutine exists and macros are enabled in Excel.`;
+                    }
+                } else if (errorMsg.includes("all macros may be disabled")) {
+                    errorMsg = `Cannot run ${subroutineName}: Macros appear to be disabled in Excel. Please enable macros in Excel's Trust Center settings.`;
+                } else if (errorMsg.includes("VBA project not accessible")) {
+                    errorMsg = `Cannot run ${subroutineName}: VBA project access is disabled. Please enable "Trust access to VBA project object model" in Excel's Trust Center settings.`;
+                }
+
+                showChatMessage('error', errorMsg);
+            }
+        } catch (error) {
+            console.error("Error running subroutine:", error);
+            showChatMessage('error', `Error running ${subroutineName}: ${error.message}`);
+        }
     }
 
     // Fetch sheet context from Excel
@@ -1368,7 +1665,12 @@ End Sub`;
                 // VBA Agent response with code
                 const vbaCode = data.vba_code;
                 const explanation = data.explanation;
-                const isModification = context.hasSelection && data.context?.generationType === 'vba_modification';
+                // Enhanced modification detection: cursor in subroutine OR selection OR AI classified as modification
+                const isModification =
+                    context.isInsideSubroutine ||  // Cursor is inside existing subroutine
+                    context.contextType === 'modification' || // Context suggests modification
+                    (context.hasSelection && data.context?.generationType === 'vba_modification') || // Original logic
+                    data.context?.generationType === 'vba_modification'; // AI classified as modification
 
                 // Show explanation in chat if present
                 if (explanation && explanation.trim()) {
@@ -1574,31 +1876,73 @@ End Sub`;
         }
     });
     
-    // Search functionality
+    // Search functionality - enhanced to search through subroutines and auto-expand
     function filterModules(searchTerm) {
-        const modules = document.querySelectorAll('.module-item');
-        modules.forEach(module => {
-            const moduleName = module.textContent.toLowerCase();
-            const subroutines = module.parentElement.querySelectorAll('.subroutine-item');
-            
-            if (moduleName.includes(searchTerm.toLowerCase())) {
-                module.style.display = '';
-                // Show all subroutines for matching modules
-                subroutines.forEach(sub => sub.style.display = '');
-            } else {
-                // Check if any subroutines match
-                let hasMatchingSubroutine = false;
-                subroutines.forEach(sub => {
-                    if (sub.textContent.toLowerCase().includes(searchTerm.toLowerCase())) {
-                        sub.style.display = '';
+        const searchLower = searchTerm.toLowerCase();
+
+        state.modules.forEach(module => {
+            const moduleElements = document.querySelectorAll('.module-item');
+            let moduleElement = null;
+
+            // Find the module element for this module
+            moduleElements.forEach(el => {
+                const nameSpan = el.querySelector('.module-name span:nth-child(2)');
+                if (nameSpan && nameSpan.textContent === module.name) {
+                    moduleElement = el;
+                }
+            });
+
+            if (!moduleElement) return;
+
+            const moduleName = module.name.toLowerCase();
+            const moduleContainer = moduleElement.parentElement;
+            const subroutineList = moduleContainer?.querySelector('.subroutine-list');
+
+            // Check if module name matches
+            let moduleMatches = moduleName.includes(searchLower);
+
+            // Check if any subroutine matches
+            let hasMatchingSubroutine = false;
+            const matchingSubroutines = [];
+            if (module.subroutines && module.subroutines.length > 0) {
+                module.subroutines.forEach(sub => {
+                    if (sub.name.toLowerCase().includes(searchLower)) {
                         hasMatchingSubroutine = true;
-                    } else {
-                        sub.style.display = 'none';
+                        matchingSubroutines.push(sub.name);
                     }
                 });
-                
-                // Show module if it has matching subroutines, hide otherwise
-                module.style.display = hasMatchingSubroutine ? '' : 'none';
+            }
+
+            // Show module if it matches or has matching subroutines
+            if (searchLower === '' || moduleMatches || hasMatchingSubroutine) {
+                moduleElement.style.display = '';
+
+                // Auto-expand if subroutine matches but module doesn't
+                if (hasMatchingSubroutine && !moduleMatches && !module.expanded && searchLower !== '') {
+                    module.expanded = true;
+                    renderModuleList();
+                    setTimeout(() => filterModules(searchTerm), 10); // Re-apply filter after re-render
+                    return;
+                }
+
+                // Show/hide individual subroutines based on search
+                if (subroutineList) {
+                    const subItems = subroutineList.querySelectorAll('.subroutine-item');
+                    subItems.forEach((subItem) => {
+                        const subName = subItem.querySelector('span')?.textContent || '';
+                        if (searchLower === '' || moduleMatches || subName.toLowerCase().includes(searchLower)) {
+                            subItem.style.display = '';
+                        } else {
+                            subItem.style.display = 'none';
+                        }
+                    });
+                }
+            } else {
+                moduleElement.style.display = 'none';
+                if (subroutineList) {
+                    const subItems = subroutineList.querySelectorAll('.subroutine-item');
+                    subItems.forEach(subItem => subItem.style.display = 'none');
+                }
             }
         });
     }

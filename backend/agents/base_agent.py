@@ -14,7 +14,9 @@ class BaseAgent(ABC):
     
     def __init__(self):
         # Initialize OpenAI client (shared across all agents)
-        api_key = os.getenv("OPENAI_API_KEY") or "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"
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            raise ValueError("OPENAI_API_KEY environment variable is required")
         self.client = OpenAI(api_key=api_key)
     
     def _call_openai(self, messages: List[Dict[str, str]], model: str = "gpt-4o", temperature: float = 0) -> str:

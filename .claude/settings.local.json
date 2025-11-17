@@ -31,7 +31,9 @@
       "Bash(sideload-production.bat)",
       "Bash(npm run:*)",
       "Bash(cmd /c:*)",
-      "WebSearch"
+      "WebSearch",
+      "Bash(py -m pip:*)",
+      "Bash(test:*)"
     ],
     "deny": [],
     "ask": []

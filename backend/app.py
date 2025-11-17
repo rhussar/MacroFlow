@@ -4,6 +4,10 @@ import os
 import win32com.client
 import pythoncom
 import time
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 # Import our new agent architecture
 from agents import IntentClassifier, ChatAgent, VBAAgent

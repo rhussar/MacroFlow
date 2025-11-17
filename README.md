@@ -100,7 +100,8 @@ MacroFlow/
 │   │   └── vba_agent.py
 │   ├── app.py           # Main Flask application
 │   ├── config.py        # Configuration management
-│   └── requirements.txt # Python dependencies
+│   ├── requirements.txt # Python dependencies
+│   └── .env            # Environment variables (local only)
 ├── frontend/            # Office Add-in
 │   ├── src/            # Source files
 │   │   ├── taskpane.html
@@ -113,21 +114,21 @@ MacroFlow/
 │   ├── server.js       # Development server
 │   └── webpack.config.js # Build configuration
 ├── docs/               # Documentation
-│   ├── README.md       # Project overview
 │   ├── SETUP.md        # Detailed setup guide
 │   └── API.md          # API documentation
 ├── scripts/            # Build and deployment
 │   ├── start.bat       # Windows startup script
 │   ├── start.sh        # Linux/macOS startup script
 │   └── deploy.bat      # Production deployment
-├── config/             # Environment configurations
-│   ├── development.json
-│   └── production.json
 ├── tests/              # Test files
 │   ├── test_backend.py
 │   └── test_frontend.js
 ├── .env.example        # Environment template
-└── .gitignore          # Git ignore rules
+├── .gitignore          # Git ignore rules
+├── LICENSE             # MIT License
+├── CHANGELOG.md        # Version history
+├── CONTRIBUTING.md     # Contribution guidelines
+└── README.md           # This file
 ```
 
 ## 🛠️ Development

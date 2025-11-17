@@ -16,7 +16,7 @@ class ChatAgent(BaseAgent):
         # Define well-formatted response templates for common scenarios
         self.response_templates = {
             'greeting': [
-                "Hello! I'm your **MacroFlow AI assistant**. I'm here to help you create and manage VBA macros for Excel.\n\n• Generate custom VBA code\n• Answer Excel automation questions\n• Guide you through MacroFlow features\n\nWhat can I help you with today?",
+                "Hello! I'm your **MacroFlow assistant**. I'm here to help you create and manage VBA macros for Excel.\n\n• Generate custom VBA code\n• Answer Excel automation questions\n• Guide you through MacroFlow features\n\nWhat can I help you with today?",
                 "Hi there! Ready to build some powerful Excel macros together?\n\n**I can help you:**\n• Create automated workflows\n• Solve Excel productivity challenges\n• Generate clean, efficient VBA code\n\nWhat's your goal?",
                 "Hey! Welcome to MacroFlow.\n\n**Quick overview:**\n• Ask me to create any VBA macro\n• Get help with Excel automation\n• Learn about advanced Excel features\n\nLet's get started!"
             ],

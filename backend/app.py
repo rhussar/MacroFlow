@@ -22,14 +22,6 @@ intent_classifier = IntentClassifier()
 chat_agent = ChatAgent()
 vba_agent = VBAAgent()
 
-
-# Global variable to track active module for ribbon functionality
-active_module_tracker = {
-    "name": None,
-    "content": None,
-    "last_updated": 0
-}
-
 # Simple cache for sheet context (to avoid repeated reads)
 sheet_context_cache = {
     "data": None,
@@ -109,7 +101,7 @@ def get_sheet_context():
         
         try:
             excel = win32com.client.GetObject(None, "Excel.Application")
-        except:
+        except Exception:
             try:
                 excel = win32com.client.Dispatch("Excel.Application")
             except Exception as excel_error:
@@ -160,7 +152,7 @@ def get_sheet_context():
                             cell_value = used_range.Cells(row, col).Value
                             # Convert to string, handle None values
                             row_data.append(str(cell_value) if cell_value is not None else "")
-                        except:
+                        except Exception:
                             row_data.append("")
                     sample_data.append(row_data)
                 
@@ -173,7 +165,7 @@ def get_sheet_context():
                         try:
                             header = used_range.Cells(1, col).Value
                             headers.append(str(header) if header is not None else f"Column{col}")
-                        except:
+                        except Exception:
                             headers.append(f"Column{col}")
                     sheet_info["column_headers"] = headers
                 
@@ -197,7 +189,7 @@ def get_sheet_context():
                                 try:
                                     float(sample_values[0])
                                     data_type = "number"
-                                except:
+                                except (ValueError, TypeError):
                                     # Check if date-like
                                     if any(char in str(sample_values[0]) for char in ['/', '-', ':']):
                                         data_type = "date_or_text"
@@ -220,7 +212,7 @@ def get_sheet_context():
                         "refers_to": name.RefersTo,
                         "scope": "Workbook"
                     })
-                except:
+                except Exception:
                     continue
         except Exception as e:
             sheet_info["named_ranges_error"] = str(e)
@@ -239,7 +231,7 @@ def get_sheet_context():
                             "height": chart.Height
                         }
                     })
-                except:
+                except Exception:
                     continue
         except Exception as e:
             sheet_info["chart_objects_error"] = str(e)
@@ -270,7 +262,7 @@ def inject_vba_to_excel(macro_code):
         # Connect to Excel - try GetObject first, then Dispatch
         try:
             excel = win32com.client.GetObject(None, "Excel.Application")
-        except:
+        except Exception:
             excel = win32com.client.Dispatch("Excel.Application")
         
         # Make Excel visible and bring to front

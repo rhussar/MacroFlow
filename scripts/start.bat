@@ -1,5 +1,5 @@
 @echo off
-echo Starting MacroFlow AI...
+echo Starting MacroFlow...
 
 REM Get the project root directory (parent of scripts)
 cd /d "%~dp0.."
@@ -29,7 +29,7 @@ timeout /t 2 /nobreak >nul
 start "MacroFlow Excel" cmd /k "cd /d "%CD%\frontend" && npx office-addin-debugging start manifest.xml"
 
 echo.
-echo MacroFlow AI is starting up...
+echo MacroFlow is starting up...
 echo Backend: http://localhost:5000
 echo Frontend: https://localhost:3000
 echo.

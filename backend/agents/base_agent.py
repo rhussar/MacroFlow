@@ -1,5 +1,5 @@
 """
-Base Agent Class for MacroFlow AI
+Base Agent Class for MacroFlow
 Provides common functionality for all agents
 """
 
@@ -10,7 +10,7 @@ from typing import Dict, Any, List, Optional
 
 
 class BaseAgent(ABC):
-    """Base class for all MacroFlow AI agents"""
+    """Base class for all MacroFlow agents"""
     
     def __init__(self):
         # Initialize OpenAI client (shared across all agents)

@@ -1,4 +1,4 @@
-// MacroFlow AI - VSCode Style Interface with Real VBA Integration
+// MacroFlow - VSCode Style Interface with Real VBA Integration
 Office.onReady(() => {
     
     // Global state
@@ -1549,8 +1549,6 @@ End Sub`;
                     } else if (funcMatch) {
                         // Functions can't be run directly, show a message
                         showChatMessage('system', `Functions cannot be run directly. Call "${funcMatch[2]}" from a Sub to execute it.`);
-                    } else {
-                        console.log('No Sub or Function found on this line');
                     }
                 }
             });
@@ -1573,14 +1571,9 @@ End Sub`;
     async function runSubroutine(subroutineName) {
         try {
             // Check for duplicate module names first
-            console.log('Active module name:', state.activeModule.name);
-            console.log('All module names:', state.modules.map(m => m.name));
-
             const duplicateModules = state.modules.filter(module =>
                 module.name === state.activeModule.name
             );
-
-            console.log('Found duplicates:', duplicateModules.length, 'modules with name:', state.activeModule.name);
 
             if (duplicateModules.length > 1) {
                 showChatMessage('error', `Cannot run ${subroutineName}: There are ${duplicateModules.length} modules named "${state.activeModule.name}". Please rename the duplicate modules to have unique names.`);
@@ -1720,18 +1713,12 @@ End Sub`;
             // Remove loading message
             const loadingDiv = document.querySelector(`[data-message-id="${loadingMessage.id}"]`);
             if (loadingDiv) {
-                console.log('🗑️ Removing loading message ID:', loadingMessage.id);
-                console.log('📊 DOM children before loading removal:', elements.chatMessages.children.length);
-                console.log('📊 User messages before loading removal:', elements.chatMessages.querySelectorAll('.message.user').length);
                 loadingDiv.remove();
-                console.log('📊 DOM children after loading removal:', elements.chatMessages.children.length);
-                console.log('📊 User messages after loading removal:', elements.chatMessages.querySelectorAll('.message.user').length);
                 // Ensure chat stays scrolled to bottom after loading message removal
                 scrollToBottom();
             }
-            
+
             // Handle dual-agent responses
-            console.log('📨 Processing AI response, type:', data.type);
             if (data.type === 'vba' && data.has_vba && data.vba_code) {
                 // VBA Agent response with code
                 const vbaCode = data.vba_code;
@@ -1745,7 +1732,6 @@ End Sub`;
 
                 // Show explanation in chat if present
                 if (explanation && explanation.trim()) {
-                    console.log('💬 Adding VBA explanation message');
                     addMessage('assistant', explanation);
                 }
 
@@ -1761,7 +1747,6 @@ End Sub`;
                 
             } else if (data.type === 'conversation' || data.content) {
                 // Chat Agent response (conversational)
-                console.log('💬 Adding conversational response');
                 const content = data.content || data.explanation;
                 if (content && content.trim()) {
                     addMessage('assistant', content);
@@ -1798,10 +1783,6 @@ End Sub`;
             addMessage('assistant', errorMessage);
         } finally {
             elements.generateBtn.disabled = false;
-            console.log('✅ Request complete. Final DOM state:');
-            console.log('📊 Total messages in DOM:', elements.chatMessages.children.length);
-            console.log('📊 User messages in DOM:', elements.chatMessages.querySelectorAll('.message.user').length);
-            console.log('📊 Assistant messages in DOM:', elements.chatMessages.querySelectorAll('.message.assistant').length);
         }
     }
     

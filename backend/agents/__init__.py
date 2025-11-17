@@ -1,4 +1,4 @@
-# MacroFlow AI Agents
+# MacroFlow Agents
 # Clean agent architecture for sustainable development
 
 from .intent_classifier import IntentClassifier

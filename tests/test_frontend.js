@@ -1,8 +1,8 @@
 /**
- * Basic frontend tests for MacroFlow AI
+ * Basic frontend tests for MacroFlow
  */
 
-describe('MacroFlow AI Frontend', () => {
+describe('MacroFlow Frontend', () => {
     
     describe('Manifest validation', () => {
         it('should have valid manifest.xml', () => {

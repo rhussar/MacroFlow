@@ -1,4 +1,4 @@
-# MacroFlow AI - Setup Guide
+# MacroFlow - Setup Guide
 
 ## Prerequisites
 

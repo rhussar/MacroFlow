@@ -1,5 +1,5 @@
 @echo off
-echo Building MacroFlow AI for production...
+echo Building MacroFlow for production...
 
 REM Check if frontend dependencies are installed
 echo Checking frontend dependencies...
@@ -49,7 +49,7 @@ if not exist .env (
 )
 
 echo.
-echo MacroFlow AI build completed successfully!
+echo MacroFlow build completed successfully!
 echo.
 echo Next steps:
 echo 1. Configure your .env file with production settings

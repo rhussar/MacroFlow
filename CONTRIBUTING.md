@@ -1,6 +1,6 @@
-# Contributing to MacroFlow AI
+# Contributing to MacroFlow
 
-Thank you for your interest in contributing to MacroFlow AI! This document provides guidelines and information for contributors.
+Thank you for your interest in contributing to MacroFlow! This document provides guidelines and information for contributors.
 
 ## 📋 Table of Contents
 
@@ -375,10 +375,10 @@ FLASK_ENV=development python backend/app.py
 
 ## License
 
-By contributing to MacroFlow AI, you agree that your contributions will be licensed under the MIT License.
+By contributing to MacroFlow, you agree that your contributions will be licensed under the MIT License.
 
 ---
 
-**Thank you for contributing to MacroFlow AI! 🚀**
+**Thank you for contributing to MacroFlow! 🚀**
 
 Your contributions help make VBA development more accessible and efficient for Excel users worldwide.

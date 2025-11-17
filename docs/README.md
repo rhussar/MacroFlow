@@ -1,8 +1,8 @@
-# MacroFlow AI - Documentation
+# MacroFlow - Documentation
 
 ## Overview
 
-MacroFlow AI is an intelligent Office Add-in that generates VBA macros for Excel using artificial intelligence. The application features a dual-architecture system with specialized AI agents for different tasks.
+MacroFlow is an intelligent Office Add-in that generates VBA macros for Excel using artificial intelligence. The application features a dual-architecture system with specialized AI agents for different tasks.
 
 ## Architecture
 

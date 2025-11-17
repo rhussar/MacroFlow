@@ -202,7 +202,7 @@ class IntentClassifier(BaseAgent):
         Returns:
             Intent classification
         """
-        system_prompt = """You are an intent classifier for MacroFlow AI, a VBA code generation tool.
+        system_prompt = """You are an intent classifier for MacroFlow, a VBA code generation tool.
 
 Classify the user's intent into one of these categories:
 - vba_generation: User wants to create new VBA code/macros

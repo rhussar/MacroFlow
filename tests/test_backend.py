@@ -1,5 +1,5 @@
 """
-Test suite for MacroFlow AI backend
+Test suite for MacroFlow backend
 """
 
 import unittest

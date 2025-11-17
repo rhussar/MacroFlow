@@ -1,6 +1,6 @@
-# MacroFlow AI - API Documentation
+# MacroFlow - API Documentation
 
-This document provides comprehensive documentation for the MacroFlow AI REST API.
+This document provides comprehensive documentation for the MacroFlow REST API.
 
 ## Base URL
 
@@ -10,7 +10,7 @@ http://localhost:5000  # Development
 
 ## Authentication
 
-Currently, MacroFlow AI uses OpenAI API keys configured via environment variables. No additional API authentication is required for local development.
+Currently, MacroFlow uses OpenAI API keys configured via environment variables. No additional API authentication is required for local development.
 
 ## Core Endpoints
 

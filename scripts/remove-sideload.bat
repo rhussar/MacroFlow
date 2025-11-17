@@ -1,5 +1,5 @@
 @echo off
-echo Removing MacroFlow AI sideload registrations...
+echo Removing MacroFlow sideload registrations...
 
 REM Remove development registration and debug settings
 echo Removing development registration and debug settings...
@@ -15,7 +15,7 @@ echo Removing runtime logging...
 powershell -Command "Remove-Item -Path 'HKCU:\SOFTWARE\Microsoft\Office\16.0\WEF\Developer\RuntimeLogging' -Recurse -Force -ErrorAction SilentlyContinue"
 
 echo.
-echo MacroFlow AI sideload registrations have been removed.
+echo MacroFlow sideload registrations have been removed.
 echo Please restart Excel to see the changes.
 echo.
 pause

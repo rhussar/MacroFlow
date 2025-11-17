@@ -1,6 +1,6 @@
 #!/bin/bash
 
-echo "Starting MacroFlow AI..."
+echo "Starting MacroFlow..."
 
 # Check if frontend dependencies need to be installed
 echo "Checking frontend dependencies..."
@@ -34,7 +34,7 @@ npx office-addin-debugging start manifest.xml &
 ADDIN_PID=$!
 
 echo ""
-echo "MacroFlow AI is starting up..."
+echo "MacroFlow is starting up..."
 echo "Backend: http://localhost:5000"
 echo "Frontend: https://localhost:3000"
 echo ""
@@ -43,7 +43,7 @@ echo ""
 
 # Function to cleanup background processes
 cleanup() {
-    echo "Stopping MacroFlow AI..."
+    echo "Stopping MacroFlow..."
     kill $BACKEND_PID $FRONTEND_PID $ADDIN_PID 2>/dev/null
     exit 0
 }

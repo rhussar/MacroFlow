@@ -1,5 +1,5 @@
 """
-Configuration management for MacroFlow AI Backend
+Configuration management for MacroFlow Backend
 """
 import os
 from typing import Dict, Any

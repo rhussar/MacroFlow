@@ -1,6 +1,6 @@
 @echo off
 echo ========================================
-echo   MacroFlow AI Backend Server
+echo   MacroFlow Backend Server
 echo ========================================
 echo.
 echo Starting Flask server on http://localhost:5000

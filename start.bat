@@ -1,8 +1,8 @@
 @echo off
 echo Starting MacroFlow...
 
-REM Get the project root directory (parent of scripts)
-cd /d "%~dp0.."
+REM Get the project root directory (script is now in root)
+cd /d "%~dp0"
 
 REM Install frontend dependencies if needed
 echo Checking frontend dependencies...

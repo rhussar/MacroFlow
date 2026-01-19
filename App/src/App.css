@@ -6,125 +6,134 @@
 
 body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  background: #1e1e1e;
   height: 100vh;
-  display: flex;
-  align-items: center;
-  justify-content: center;
   overflow: hidden;
 }
 
 #root {
   width: 100%;
   height: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
 }
 
-.app-container {
+/* App Root - Vertical Layout */
+.app-root {
   width: 100%;
   height: 100%;
   display: flex;
+  flex-direction: column;
+  background: #1e1e1e;
+}
+
+/* Header (40px) */
+.header {
+  height: 40px;
+  background: #2d2d2d;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 15px;
+  border-bottom: 1px solid #3e3e3e;
+  -webkit-app-region: drag;
+  user-select: none;
+}
+
+.header-title {
+  color: #fff;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+}
+
+.header-close-button {
+  width: 32px;
+  height: 32px;
+  background: transparent;
+  border: none;
+  color: #ccc;
+  cursor: pointer;
+  display: flex;
   align-items: center;
   justify-content: center;
-  padding: 20px;
+  border-radius: 4px;
+  transition: all 0.2s;
+  -webkit-app-region: no-drag;
 }
 
-.content {
-  background: white;
-  border-radius: 12px;
-  padding: 40px;
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
-  max-width: 500px;
-  width: 100%;
+.header-close-button:hover {
+  background: #e81123;
+  color: #fff;
 }
 
-h1 {
-  color: #667eea;
-  font-size: 28px;
-  margin-bottom: 10px;
-  text-align: center;
+/* Editor Container (Flex-Grow) */
+.editor-container {
+  flex: 1;
+  overflow: hidden;
+  background: #1e1e1e;
 }
 
-h2 {
-  color: #666;
-  font-size: 16px;
-  font-weight: 400;
-  margin-bottom: 30px;
-  text-align: center;
+/* Footer (60px) */
+.footer {
+  height: 60px;
+  background: #252525;
+  border-top: 1px solid #3e3e3e;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 15px;
+  gap: 15px;
 }
 
-.test-section {
-  margin: 30px 0;
+.footer-status {
+  flex: 1;
+  padding: 8px 12px;
+  border-radius: 4px;
+  font-size: 12px;
+  line-height: 1.4;
+  max-width: 200px;
 }
 
-.test-button {
-  width: 100%;
-  padding: 16px 32px;
-  font-size: 18px;
-  font-weight: 600;
-  color: white;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+.footer-status.success {
+  background: #107c10;
+  color: #fff;
+  border: 1px solid #0b5c0b;
+}
+
+.footer-status.error {
+  background: #a80000;
+  color: #fff;
+  border: 1px solid #800000;
+}
+
+.push-button {
+  height: 44px;
+  padding: 0 24px;
+  background: #107c10;
+  color: #fff;
   border: none;
-  border-radius: 8px;
+  border-radius: 4px;
+  font-size: 14px;
+  font-weight: 600;
   cursor: pointer;
-  transition: all 0.3s ease;
-  box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  transition: all 0.2s ease;
+  white-space: nowrap;
 }
 
-.test-button:hover:not(:disabled) {
-  transform: translateY(-2px);
-  box-shadow: 0 6px 20px rgba(102, 126, 234, 0.6);
+.push-button:hover:not(:disabled) {
+  background: #0e6b0e;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(16, 124, 16, 0.3);
 }
 
-.test-button:active:not(:disabled) {
+.push-button:active:not(:disabled) {
+  background: #0c5c0c;
   transform: translateY(0);
 }
 
-.test-button:disabled {
+.push-button:disabled {
   opacity: 0.6;
   cursor: not-allowed;
-}
-
-.status {
-  margin-top: 20px;
-  padding: 16px;
-  border-radius: 8px;
-  font-size: 14px;
-  line-height: 1.6;
-}
-
-.status.success {
-  background: #d4edda;
-  color: #155724;
-  border: 1px solid #c3e6cb;
-}
-
-.status.error {
-  background: #f8d7da;
-  color: #721c24;
-  border: 1px solid #f5c6cb;
-}
-
-.info {
-  margin-top: 30px;
-  padding-top: 20px;
-  border-top: 1px solid #eee;
-}
-
-.info h3 {
-  color: #333;
-  font-size: 16px;
-  margin-bottom: 12px;
-}
-
-.info ol {
-  padding-left: 20px;
-  color: #666;
-  line-height: 1.8;
-}
-
-.info li {
-  margin-bottom: 8px;
 }

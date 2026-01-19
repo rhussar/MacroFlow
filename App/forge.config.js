@@ -6,6 +6,9 @@ module.exports = {
     asar: {
       unpack: '*.node'
     },
+    extraResource: [
+      './resources'
+    ]
   },
   rebuildConfig: {},
   makers: [

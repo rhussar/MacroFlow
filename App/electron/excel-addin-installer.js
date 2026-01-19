@@ -129,8 +129,9 @@ async function findNextOpenSlot() {
 
 /**
  * Register the add-in in the Windows registry for Excel auto-load
+ * @param {string} destinationPath - The path where the add-in was copied to (in AddIns folder)
  */
-async function registerAddinInRegistry(addinPath) {
+async function registerAddinInRegistry(destinationPath) {
   const baseKey = 'HKCU\\Software\\Microsoft\\Office\\16.0\\Excel\\Options';
 
   // Find available slot
@@ -140,8 +141,10 @@ async function registerAddinInRegistry(addinPath) {
     return { registered: false, slot, reason: 'already_registered' };
   }
 
-  // The /R flag tells Excel to open the file as read-only (standard for add-ins)
-  const valueData = `/R "${addinPath}"`;
+  // Format: /R "C:\Users\...\AppData\Roaming\Microsoft\AddIns\MacroFlowLoader.xlam"
+  // The /R switch tells Excel to load as a hidden add-in (not a visible workbook)
+  // We must escape the inner quotes for the Windows reg command
+  const valueData = `/R \\"${destinationPath}\\"`;
 
   // Build the reg command
   // REG_SZ is the string type for registry values
@@ -149,7 +152,7 @@ async function registerAddinInRegistry(addinPath) {
 
   try {
     await execAsync(regCommand);
-    return { registered: true, slot };
+    return { registered: true, slot, path: destinationPath };
   } catch (error) {
     throw new Error(`Registry write failed: ${error.message}`);
   }

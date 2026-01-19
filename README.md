@@ -1,156 +1,183 @@
 # MacroFlow
 
-**AI-Powered Excel Add-in for generating, editing, and managing VBA macros.**
+**A desktop sidecar application for Excel that enables VBA code injection via COM automation.**
 
-MacroFlow operates as a hybrid local application:
-* **Frontend:** Office.js Add-in (Taskpane UI) on `https://localhost:3000`
-* **Backend:** Flask API (Python) on `http://localhost:5000` that talks to Excel via COM automation
+MacroFlow runs as a standalone Electron app that docks to the right side of your screen, providing a Monaco code editor for writing and pushing VBA macros directly into Excel's VBA Editor.
 
 ---
 
-## Table of Contents
-1. [Prerequisites](#1-%EF%B8%8F-prerequisites)
-2. [Quick Start (Recommended)](#2-%EF%B8%8F-quick-start-recommended)
-3. [Manual Startup](#3-%EF%B8%8F-manual-startup)
-4. [Critical Excel Configuration](#4-%EF%B8%8F-critical-excel-configuration)
-5. [Troubleshooting & Health Checks](#5-%EF%B8%8F-troubleshooting--health-checks)
-6. [Project Structure](#6-%EF%B8%8F-project-structure)
+## Architecture
 
----
-
-> **👋 Start Here**
->
-> * **First-time setup:** Go to **[Section 3 (Manual Startup)](#3-%EF%B8%8F-manual-startup)** to configure your environment variables and install backend dependencies.
-> * **Already set up:** Use **[Section 2 (Quick Start)](#2-%EF%B8%8F-quick-start-recommended)** to launch everything with one command.
-> * **If anything breaks:** Check **[Section 5 (Troubleshooting)](#5-%EF%B8%8F-troubleshooting--health-checks)**.
-
----
-
-## 1. 🛠️ Prerequisites
-
-Before starting, ensure you have the following installed:
-
-1.  **Microsoft Excel** (Microsoft 365 or 2019+)
-2.  **Python 3** (Add to PATH during installation)
-3.  **Node.js (LTS)** & **npm**
-
----
-
-## 2. 🚀 Quick Start (Recommended)
-
-Once you have configured your environment (see Section 3.1), use this script to launch the app.
-
-1.  **Open a terminal** in the project root.
-2.  Run the start script:
-
-    ```bat
-    start.bat
-    ```
-
-**What this script does:**
-* Installs missing frontend dependencies.
-* Launches the **Flask Backend** (Port 5000).
-* Launches the **Frontend Server** (Port 3000).
-* Sideloads the Add-in directly into Excel.
-
-> **Note:** To stop the application, close the command windows that opened.
-
----
-
-## 3. ⚙️ Manual Startup
-
-**Complete these steps for first-time setup.**
-
-### 3.1 Configure Environment
-Create a `.env` file in the `backend/` folder:
-
-```env
-OPENAI_API_KEY=your_key_here
 ```
-### 3.2 Start Backend
-Open a terminal in MacroFlow/:
-
-```env
-cd backend
-pip install -r requirements.txt
-python app.py
+┌─────────────────────────────────────────────────────────────────┐
+│                         YOUR SCREEN                              │
+├─────────────────────────────────────┬───────────────────────────┤
+│                                     │                           │
+│           Microsoft Excel           │    MacroFlow Sidebar      │
+│                                     │    (Electron + React)     │
+│     ┌─────────────────────────┐     │                           │
+│     │     Active Workbook     │     │    ┌─────────────────┐    │
+│     │                         │◄────┼────│  Monaco Editor  │    │
+│     │  ┌───────────────────┐  │ COM │    │                 │    │
+│     │  │ MacroFlowModule   │  │     │    │  ' VBA Code     │    │
+│     │  │                   │  │     │    │  Sub MyMacro()  │    │
+│     │  │ Sub MyMacro()     │  │     │    │    ...          │    │
+│     │  │   MsgBox "Hello"  │  │     │    │  End Sub        │    │
+│     │  │ End Sub           │  │     │    │                 │    │
+│     │  └───────────────────┘  │     │    └─────────────────┘    │
+│     │                         │     │    [  Push to Excel  ]    │
+│     └─────────────────────────┘     │                           │
+│                                     │                           │
+└─────────────────────────────────────┴───────────────────────────┘
 ```
-### 3.3 Start Frontend & Sideload
-Open a second terminal in MacroFlow/:
 
-```env
-cd frontend
+**Tech Stack:**
+- **Frontend:** React + Vite + Monaco Editor
+- **Backend:** Electron (Node.js) with winax for COM automation
+- **Build:** Electron Forge with Squirrel installer
+- **Excel Integration:** COM via `winax.GetObject('Excel.Application')`
+
+---
+
+## Prerequisites
+
+1. **Windows 10/11** (COM automation is Windows-only)
+2. **Microsoft Excel** (Microsoft 365 or 2019+)
+3. **Node.js 18+** with npm
+
+---
+
+## Quick Start
+
+### Development Mode
+
+```bash
+cd App
 npm install
-npx office-addin-debugging start manifest.xml
+npm run dev
 ```
 
-## 4. ⚠️ Critical Excel Configuration
-**You must configure Excel to allow MacroFlow to write code. By default, Excel blocks programmatic access to the VBA Project.**
+This launches:
+- Vite dev server on `http://localhost:5173`
+- Electron app with hot reload
+- DevTools for debugging
 
-### 4.1 Enable VBA Trust
-If you see "Programmatic access not trusted" or "No modules found":
+### Production Build
 
-1. Go to File → Options → Trust Center → Trust Center Settings.
-2. Select Macro Settings.
-3. Check the box: Trust access to the VBA project object model.
-4. Restart Excel completely.
-
-### 4.2 Save as .xlsm
-Always save your working file as an Excel Macro-Enabled Workbook (.xlsm).
-
-If you save as .xlsx, any macros generated by the AI will be deleted when you close the file.
-
-
-## 5. 🩺 Troubleshooting & Health Checks
-
-### **Backend Connection Failed**
-If the add-in says "Cannot connect to backend," verify the Flask API is running.
-
-Check via curl:
-
-```PowerShell
-
-curl [http://127.0.0.1:5000/get-sheet-context](http://127.0.0.1:5000/get-sheet-context)
+```bash
+cd App
+npm run make
 ```
 
-Check if port is blocked:
+Outputs installer to `App/out/make/squirrel.windows/x64/MacroFlow-x.x.x Setup.exe`
 
-```PowerShell
+---
 
-netstat -ano | findstr :5000
-```
+## Excel Configuration (Required)
 
+**You must enable VBA project access or MacroFlow cannot inject code.**
 
-### **SSL/Certificate Errors**
+1. Open Excel
+2. Go to **File → Options → Trust Center → Trust Center Settings**
+3. Select **Macro Settings**
+4. Check: **Trust access to the VBA project object model**
+5. Click OK and restart Excel
 
-If the taskpane fails to load or shows an insecure connection warning:
+---
 
-1. Close Excel.
-2. Run PowerShell as Administrator.
-3. Execute:
+## How It Works
 
-```PowerShell
+1. **Open Excel** with any workbook
+2. **Launch MacroFlow** (via dev mode or installed app)
+3. **Write VBA code** in the Monaco editor
+4. **Click "Push to Excel"**
+5. MacroFlow creates/updates `MacroFlowModule` in your workbook's VBA project
 
-npx office-addin-dev-certs install
-```
+The connection uses `winax.GetObject('', 'Excel.Application')` to attach to the running Excel instance - no new Excel windows are created.
 
-### **Buttons "Do Nothing"**
+---
 
-If clicking buttons produces no result:
+## Project Structure
 
-1. Click inside the taskpane.
-2. Press Ctrl + Shift + I to open DevTools.
-3. Check the Console tab for 500 errors or Trust Center warnings.
-
-
-## 6. 📂 Project Structure
 ```
 MacroFlow/
-├── backend/        # Flask API & agents
-├── frontend/       # Office Add-in (taskpane UI)
-├── manifest.xml    # Excel Add-in manifest
-├── Start.bat       # Dev startup script
+├── App/                          # Main application
+│   ├── electron/                 # Electron main process
+│   │   ├── main.js              # App entry, window creation, single-instance lock
+│   │   ├── preload.js           # Context bridge for IPC
+│   │   ├── ipc-handlers.js      # All backend logic + Excel COM integration
+│   │   └── excel-addin-installer.js  # Auto-installs .xlam to XLSTART
+│   ├── src/                     # React frontend
+│   │   ├── App.jsx              # Main component with Monaco editor
+│   │   └── App.css              # Styles
+│   ├── Resources/               # Excel add-in files
+│   │   └── MacroFlowLoader.xlam # Ribbon button add-in
+│   ├── package.json
+│   └── forge.config.js          # Electron Forge build config
 └── README.md
-
 ```
 
+---
+
+## Key Files
+
+| File | Purpose |
+|------|---------|
+| `electron/main.js` | Single-instance lock, window positioning (safe zones), app lifecycle |
+| `electron/ipc-handlers.js` | Excel COM connection via winax, VBA injection logic |
+| `electron/preload.js` | Exposes `window.electronAPI` to renderer |
+| `src/App.jsx` | React UI with Monaco editor and Push to Excel button |
+
+---
+
+## IPC API
+
+```javascript
+// Inject VBA code into Excel
+window.electronAPI.injectCode(code)
+// Returns: { success: boolean, message: string }
+
+// Close the app
+window.electronAPI.closeApp()
+```
+
+---
+
+## Troubleshooting
+
+### "Excel is not running"
+- Open Excel with a workbook before clicking Push to Excel
+
+### "Please open a workbook first"
+- Create or open any Excel file (the workbook must be active)
+
+### "Action Blocked: Trust access..."
+- Enable VBA project access in Trust Center (see Excel Configuration above)
+
+### Multiple windows opening
+- Kill all `EXCEL.EXE` processes and restart
+- The app uses `requestSingleInstanceLock()` to prevent duplicates
+
+### Ghost Excel instances
+- Run `taskkill /F /IM excel.exe` to clean up stale processes
+- Restart Excel fresh
+
+---
+
+## Window Positioning
+
+The sidebar uses "safe zone" gaps to avoid covering Excel controls:
+
+```javascript
+const TOP_GAP = 240;    // Leaves ribbon + column headers visible
+const BOTTOM_GAP = 50;  // Leaves status bar + zoom visible
+const SIDEBAR_WIDTH = 400;
+```
+
+Adjust these values in `electron/main.js` if needed.
+
+---
+
+## License
+
+MIT

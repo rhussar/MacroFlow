@@ -1,8 +1,0 @@
-{
-  "extends": "./tsconfig.json",
-  "compilerOptions": {
-    "module": "CommonJS",
-    "lib": ["ES2020"]
-  },
-  "include": ["src/main/**/*", "src/preload/**/*"]
-}

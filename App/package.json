@@ -1,0 +1,47 @@
+{
+  "name": "macroflow",
+  "productName": "MacroFlow",
+  "version": "0.1.0",
+  "description": "Natural language Excel automation via COM",
+  "main": "electron/main.js",
+  "private": true,
+  "scripts": {
+    "dev": "set NODE_ENV=development&& concurrently \"vite\" \"wait-on http://localhost:5173 && electron-forge start\"",
+    "build": "vite build",
+    "preview": "vite preview",
+    "start": "electron-forge start",
+    "package": "npm run build && electron-forge package",
+    "make": "npm run build && electron-forge make",
+    "publish": "npm run build && electron-forge publish",
+    "lint": "echo \"No linting configured\""
+  },
+  "keywords": [],
+  "author": {
+    "name": "rhussar",
+    "email": "ronan.hussar@gmail.com"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "electron-squirrel-startup": "^1.0.1",
+    "react": "^19.2.3",
+    "react-dom": "^19.2.3",
+    "winax": "^3.6.3"
+  },
+  "devDependencies": {
+    "@electron-forge/cli": "^7.11.1",
+    "@electron-forge/maker-deb": "^7.11.1",
+    "@electron-forge/maker-rpm": "^7.11.1",
+    "@electron-forge/maker-squirrel": "^7.11.1",
+    "@electron-forge/maker-zip": "^7.11.1",
+    "@electron-forge/plugin-auto-unpack-natives": "^7.11.1",
+    "@electron-forge/plugin-fuses": "^7.11.1",
+    "@electron/fuses": "^1.8.0",
+    "@vitejs/plugin-react": "^5.1.2",
+    "concurrently": "^9.2.1",
+    "cross-env": "^10.1.0",
+    "electron": "^22.3.27",
+    "electron-rebuild": "^3.2.9",
+    "vite": "^7.3.1",
+    "wait-on": "^9.0.3"
+  }
+}

@@ -1,9 +1,13 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
+import tailwindcss from '@tailwindcss/vite';
 import path from 'node:path';
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [
+    react(),
+    tailwindcss()
+  ],
 
   // Critical for Electron file:// protocol
   base: './',
@@ -23,7 +27,7 @@ export default defineConfig({
   // Dev server
   server: {
     port: 5173,
-    strictPort: true, // Fail if port unavailable
+    strictPort: true,
     cors: true
   },
 

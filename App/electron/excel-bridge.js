@@ -1,42 +1,40 @@
 /**
- * ExcelBridge - Clean COM interface between Electron and Excel
+ * ExcelBridge - COM bridge for Excel automation.
  *
- * This is the ONLY file that should interact with Excel via COM.
- * All Excel operations go through this class.
- *
- * Usage:
- *   const excel = new ExcelBridge();
- *   const result = excel.injectModule('MacroFlowModule', vbaCode);
- *
- * Architecture:
- *   [React UI] → [IPC] → [ipc-handlers.js] → [ExcelBridge] → [Excel COM]
+ * This is the only file that should touch Excel via COM.
+ * All UI/IPC layers call into this class.
  */
 
 const winax = require('winax');
 
-// VBA Component Types (from vbext_ComponentType enum)
-const VBA_COMPONENT = {
-  STANDARD_MODULE: 1,  // vbext_ct_StdModule
-  CLASS_MODULE: 2,     // vbext_ct_ClassModule
-  FORM: 3,             // vbext_ct_MSForm
-  DOCUMENT: 100        // vbext_ct_Document (ThisWorkbook, Sheet1, etc.)
+// VBA Component Types (vbext_ComponentType)
+const VBA_COMPONENT_TYPE = {
+  STANDARD_MODULE: 1,
+  CLASS_MODULE: 2,
+  FORM: 3,
+  DOCUMENT: 100
+};
+
+const VBA_COMPONENT_NAME = {
+  [VBA_COMPONENT_TYPE.STANDARD_MODULE]: 'Standard Module',
+  [VBA_COMPONENT_TYPE.CLASS_MODULE]: 'Class Module',
+  [VBA_COMPONENT_TYPE.FORM]: 'UserForm',
+  [VBA_COMPONENT_TYPE.DOCUMENT]: 'Document'
 };
 
 class ExcelBridge {
-
-  // ============================================================================
+  // ===========================================================================
   // CONNECTION
-  // ============================================================================
+  // ===========================================================================
 
   /**
-   * Connect to the running Excel instance
-   * Uses GetObject to attach to existing Excel - never creates new instances
+   * Connect to a running Excel instance (never creates a new one).
    * @returns {object} Excel.Application COM object
    * @throws {Error} If Excel is not running
    */
   getApp() {
     try {
-      const excel = winax.GetObject('', 'Excel.Application');
+      const excel = new winax.Object('Excel.Application', { activate: true });
       if (!excel) {
         throw new Error('Excel application not found');
       }
@@ -47,7 +45,7 @@ class ExcelBridge {
   }
 
   /**
-   * Get the active workbook
+   * Get the active workbook.
    * @returns {object} Workbook COM object
    * @throws {Error} If no workbook is open
    */
@@ -61,7 +59,7 @@ class ExcelBridge {
   }
 
   /**
-   * Get the VBA project from the active workbook
+   * Get the VBA project from the active workbook.
    * @returns {object} VBProject COM object
    * @throws {Error} If VBA access is not trusted
    */
@@ -76,139 +74,566 @@ class ExcelBridge {
     } catch (error) {
       throw new Error(
         'VBA_BLOCKED: Trust access to VBA project is disabled. ' +
-        'Go to File → Options → Trust Center → Trust Center Settings → ' +
-        'Macro Settings → Check "Trust access to the VBA project object model".'
+          'Go to File > Options > Trust Center > Trust Center Settings > ' +
+          'Macro Settings > Check "Trust access to the VBA project object model".'
       );
     }
   }
 
-  // ============================================================================
-  // VBA MODULE OPERATIONS
-  // ============================================================================
+  // ===========================================================================
+  // HELPERS (PURE)
+  // ===========================================================================
 
-  /**
-   * Inject or replace a VBA module in the active workbook
-   * @param {string} moduleName - Name of the module (e.g., 'MacroFlowModule')
-   * @param {string} code - VBA code to inject
-   * @returns {{ success: boolean, message: string }}
-   */
-  injectModule(moduleName, code) {
+  _describeWorkbook(workbook) {
+    return {
+      name: workbook.Name,
+      path: workbook.FullName
+    };
+  }
+
+  _findComponentByName(vbProject, name) {
+    const components = vbProject.VBComponents;
+    for (let i = 1; i <= components.Count; i++) {
+      const component = components.Item(i);
+      if (component.Name === name) {
+        return component;
+      }
+    }
+    return null;
+  }
+
+  _qualifyWorkbookName(name) {
+    const safe = String(name || '');
+    if (!safe) {
+      return '';
+    }
+    if (/\s/.test(safe)) {
+      return `'${safe.replace(/'/g, "''")}'`;
+    }
+    return safe;
+  }
+
+  _normalizeMacroName(macroName, workbook) {
+    if (!macroName) {
+      return '';
+    }
+    const trimmed = String(macroName).trim();
+    if (!trimmed) {
+      return '';
+    }
+    if (trimmed.includes('!')) {
+      return trimmed;
+    }
+    const workbookName = this._qualifyWorkbookName(workbook.Name);
+    if (trimmed.includes('.')) {
+      return `${workbookName}!${trimmed}`;
+    }
+    const { procedures } = this._listMacroProcedures();
+    const matches = procedures.filter((proc) => proc.name.toLowerCase() === trimmed.toLowerCase());
+    if (matches.length === 1) {
+      return `${workbookName}!${matches[0].module}.${matches[0].name}`;
+    }
+    return trimmed;
+  }
+
+  _componentTypeName(typeId) {
+    return VBA_COMPONENT_NAME[typeId] || `Unknown (${typeId})`;
+  }
+
+  _parseProcedures(codeText) {
+    const procedures = [];
+    const regex =
+      /^\s*(Public|Private|Friend)?\s*(Static\s+)?(Sub|Function|Property\s+(Get|Let|Set))\s+([A-Za-z_][A-Za-z0-9_]*)/gim;
+    let match;
+    while ((match = regex.exec(codeText)) !== null) {
+      const scope = match[1] ? match[1] : 'Implicit';
+      const isStatic = Boolean(match[2]);
+      const kind = match[3].replace(/\s+/g, ' ');
+      const name = match[5];
+      procedures.push({
+        name,
+        kind,
+        scope,
+        isStatic
+      });
+    }
+    return procedures;
+  }
+
+  _normalizeValue(value) {
+    if (value === null || value === undefined) {
+      return null;
+    }
+    if (value instanceof Date) {
+      return value.toISOString();
+    }
+    if (Array.isArray(value)) {
+      return value.map((item) => this._normalizeValue(item));
+    }
+    if (typeof value === 'object') {
+      if (typeof value.valueOf === 'function') {
+        const primitive = value.valueOf();
+        if (primitive === null || primitive === undefined) {
+          return null;
+        }
+        if (typeof primitive !== 'object') {
+          return primitive;
+        }
+      }
+      return String(value);
+    }
+    return value;
+  }
+
+  _columnLetter(index) {
+    let dividend = index;
+    let columnName = '';
+    while (dividend > 0) {
+      const modulo = (dividend - 1) % 26;
+      columnName = String.fromCharCode(65 + modulo) + columnName;
+      dividend = Math.floor((dividend - modulo) / 26);
+    }
+    return columnName;
+  }
+
+  _classifyValue(value) {
+    if (value === null || value === undefined || value === '') {
+      return 'empty';
+    }
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return 'number';
+    }
+    if (typeof value === 'boolean') {
+      return 'boolean';
+    }
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      if (!trimmed) {
+        return 'empty';
+      }
+      if (/^-?\d+(\.\d+)?$/.test(trimmed)) {
+        return 'number-text';
+      }
+      if (!Number.isNaN(Date.parse(trimmed))) {
+        return 'date-text';
+      }
+      return 'text';
+    }
+    return 'other';
+  }
+
+  _normalizeRangeValues(values) {
+    const normalizeRow = (row) => {
+      if (!Array.isArray(row)) {
+        return [this._normalizeValue(row)];
+      }
+      const trimmedRow = row.length > 0 && row[0] === undefined ? row.slice(1) : row;
+      return trimmedRow.map((cell) => this._normalizeValue(cell));
+    };
+
+    if (Array.isArray(values)) {
+      const hasRowArrays = Array.isArray(values[0]) || Array.isArray(values[1]);
+      if (hasRowArrays) {
+        const rows = values.length > 0 && values[0] === undefined ? values.slice(1) : values;
+        return rows.map((row) => normalizeRow(row));
+      }
+      return [normalizeRow(values)];
+    }
+
+    return [[this._normalizeValue(values)]];
+  }
+
+  _getRuntimeModuleCode() {
+    return [
+      'Option Explicit',
+      '',
+      'Public Function MacroFlow_RunMacro(ByVal macroName As String) As String',
+      '    On Error GoTo Handler',
+      '    Application.Run macroName',
+      '    MacroFlow_RunMacro = "OK"',
+      '    Exit Function',
+      'Handler:',
+      '    MacroFlow_RunMacro = "ERR|" & Err.Number & "|" & Err.Description & "|" & Err.Source',
+      'End Function'
+    ].join('\n');
+  }
+
+  _ensureRuntimeModule() {
+    const vbProject = this.getVBProject();
+    const moduleName = 'MacroFlow_Runtime';
+    const code = this._getRuntimeModuleCode();
+    const existing = this._findComponentByName(vbProject, moduleName);
+
+    if (existing) {
+      const codeModule = existing.CodeModule;
+      if (codeModule.CountOfLines > 0) {
+        const existingCode = codeModule.Lines(1, codeModule.CountOfLines);
+        if (existingCode.includes('MacroFlow_RunMacro')) {
+          return;
+        }
+        codeModule.DeleteLines(1, codeModule.CountOfLines);
+      }
+      codeModule.AddFromString(code);
+      return;
+    }
+
+    const newModule = vbProject.VBComponents.Add(VBA_COMPONENT_TYPE.STANDARD_MODULE);
+    newModule.Name = moduleName;
+    newModule.CodeModule.AddFromString(code);
+  }
+
+  _withWorkbookAtPath(path, callback) {
+    const excel = this.getApp();
+    const state = {
+      screenUpdating: excel.ScreenUpdating,
+      displayAlerts: excel.DisplayAlerts,
+      enableEvents: excel.EnableEvents
+    };
+    let workbook = null;
+    let previousWorkbook = null;
+
     try {
-      const vbProject = this.getVBProject();
+      previousWorkbook = excel.ActiveWorkbook;
+      excel.ScreenUpdating = false;
+      excel.DisplayAlerts = false;
+      excel.EnableEvents = false;
 
-      // Remove existing module if it exists
-      this._removeModule(vbProject, moduleName);
+      workbook = excel.Workbooks.Open(path, 0, true);
+      try {
+        workbook.Windows.Item(1).Visible = false;
+      } catch (error) {
+        // Ignore if window visibility cannot be changed.
+      }
 
-      // Create new module
-      const newModule = vbProject.VBComponents.Add(VBA_COMPONENT.STANDARD_MODULE);
-      newModule.Name = moduleName;
-
-      // Insert code
-      const codeModule = newModule.CodeModule;
-      codeModule.InsertLines(codeModule.CountOfLines + 1, code);
-
-      return { success: true, message: `Module "${moduleName}" created successfully` };
-    } catch (error) {
-      return { success: false, message: error.message };
+      return callback(workbook, excel);
+    } finally {
+      if (workbook) {
+        try {
+          workbook.Close(false);
+        } catch (error) {
+          // Ignore close errors.
+        }
+      }
+      try {
+        excel.ScreenUpdating = state.screenUpdating;
+        excel.DisplayAlerts = state.displayAlerts;
+        excel.EnableEvents = state.enableEvents;
+      } catch (error) {
+        // Ignore restore errors.
+      }
+      if (previousWorkbook) {
+        try {
+          previousWorkbook.Activate();
+        } catch (error) {
+          // Ignore activation errors.
+        }
+      }
     }
   }
 
-  /**
-   * Remove a module from the VBA project
-   * @param {object} vbProject - VBProject COM object
-   * @param {string} moduleName - Name of module to remove
-   * @private
-   */
-  _removeModule(vbProject, moduleName) {
+  _prepareMacroRun(excel, workbook) {
     try {
-      const components = vbProject.VBComponents;
-      for (let i = 1; i <= components.Count; i++) {
-        const component = components.Item(i);
-        if (component.Name === moduleName) {
-          vbProject.VBComponents.Remove(component);
-          return;
+      workbook.Activate();
+    } catch (error) {
+      // Ignore if activation fails.
+    }
+
+    try {
+      if (excel.ActiveWindow) {
+        excel.ActiveWindow.Activate();
+      }
+    } catch (error) {
+      // Ignore window activation issues.
+    }
+
+    try {
+      if (excel.ActiveCell) {
+        excel.Goto(excel.ActiveCell, true);
+      }
+    } catch (error) {
+      // Ignore focus issues.
+    }
+
+    let ready = true;
+    try {
+      ready = Boolean(excel.Ready);
+    } catch (error) {
+      ready = true;
+    }
+
+    return {
+      ready,
+      message: ready ? '' : 'Excel is busy or in edit mode. Finish editing a cell to run macros.'
+    };
+  }
+
+  _buildSelectionContext(excel) {
+    let selectionAddress = '';
+    let activeCellAddress = '';
+    let activeCellValue = null;
+    let selectionInTable = false;
+    let tableInfo = null;
+
+    try {
+      const selection = excel.Selection;
+      if (selection) {
+        selectionAddress = String(selection.Address).replace(/\$/g, '');
+        try {
+          const listObject = selection.ListObject;
+          if (listObject) {
+            selectionInTable = true;
+            tableInfo = {
+              name: String(listObject.Name),
+              range: String(listObject.Range.Address).replace(/\$/g, '')
+            };
+          }
+        } catch (error) {
+          // Not in a table.
         }
       }
     } catch (error) {
-      // Module doesn't exist or can't be removed - that's fine
+      // Ignore selection errors.
     }
-  }
 
-  /**
-   * Run a VBA macro by name
-   * @param {string} macroName - Name of macro to run (e.g., 'MacroFlowModule.MyMacro')
-   * @returns {{ success: boolean, message: string }}
-   */
-  runMacro(macroName) {
     try {
-      const excel = this.getApp();
-      excel.Run(macroName);
-      return { success: true, message: `Executed "${macroName}"` };
+      const activeCell = excel.ActiveCell;
+      if (activeCell) {
+        activeCellAddress = String(activeCell.Address).replace(/\$/g, '');
+        activeCellValue = this._normalizeValue(activeCell.Value2);
+        if (!selectionInTable) {
+          try {
+            const listObject = activeCell.ListObject;
+            if (listObject) {
+              selectionInTable = true;
+              tableInfo = {
+                name: String(listObject.Name),
+                range: String(listObject.Range.Address).replace(/\$/g, '')
+              };
+            }
+          } catch (error) {
+            // Not in a table.
+          }
+        }
+      }
     } catch (error) {
-      return { success: false, message: `Failed to run macro: ${error.message}` };
+      // Ignore active cell errors.
     }
+
+    return {
+      address: selectionAddress,
+      activeCell: {
+        address: activeCellAddress,
+        value: activeCellValue
+      },
+      inTable: selectionInTable,
+      table: tableInfo
+    };
   }
 
-  // ============================================================================
-  // CELL OPERATIONS
-  // ============================================================================
+  _collectWorksheetMetadata({ excel, workbook, sheet, includeSelection }) {
+    const usedRange = sheet.UsedRange;
+    const startRow = usedRange.Row;
+    const startColumn = usedRange.Column;
+    const totalRows = Number(usedRange.Rows.Count);
+    const totalColumns = Number(usedRange.Columns.Count);
 
-  /**
-   * Read a cell value
-   * @param {string} address - Cell address (e.g., 'A1', 'B2:C5')
-   * @returns {{ success: boolean, value: any, address: string }}
-   */
-  readCell(address) {
+    const SAMPLE_ROWS = 50;
+    const SAMPLE_COLS = 25;
+
+    const previewRows = Math.min(totalRows, SAMPLE_ROWS);
+    const previewCols = Math.min(totalColumns, SAMPLE_COLS);
+
+    const previewRange = sheet.Range(
+      sheet.Cells(startRow, startColumn),
+      sheet.Cells(startRow + previewRows - 1, startColumn + previewCols - 1)
+    );
+    const previewValues = previewRange.Value2;
+    const preview = this._normalizeRangeValues(previewValues);
+
+    const headerRange = sheet.Range(
+      sheet.Cells(startRow, startColumn),
+      sheet.Cells(startRow, startColumn + previewCols - 1)
+    );
+    const headerValues = this._normalizeRangeValues(headerRange.Value2);
+    const headers = headerValues[0] || [];
+
+    const headerAddressMap = {};
+    for (let colIndex = 0; colIndex < previewCols; colIndex++) {
+      const columnNumber = startColumn + colIndex;
+      const address = `${this._columnLetter(columnNumber)}${startRow}`;
+      headerAddressMap[address] = headers[colIndex] ?? null;
+    }
+
+    let formulaGrid = [];
     try {
-      const excel = this.getApp();
-      const range = excel.ActiveSheet.Range(address);
-      return { success: true, address, value: range.Value };
+      formulaGrid = this._normalizeRangeValues(previewRange.Formula);
     } catch (error) {
-      return { success: false, address, message: error.message };
+      formulaGrid = [];
     }
-  }
 
-  /**
-   * Write a value to a cell
-   * @param {string} address - Cell address
-   * @param {any} value - Value to write
-   * @returns {{ success: boolean, address: string }}
-   */
-  writeCell(address, value) {
-    try {
-      const excel = this.getApp();
-      const range = excel.ActiveSheet.Range(address);
-      range.Value = value;
-      return { success: true, address };
-    } catch (error) {
-      return { success: false, address, message: error.message };
+    const sampleRowCount = Math.max(0, Math.min(4, totalRows - 1));
+    let sampleRows = [];
+    let sampleRowStart = startRow + 1;
+    if (sampleRowCount > 0) {
+      const sampleRange = sheet.Range(
+        sheet.Cells(sampleRowStart, startColumn),
+        sheet.Cells(sampleRowStart + sampleRowCount - 1, startColumn + previewCols - 1)
+      );
+      sampleRows = this._normalizeRangeValues(sampleRange.Value2);
     }
-  }
 
-  /**
-   * Get the currently selected cell
-   * @returns {{ success: boolean, address: string, value: any }}
-   */
-  getSelection() {
-    try {
-      const excel = this.getApp();
-      const cell = excel.ActiveCell;
-      return {
-        success: true,
-        address: cell.Address.replace(/\$/g, ''), // Remove $ signs
-        value: cell.Value
+    const columns = [];
+    for (let colIndex = 0; colIndex < previewCols; colIndex++) {
+      const columnNumber = startColumn + colIndex;
+      const columnLetter = this._columnLetter(columnNumber);
+      const header = headers[colIndex] !== undefined ? headers[colIndex] : '';
+
+      const typeCounts = {
+        empty: 0,
+        number: 0,
+        boolean: 0,
+        text: 0,
+        'number-text': 0,
+        'date-text': 0,
+        other: 0
       };
-    } catch (error) {
-      return { success: false, message: error.message };
+      const examples = [];
+      const exampleSet = new Set();
+      let nonEmpty = 0;
+      let numericMin = null;
+      let numericMax = null;
+      let formulaCells = 0;
+
+      const analysisRows = sampleRows.length ? sampleRows : preview.slice(1);
+      for (let rowIndex = 0; rowIndex < analysisRows.length; rowIndex++) {
+        const value = analysisRows[rowIndex]?.[colIndex];
+        const type = this._classifyValue(value);
+        typeCounts[type] += 1;
+        if (type !== 'empty') {
+          nonEmpty += 1;
+          const example = value === null || value === undefined ? '' : String(value);
+          if (example && !exampleSet.has(example) && examples.length < 6) {
+            examples.push(example);
+            exampleSet.add(example);
+          }
+        }
+        if (type === 'number') {
+          if (numericMin === null || value < numericMin) numericMin = value;
+          if (numericMax === null || value > numericMax) numericMax = value;
+        }
+
+        const formulaCell = formulaGrid[rowIndex + 1]?.[colIndex];
+        if (typeof formulaCell === 'string' && formulaCell.startsWith('=')) {
+          formulaCells += 1;
+        }
+      }
+
+      const typeSummaryParts = Object.entries(typeCounts)
+        .filter(([key, count]) => key !== 'empty' && count > 0)
+        .sort((a, b) => b[1] - a[1])
+        .map(([key, count]) => `${key} ${count}`);
+      if (formulaCells > 0) {
+        typeSummaryParts.push(`formulas ${formulaCells}`);
+      }
+      const typeSummary = typeSummaryParts.length ? typeSummaryParts.join(' | ') : 'empty';
+
+      columns.push({
+        index: columnNumber,
+        column: columnLetter,
+        header,
+        nonEmpty,
+        empty: typeCounts.empty,
+        typeSummary,
+        examples,
+        numericMin,
+        numericMax,
+        formulaCells
+      });
     }
+
+    const sheetNames = [];
+    let activeSheetName = '';
+    for (let i = 1; i <= workbook.Sheets.Count; i++) {
+      const sheetItem = workbook.Sheets.Item(i);
+      sheetNames.push(String(sheetItem.Name));
+    }
+    if (workbook.ActiveSheet) {
+      activeSheetName = String(workbook.ActiveSheet.Name);
+    }
+
+    const selectionContext = includeSelection ? this._buildSelectionContext(excel) : null;
+
+    const structuralContext = {
+      workbook: this._describeWorkbook(workbook),
+      sheets: sheetNames,
+      activeSheet: activeSheetName
+    };
+
+    const dataContext = {
+      usedRange: {
+        address: String(usedRange.Address),
+        startRow,
+        startColumn,
+        rows: totalRows,
+        columns: totalColumns
+      },
+      headers,
+      headersByAddress: headerAddressMap,
+      sampleRows: {
+        startRow: sampleRowCount ? sampleRowStart : null,
+        endRow: sampleRowCount ? sampleRowStart + sampleRowCount - 1 : null,
+        rows: sampleRows
+      },
+      columns
+    };
+
+    const llmContext = {
+      structural: {
+        workbookName: structuralContext.workbook.name,
+        workbookPath: structuralContext.workbook.path,
+        worksheetNames: structuralContext.sheets,
+        activeSheet: structuralContext.activeSheet
+      },
+      data: {
+        usedRange: dataContext.usedRange,
+        headersByAddress: dataContext.headersByAddress,
+        sampleRows: dataContext.sampleRows,
+        columns: dataContext.columns.map((column) => ({
+          column: column.column,
+          header: column.header,
+          typeSummary: column.typeSummary,
+          nonEmpty: column.nonEmpty,
+          numericMin: column.numericMin,
+          numericMax: column.numericMax,
+          examples: column.examples,
+          formulaCells: column.formulaCells
+        }))
+      },
+      selection: selectionContext
+    };
+
+    return {
+      sheet: {
+        name: String(sheet.Name),
+        index: Number(sheet.Index)
+      },
+      structuralContext,
+      dataContext,
+      selectionContext,
+      llmContext,
+      preview: {
+        rows: preview,
+        truncated: totalRows > previewRows || totalColumns > previewCols
+      }
+    };
   }
 
-  // ============================================================================
+  // ===========================================================================
   // WORKBOOK INFO
-  // ============================================================================
+  // ===========================================================================
 
   /**
-   * Get info about the active workbook
+   * Get info about the active workbook.
    * @returns {{ success: boolean, name: string, path: string, sheets: string[] }}
    */
   getWorkbookInfo() {
@@ -228,7 +653,576 @@ class ExcelBridge {
       return { success: false, message: error.message };
     }
   }
+
+  /**
+   * Get all open workbooks in Excel.
+   * @returns {{ success: boolean, workbooks: Array<{ name: string, path: string }>, message?: string }}
+   */
+  getOpenWorkbooks() {
+    try {
+      const excel = this.getApp();
+      const workbooks = [];
+      const count = excel.Workbooks.Count;
+
+      for (let i = 1; i <= count; i++) {
+        const workbook = excel.Workbooks.Item(i);
+        workbooks.push(this._describeWorkbook(workbook));
+      }
+
+      return { success: true, workbooks };
+    } catch (error) {
+      if (error.message.includes('NO_EXCEL')) {
+        return { success: false, workbooks: [], message: 'Excel not found' };
+      }
+      return { success: false, workbooks: [], message: error.message };
+    }
+  }
+
+  /**
+   * List worksheets in the active workbook with basic UsedRange stats.
+   * @returns {{ success: boolean, workbook?: { name: string, path: string }, sheets: Array }}
+   */
+  listWorksheets() {
+    try {
+      const workbook = this.getActiveWorkbook();
+      const activeSheetName = workbook.ActiveSheet ? String(workbook.ActiveSheet.Name) : '';
+      const sheets = [];
+      for (let i = 1; i <= workbook.Sheets.Count; i++) {
+        const sheet = workbook.Sheets.Item(i);
+        let usedRange = null;
+        try {
+          usedRange = sheet.UsedRange;
+        } catch (error) {
+          usedRange = null;
+        }
+        sheets.push({
+          name: String(sheet.Name),
+          index: i,
+          visible: Number(sheet.Visible),
+          active: activeSheetName ? activeSheetName === String(sheet.Name) : false,
+          usedRange: usedRange
+            ? {
+                address: String(usedRange.Address),
+                rows: Number(usedRange.Rows.Count),
+                columns: Number(usedRange.Columns.Count)
+              }
+            : null
+        });
+      }
+
+      return {
+        success: true,
+        workbook: this._describeWorkbook(workbook),
+        sheets
+      };
+    } catch (error) {
+      return { success: false, sheets: [], message: error.message };
+    }
+  }
+
+  /**
+   * Build workbook + sheet metadata for LLM prompting.
+   * @param {{ sheetName?: string }} options
+   * @returns {{ success: boolean, sheet?: object, structuralContext?: object, dataContext?: object, selectionContext?: object, llmContext?: object }}
+   */
+  getWorksheetMetadata(options = {}) {
+    try {
+      const excel = this.getApp();
+      const workbook = this.getActiveWorkbook();
+      const sheet = options.sheetName
+        ? workbook.Sheets.Item(options.sheetName)
+        : workbook.ActiveSheet;
+
+      const metadata = this._collectWorksheetMetadata({
+        excel,
+        workbook,
+        sheet,
+        includeSelection: true
+      });
+
+      return {
+        success: true,
+        message: `Metadata read for "${sheet.Name}"`,
+        ...metadata
+      };
+    } catch (error) {
+      return { success: false, message: error.message };
+    }
+  }
+
+  /**
+   * Build metadata for a closed workbook path (opened read-only in the background).
+   * @param {{ path: string, sheetName?: string }} options
+   * @returns {{ success: boolean, sheet?: object, structuralContext?: object, dataContext?: object, llmContext?: object }}
+   */
+  getClosedWorkbookMetadata(options = {}) {
+    if (!options.path) {
+      return { success: false, message: 'Missing workbook path.' };
+    }
+
+    try {
+      return this._withWorkbookAtPath(options.path, (workbook, excel) => {
+        const sheet = options.sheetName
+          ? workbook.Sheets.Item(options.sheetName)
+          : workbook.ActiveSheet;
+        const metadata = this._collectWorksheetMetadata({
+          excel,
+          workbook,
+          sheet,
+          includeSelection: false
+        });
+        return {
+          success: true,
+          message: `Metadata read for "${sheet.Name}"`,
+          ...metadata
+        };
+      });
+    } catch (error) {
+      return { success: false, message: error.message };
+    }
+  }
+
+  // ===========================================================================
+  // CELL OPERATIONS (LEGACY)
+  // ===========================================================================
+
+  /**
+   * Read a cell value.
+   * @param {string} address - Cell address (e.g., 'A1', 'B2:C5')
+   * @returns {{ success: boolean, value: any, address: string }}
+   */
+  readCell(address) {
+    try {
+      const excel = this.getApp();
+      const range = excel.ActiveSheet.Range(address);
+      return { success: true, address, value: this._normalizeValue(range.Value2) };
+    } catch (error) {
+      return { success: false, address, message: error.message };
+    }
+  }
+
+  /**
+   * Write a value to a cell.
+   * @param {string} address - Cell address
+   * @param {any} value - Value to write
+   * @returns {{ success: boolean, address: string }}
+   */
+  writeCell(address, value) {
+    try {
+      const excel = this.getApp();
+      const range = excel.ActiveSheet.Range(address);
+      range.Value2 = value;
+      return { success: true, address };
+    } catch (error) {
+      return { success: false, address, message: error.message };
+    }
+  }
+
+  /**
+   * Get the currently selected cell.
+   * @returns {{ success: boolean, address: string, value: any }}
+   */
+  getSelection() {
+    try {
+      const excel = this.getApp();
+      const cell = excel.ActiveCell;
+      return {
+        success: true,
+        address: String(cell.Address).replace(/\$/g, ''),
+        value: this._normalizeValue(cell.Value2)
+      };
+    } catch (error) {
+      return { success: false, message: error.message };
+    }
+  }
+
+  /**
+   * Highlight the current selection with a color.
+   * @param {string} colorName - 'Yellow', 'Green', 'Red', or 'None'
+   * @returns {{ success: boolean, color: string }}
+   */
+  highlightSelection(colorName) {
+    const colorMap = {
+      Yellow: 65535,
+      Green: 5296274,
+      Red: 255,
+      None: -4142
+    };
+
+    try {
+      const excel = this.getApp();
+      const selection = excel.Selection;
+
+      if (!selection) {
+        return { success: false, message: 'No cells selected' };
+      }
+
+      const colorValue = colorMap[colorName];
+      if (colorValue === undefined) {
+        return { success: false, message: `Unknown color: ${colorName}` };
+      }
+
+      if (colorName === 'None') {
+        selection.Interior.ColorIndex = -4142;
+      } else {
+        selection.Interior.Color = colorValue;
+      }
+
+      return { success: true, color: colorName };
+    } catch (error) {
+      return { success: false, message: error.message };
+    }
+  }
+
+  // ===========================================================================
+  // VBA MODULES & PROCEDURES
+  // ===========================================================================
+
+  /**
+   * List modules in the active workbook's VBA project.
+   * @returns {{ success: boolean, workbook?: { name: string, path: string }, modules: Array }}
+   */
+  listModules() {
+    try {
+      const workbook = this.getActiveWorkbook();
+      const vbProject = this.getVBProject();
+      const components = vbProject.VBComponents;
+      const modules = [];
+
+      for (let i = 1; i <= components.Count; i++) {
+        const component = components.Item(i);
+        const codeModule = component.CodeModule;
+        const lineCount = codeModule ? codeModule.CountOfLines : 0;
+        modules.push({
+          name: component.Name,
+          typeId: component.Type,
+          type: this._componentTypeName(component.Type),
+          lineCount
+        });
+      }
+
+      return {
+        success: true,
+        workbook: this._describeWorkbook(workbook),
+        modules
+      };
+    } catch (error) {
+      return { success: false, modules: [], message: error.message };
+    }
+  }
+
+  /**
+   * List procedures (Subs/Functions/Properties) in the active workbook.
+   * @returns {{ success: boolean, workbook?: { name: string, path: string }, procedures: Array }}
+   */
+  listProcedures() {
+    try {
+      const workbook = this.getActiveWorkbook();
+      const vbProject = this.getVBProject();
+      const components = vbProject.VBComponents;
+      const procedures = [];
+
+      for (let i = 1; i <= components.Count; i++) {
+        const component = components.Item(i);
+        const codeModule = component.CodeModule;
+        if (!codeModule) {
+          continue;
+        }
+
+        const lineCount = codeModule.CountOfLines;
+        if (lineCount < 1) {
+          continue;
+        }
+
+        const codeText = codeModule.Lines(1, lineCount);
+        const parsed = this._parseProcedures(codeText);
+        parsed.forEach((proc) => {
+          procedures.push({
+            module: component.Name,
+            ...proc
+          });
+        });
+      }
+
+      return {
+        success: true,
+        workbook: this._describeWorkbook(workbook),
+        procedures
+      };
+    } catch (error) {
+      return { success: false, procedures: [], message: error.message };
+    }
+  }
+
+  /**
+   * Inject or replace a VBA module in the active workbook.
+   * @param {string} moduleName - Name of the module (e.g., 'MacroFlowModule')
+   * @param {string} code - VBA code to inject
+   * @returns {{ success: boolean, message: string }}
+   */
+  injectModule(moduleName, code) {
+    try {
+      const vbProject = this.getVBProject();
+
+      this._removeModule(vbProject, moduleName);
+
+      const newModule = vbProject.VBComponents.Add(VBA_COMPONENT_TYPE.STANDARD_MODULE);
+      newModule.Name = moduleName;
+
+      const codeModule = newModule.CodeModule;
+      codeModule.InsertLines(codeModule.CountOfLines + 1, code);
+
+      return { success: true, message: `Module "${moduleName}" created successfully` };
+    } catch (error) {
+      return { success: false, message: error.message };
+    }
+  }
+
+  /**
+   * Remove a module from the VBA project.
+   * @param {object} vbProject - VBProject COM object
+   * @param {string} moduleName - Name of module to remove
+   * @private
+   */
+  _removeModule(vbProject, moduleName) {
+    try {
+      const components = vbProject.VBComponents;
+      for (let i = 1; i <= components.Count; i++) {
+        const component = components.Item(i);
+        if (component.Name === moduleName) {
+          vbProject.VBComponents.Remove(component);
+          return;
+        }
+      }
+    } catch (error) {
+      // Module doesn't exist or can't be removed.
+    }
+  }
+
+  /**
+   * Run a VBA macro by name.
+   * @param {string} macroName - e.g., 'ModuleName.MacroName' or 'MacroName'
+   * @returns {{ success: boolean, message: string }}
+   */
+  runMacro(macroName) {
+    return this.runMacroWithTrap(macroName);
+  }
+
+  // ===========================================================================
+  // RUNTIME + SHORTCUTS
+  // ===========================================================================
+
+  /**
+   * Run a macro with a VBA error trap so runtime errors can be returned to Electron.
+   * @param {string} macroName
+   * @returns {{ success: boolean, message: string, error?: { number: number, description: string, source: string } }}
+   */
+  runMacroWithTrap(macroName) {
+    try {
+      this._ensureRuntimeModule();
+      const excel = this.getApp();
+      const workbook = this.getActiveWorkbook();
+      const workbookName = this._qualifyWorkbookName(workbook.Name);
+      const runtimeMacro = `${workbookName}!MacroFlow_Runtime.MacroFlow_RunMacro`;
+      const targetMacro = this._normalizeMacroName(macroName, workbook);
+
+      if (!targetMacro) {
+        return { success: false, message: 'Macro name is required.' };
+      }
+
+      const prep = this._prepareMacroRun(excel, workbook);
+      if (!prep.ready) {
+        return { success: false, message: prep.message };
+      }
+
+      const result = excel.Run(runtimeMacro, targetMacro);
+
+      if (typeof result === 'string' && result.startsWith('ERR|')) {
+        const [, number, description, source] = result.split('|');
+        return {
+          success: false,
+          message: `VBA error ${number}: ${description}`,
+          error: {
+            number: Number(number),
+            description: description || '',
+            source: source || ''
+          }
+        };
+      }
+
+      return { success: true, message: `Executed "${targetMacro}"` };
+    } catch (error) {
+      const rawMessage = error && error.message ? String(error.message) : 'Unknown error';
+      const hresultMatch = rawMessage.match(/0x[0-9a-fA-F]+/);
+      const hresult = hresultMatch ? hresultMatch[0] : '';
+      const isExcelRunFailure = rawMessage.includes('0x800a9c68');
+      const message = isExcelRunFailure
+        ? 'Excel failed before VBA executed (likely compile error, missing reference, or dialog).'
+        : `Failed to run macro: ${rawMessage}`;
+
+      return {
+        success: false,
+        message,
+        error: {
+          kind: isExcelRunFailure ? 'excel-run-failed' : 'runtime',
+          hresult,
+          rawMessage
+        }
+      };
+    }
+  }
+
+  _loadShortcutRegistry(workbook) {
+    const props = workbook.CustomDocumentProperties;
+    const registryName = 'MacroFlow_Shortcuts';
+    let prop = null;
+
+    try {
+      prop = props.Item(registryName);
+    } catch (error) {
+      prop = null;
+    }
+
+    if (!prop) {
+      props.Add(registryName, false, 4, '{}');
+      prop = props.Item(registryName);
+    }
+
+    try {
+      return JSON.parse(String(prop.Value || '{}'));
+    } catch (error) {
+      return {};
+    }
+  }
+
+  _saveShortcutRegistry(workbook, registry) {
+    const props = workbook.CustomDocumentProperties;
+    const registryName = 'MacroFlow_Shortcuts';
+    let prop = null;
+
+    try {
+      prop = props.Item(registryName);
+    } catch (error) {
+      prop = null;
+    }
+
+    if (!prop) {
+      props.Add(registryName, false, 4, JSON.stringify(registry));
+      return;
+    }
+
+    prop.Value = JSON.stringify(registry);
+  }
+
+  _listMacroProcedures() {
+    try {
+      const workbook = this.getActiveWorkbook();
+      const vbProject = this.getVBProject();
+      const components = vbProject.VBComponents;
+      const procedures = [];
+
+      for (let i = 1; i <= components.Count; i++) {
+        const component = components.Item(i);
+        const codeModule = component.CodeModule;
+        if (!codeModule) {
+          continue;
+        }
+
+        const lineCount = codeModule.CountOfLines;
+        if (lineCount < 1) {
+          continue;
+        }
+
+        const codeText = codeModule.Lines(1, lineCount);
+        const parsed = this._parseProcedures(codeText);
+        parsed.forEach((proc) => {
+          if (proc.kind.startsWith('Sub')) {
+            procedures.push({
+              name: proc.name,
+              module: component.Name
+            });
+          }
+        });
+      }
+
+      return { workbook, procedures };
+    } catch (error) {
+      return { workbook: null, procedures: [] };
+    }
+  }
+
+  /**
+   * Set a macro shortcut and track it in a workbook registry.
+   * @param {string} macroName
+   * @param {string} shortcutKey
+   * @returns {{ success: boolean, message: string }}
+   */
+  setMacroShortcut(macroName, shortcutKey) {
+    try {
+      const workbook = this.getActiveWorkbook();
+      const excel = this.getApp();
+      const resolvedName = this._normalizeMacroName(macroName, workbook);
+      excel.MacroOptions(resolvedName || macroName, null, null, null, null, shortcutKey, null, null, null, null);
+
+      const registry = this._loadShortcutRegistry(workbook);
+      if (macroName) {
+        registry[macroName] = shortcutKey;
+      }
+      if (resolvedName) {
+        registry[resolvedName] = shortcutKey;
+      }
+      this._saveShortcutRegistry(workbook, registry);
+
+      return { success: true, message: `Shortcut set for ${macroName}` };
+    } catch (error) {
+      return { success: false, message: `Failed to set shortcut: ${error.message}` };
+    }
+  }
+
+  /**
+   * Audit known shortcuts for macros in the active workbook.
+   * Note: Excel does not expose a full shortcut map, so only tracked shortcuts are returned.
+   * @returns {{ success: boolean, shortcuts: Array, unmapped: Array, note: string }}
+   */
+  auditShortcuts() {
+    try {
+      const { workbook, procedures } = this._listMacroProcedures();
+      if (!workbook) {
+        return { success: false, shortcuts: [], unmapped: [], message: 'Workbook not available.' };
+      }
+
+      const registry = this._loadShortcutRegistry(workbook);
+      const shortcuts = [];
+      const unmapped = [];
+
+      procedures.forEach((proc) => {
+        const fullName = `${proc.module}.${proc.name}`;
+        const qualifiedName = `${workbook.Name}!${fullName}`;
+        const shortcut =
+          registry[qualifiedName] ||
+          registry[fullName] ||
+          registry[proc.name] ||
+          null;
+        if (shortcut) {
+          shortcuts.push({
+            macro: qualifiedName,
+            shortcut
+          });
+        } else {
+          unmapped.push(qualifiedName);
+        }
+      });
+
+      return {
+        success: true,
+        shortcuts,
+        unmapped,
+        note: 'Excel does not expose global shortcut listings. Only MacroFlow-tracked shortcuts are available.'
+      };
+    } catch (error) {
+      return { success: false, shortcuts: [], unmapped: [], message: error.message };
+    }
+  }
 }
 
-// Export singleton instance
 module.exports = new ExcelBridge();

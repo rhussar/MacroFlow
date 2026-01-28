@@ -48,6 +48,40 @@ function registerHandlers() {
     return excel.runMacro(macroName);
   });
 
+
+  /**
+   * List VBA modules in the active workbook
+   * Channel: 'vba:modules'
+   */
+  ipcMain.handle('vba:modules', () => {
+    return excel.listModules();
+  });
+
+  /**
+   * List procedures (Subs/Functions/Properties) in the active workbook
+   * Channel: 'vba:procedures'
+   */
+  ipcMain.handle('vba:procedures', () => {
+    return excel.listProcedures();
+  });
+
+  /**
+   * Set a macro shortcut and track it
+   * Channel: 'vba:shortcut:set'
+   * Args: { macroName: string, shortcutKey: string }
+   */
+  ipcMain.handle('vba:shortcut:set', (_, { macroName, shortcutKey }) => {
+    return excel.setMacroShortcut(macroName, shortcutKey);
+  });
+
+  /**
+   * Audit tracked shortcuts
+   * Channel: 'vba:shortcut:audit'
+   */
+  ipcMain.handle('vba:shortcut:audit', () => {
+    return excel.auditShortcuts();
+  });
+
   // ==========================================================================
   // CELL OPERATIONS
   // ==========================================================================
@@ -78,6 +112,15 @@ function registerHandlers() {
     return excel.getSelection();
   });
 
+  /**
+   * Highlight current selection
+   * Channel: 'cell:highlight'
+   * Args: { color: string }
+   */
+  ipcMain.handle('cell:highlight', (_, { color }) => {
+    return excel.highlightSelection(color);
+  });
+
   // ==========================================================================
   // WORKBOOK INFO
   // ==========================================================================
@@ -88,6 +131,41 @@ function registerHandlers() {
    */
   ipcMain.handle('workbook:info', () => {
     return excel.getWorkbookInfo();
+  });
+
+  /**
+   * Get all open workbooks
+   * Channel: 'workbook:list'
+   * Returns: { success: boolean, workbooks: Array<{ name: string, path: string }> }
+   */
+  ipcMain.handle('workbook:list', () => {
+    return excel.getOpenWorkbooks();
+  });
+
+  /**
+   * List worksheets with UsedRange stats
+   * Channel: 'workbook:sheets'
+   */
+  ipcMain.handle('workbook:sheets', () => {
+    return excel.listWorksheets();
+  });
+
+  /**
+   * Get worksheet metadata and preview
+   * Channel: 'workbook:metadata'
+   * Args: { sheetName?: string }
+   */
+  ipcMain.handle('workbook:metadata', (_, args) => {
+    return excel.getWorksheetMetadata(args);
+  });
+
+  /**
+   * Get metadata for a closed workbook path
+   * Channel: 'workbook:metadata:closed'
+   * Args: { path: string, sheetName?: string }
+   */
+  ipcMain.handle('workbook:metadata:closed', (_, args) => {
+    return excel.getClosedWorkbookMetadata(args);
   });
 }
 

@@ -60,30 +60,30 @@ if (!gotLock) {
 
 // Window creation function
 function createWindow() {
-  // Get screen dimensions for phantom taskpane positioning
   const primaryDisplay = screen.getPrimaryDisplay();
   const { width, height, x, y } = primaryDisplay.workArea;
 
-  // Safe Zone gaps to keep Excel controls accessible
-  const TOP_GAP = 240;    // Leave space for Excel title bar, ribbon, tabs, column headers
-  const BOTTOM_GAP = 50;  // Leave space for Excel status bar and zoom slider
-  const SIDEBAR_WIDTH = 400;
+  // Window dimensions
+  const WIN_WIDTH = 750;
+  const WIN_HEIGHT = 738;
+  const RIGHT_MARGIN = 21;
+  const BOTTOM_MARGIN = 55;
 
   const mainWindow = new BrowserWindow({
-    width: SIDEBAR_WIDTH,
-    height: height - TOP_GAP - BOTTOM_GAP, // Reduce height for safe zones
-    x: x + width - SIDEBAR_WIDTH, // Snap to far right
-    y: y + TOP_GAP, // Push down from top
-    frame: false, // Remove Windows title bar
-    alwaysOnTop: true, // Float above Excel
-    resizable: false, // Fixed width like real taskpane
-    movable: false, // Lock in place
-    skipTaskbar: false, // Keep visible in taskbar for now
+    width: WIN_WIDTH,
+    height: WIN_HEIGHT,
+    x: x + width - WIN_WIDTH - RIGHT_MARGIN,
+    y: y + height - WIN_HEIGHT - BOTTOM_MARGIN,
+    frame: false,
+    alwaysOnTop: true,
+    resizable: false,
+    movable: false,
+    skipTaskbar: false,
     title: 'MacroFlow',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
-      sandbox: false // Required for COM
+      sandbox: false
     }
   });
 

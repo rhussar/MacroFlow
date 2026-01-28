@@ -30,6 +30,32 @@ contextBridge.exposeInMainWorld('excel', {
      * @returns {Promise<{ success: boolean, message: string }>}
      */
     run: (args) => ipcRenderer.invoke('vba:run', args),
+
+
+    /**
+     * List VBA modules in the active workbook
+     * @returns {Promise<{ success: boolean, workbook?: object, modules: Array }>}
+     */
+    modules: () => ipcRenderer.invoke('vba:modules'),
+
+    /**
+     * List procedures (Subs/Functions/Properties) in the active workbook
+     * @returns {Promise<{ success: boolean, workbook?: object, procedures: Array }>}
+     */
+    procedures: () => ipcRenderer.invoke('vba:procedures'),
+
+    /**
+     * Set a macro shortcut and track it
+     * @param {{ macroName: string, shortcutKey: string }} args
+     * @returns {Promise<{ success: boolean, message: string }>}
+     */
+    setShortcut: (args) => ipcRenderer.invoke('vba:shortcut:set', args),
+
+    /**
+     * Audit tracked shortcuts
+     * @returns {Promise<{ success: boolean, shortcuts: Array, unmapped: Array }>}
+     */
+    auditShortcuts: () => ipcRenderer.invoke('vba:shortcut:audit'),
   },
 
   // ==========================================================================
@@ -55,6 +81,13 @@ contextBridge.exposeInMainWorld('excel', {
      * @returns {Promise<{ success: boolean, address: string, value: any }>}
      */
     selection: () => ipcRenderer.invoke('cell:selection'),
+
+    /**
+     * Highlight current selection
+     * @param {{ color: string }} args
+     * @returns {Promise<{ success: boolean, color?: string }>}
+     */
+    highlight: (args) => ipcRenderer.invoke('cell:highlight', args),
   },
 
   // ==========================================================================
@@ -66,6 +99,32 @@ contextBridge.exposeInMainWorld('excel', {
      * @returns {Promise<{ success: boolean, name: string, path: string, sheets: string[] }>}
      */
     info: () => ipcRenderer.invoke('workbook:info'),
+
+    /**
+     * Get all open workbooks
+     * @returns {Promise<{ success: boolean, workbooks: Array<{ name: string, path: string }> }>}
+     */
+    list: () => ipcRenderer.invoke('workbook:list'),
+
+    /**
+     * List worksheets with UsedRange stats
+     * @returns {Promise<{ success: boolean, sheets: Array }>}
+     */
+    sheets: () => ipcRenderer.invoke('workbook:sheets'),
+
+    /**
+     * Get worksheet metadata and preview
+     * @param {{ sheetName?: string }} args
+     * @returns {Promise<{ success: boolean, sheet?: object, structuralContext?: object, dataContext?: object }>}
+     */
+    metadata: (args) => ipcRenderer.invoke('workbook:metadata', args),
+
+    /**
+     * Get metadata for a closed workbook path
+     * @param {{ path: string, sheetName?: string }} args
+     * @returns {Promise<{ success: boolean, sheet?: object, structuralContext?: object, dataContext?: object }>}
+     */
+    metadataClosed: (args) => ipcRenderer.invoke('workbook:metadata:closed', args),
   },
 
   // ==========================================================================
@@ -77,10 +136,4 @@ contextBridge.exposeInMainWorld('excel', {
      */
     close: () => ipcRenderer.send('app:close'),
   },
-});
-
-// Legacy API for backward compatibility (can be removed later)
-contextBridge.exposeInMainWorld('electronAPI', {
-  closeApp: () => ipcRenderer.send('app:close'),
-  injectCode: (code) => ipcRenderer.invoke('vba:inject', { code }),
 });

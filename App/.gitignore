@@ -3,7 +3,7 @@
 # ============================================================================
 node_modules/
 jspm_packages/
-package-lock.json
+#package-lock.json
 
 # ============================================================================
 # BUILD ARTIFACTS
@@ -80,3 +80,13 @@ coverage/
 *.tgz
 .yarn-integrity
 report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
+
+# Excel Temporary Lock Files
+~$*
+
+# Local AI & Context folders
+_LEGACY_CONTEXT/
+.claude/
+
+# Mistake files
+nul

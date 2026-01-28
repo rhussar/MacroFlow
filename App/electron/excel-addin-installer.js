@@ -22,9 +22,14 @@ function getAddinSourcePath() {
   } else {
     // Production: extraResource copies to process.resourcesPath/resources
     if (process.resourcesPath) {
-      const resourcesPath = path.join(process.resourcesPath, 'resources/MacroFlowLoader.xlam');
-      if (fs.existsSync(resourcesPath)) {
-        return resourcesPath;
+      const candidates = [
+        path.join(process.resourcesPath, 'Resources', 'MacroFlowLoader.xlam'),
+        path.join(process.resourcesPath, 'resources', 'MacroFlowLoader.xlam'),
+      ];
+      for (const candidate of candidates) {
+        if (fs.existsSync(candidate)) {
+          return candidate;
+        }
       }
     }
     // Fallback

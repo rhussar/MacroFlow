@@ -7,7 +7,7 @@ module.exports = {
       unpack: '*.node'
     },
     extraResource: [
-      './resources'
+      './Resources'
     ]
   },
   rebuildConfig: {},

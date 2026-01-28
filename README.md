@@ -1,55 +1,21 @@
 # MacroFlow
 
-**A desktop sidecar application for Excel that enables VBA code injection via COM automation.**
+## Install (Windows)
 
-MacroFlow runs as a standalone Electron app that docks to the right side of your screen, providing a Monaco code editor for writing and pushing VBA macros directly into Excel's VBA Editor.
+1) Build the installer:
 
----
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                         YOUR SCREEN                              │
-├─────────────────────────────────────┬───────────────────────────┤
-│                                     │                           │
-│           Microsoft Excel           │    MacroFlow Sidebar      │
-│                                     │    (Electron + React)     │
-│     ┌─────────────────────────┐     │                           │
-│     │     Active Workbook     │     │    ┌─────────────────┐    │
-│     │                         │◄────┼────│  Monaco Editor  │    │
-│     │  ┌───────────────────┐  │ COM │    │                 │    │
-│     │  │ MacroFlowModule   │  │     │    │  ' VBA Code     │    │
-│     │  │                   │  │     │    │  Sub MyMacro()  │    │
-│     │  │ Sub MyMacro()     │  │     │    │    ...          │    │
-│     │  │   MsgBox "Hello"  │  │     │    │  End Sub        │    │
-│     │  │ End Sub           │  │     │    │                 │    │
-│     │  └───────────────────┘  │     │    └─────────────────┘    │
-│     │                         │     │    [  Push to Excel  ]    │
-│     └─────────────────────────┘     │                           │
-│                                     │                           │
-└─────────────────────────────────────┴───────────────────────────┘
+```bash
+cd App
+npm install
+npm run make
 ```
 
-**Tech Stack:**
-- **Frontend:** React + Vite + Monaco Editor
-- **Backend:** Electron (Node.js) with winax for COM automation
-- **Build:** Electron Forge with Squirrel installer
-- **Excel Integration:** COM via `winax.GetObject('Excel.Application')`
+2) Run the installer:
 
----
+- Open `App/out/make/squirrel.windows/x64/`
+- Double-click `MacroFlow-x.x.x Setup.exe`
 
-## Prerequisites
-
-1. **Windows 10/11** (COM automation is Windows-only)
-2. **Microsoft Excel** (Microsoft 365 or 2019+)
-3. **Node.js 18+** with npm
-
----
-
-## Quick Start
-
-### Development Mode
+## Development Mode
 
 ```bash
 cd App
@@ -57,127 +23,28 @@ npm install
 npm run dev
 ```
 
-This launches:
-- Vite dev server on `http://localhost:5173`
-- Electron app with hot reload
-- DevTools for debugging
+This starts Vite on `http://localhost:5173` and launches the Electron app.
 
-### Production Build
+## Files 
 
-```bash
-cd App
-npm run make
-```
 
-Outputs installer to `App/out/make/squirrel.windows/x64/MacroFlow-x.x.x Setup.exe`
+- `docs/excel-bridge-api.md` documents the current `window.excel` API exposed to the UI.
+- `App/package.json` defines the app metadata, scripts, and dependencies.
+- `App/package-lock.json` locks dependency versions for deterministic installs.
 
----
+- `App/forge.config.js` configures Electron Forge packaging and makers.
+- `App/vite.config.js` configures the Vite build for the renderer.
+- `App/index.html` is the renderer HTML entry point.
+- `App/components.json` holds UI tooling configuration.
+- `App/test-connection.js` is a standalone winax/Excel COM smoke test (requires matching Node version; otherwise test from Electron).
+- `App/Resources/MacroFlowLoader.xlam` is the Excel add‑in loaded by the installer.
 
-## Excel Configuration (Required)
+- `App/electron/main.js` creates the Electron window and manages app lifecycle.
+- `App/electron/preload.js` exposes a safe IPC bridge to the renderer.
+- `App/electron/ipc-handlers.js` routes renderer IPC calls to backend logic.
+- `App/electron/excel-bridge.js` implements Excel COM automation and VBA helpers.
+- `App/electron/excel-addin-installer.js` installs and registers the Excel add‑in.
 
-**You must enable VBA project access or MacroFlow cannot inject code.**
-
-1. Open Excel
-2. Go to **File → Options → Trust Center → Trust Center Settings**
-3. Select **Macro Settings**
-4. Check: **Trust access to the VBA project object model**
-5. Click OK and restart Excel
-
----
-
-## How It Works
-
-1. **Open Excel** with any workbook
-2. **Launch MacroFlow** (via dev mode or installed app)
-3. **Write VBA code** in the Monaco editor
-4. **Click "Push to Excel"**
-5. MacroFlow creates/updates `MacroFlowModule` in your workbook's VBA project
-
-The connection uses `winax.GetObject('', 'Excel.Application')` to attach to the running Excel instance - no new Excel windows are created.
-
----
-
-## Project Structure
-
-```
-MacroFlow/
-├── App/                          # Main application
-│   ├── electron/                 # Electron main process
-│   │   ├── main.js              # App entry, window creation, single-instance lock
-│   │   ├── preload.js           # Context bridge for IPC
-│   │   ├── ipc-handlers.js      # All backend logic + Excel COM integration
-│   │   └── excel-addin-installer.js  # Auto-installs .xlam to XLSTART
-│   ├── src/                     # React frontend
-│   │   ├── App.jsx              # Main component with Monaco editor
-│   │   └── App.css              # Styles
-│   ├── Resources/               # Excel add-in files
-│   │   └── MacroFlowLoader.xlam # Ribbon button add-in
-│   ├── package.json
-│   └── forge.config.js          # Electron Forge build config
-└── README.md
-```
-
----
-
-## Key Files
-
-| File | Purpose |
-|------|---------|
-| `electron/main.js` | Single-instance lock, window positioning (safe zones), app lifecycle |
-| `electron/ipc-handlers.js` | Excel COM connection via winax, VBA injection logic |
-| `electron/preload.js` | Exposes `window.electronAPI` to renderer |
-| `src/App.jsx` | React UI with Monaco editor and Push to Excel button |
-
----
-
-## IPC API
-
-```javascript
-// Inject VBA code into Excel
-window.electronAPI.injectCode(code)
-// Returns: { success: boolean, message: string }
-
-// Close the app
-window.electronAPI.closeApp()
-```
-
----
-
-## Troubleshooting
-
-### "Excel is not running"
-- Open Excel with a workbook before clicking Push to Excel
-
-### "Please open a workbook first"
-- Create or open any Excel file (the workbook must be active)
-
-### "Action Blocked: Trust access..."
-- Enable VBA project access in Trust Center (see Excel Configuration above)
-
-### Multiple windows opening
-- Kill all `EXCEL.EXE` processes and restart
-- The app uses `requestSingleInstanceLock()` to prevent duplicates
-
-### Ghost Excel instances
-- Run `taskkill /F /IM excel.exe` to clean up stale processes
-- Restart Excel fresh
-
----
-
-## Window Positioning
-
-The sidebar uses "safe zone" gaps to avoid covering Excel controls:
-
-```javascript
-const TOP_GAP = 240;    // Leaves ribbon + column headers visible
-const BOTTOM_GAP = 50;  // Leaves status bar + zoom visible
-const SIDEBAR_WIDTH = 400;
-```
-
-Adjust these values in `electron/main.js` if needed.
-
----
-
-## License
-
-MIT
+- `App/src/main.jsx` boots the React app in the renderer.
+- `App/src/index.css` defines global styles and Tailwind base styles.
+- `App/src/App.jsx` is the current React UI entry component.

@@ -8,19 +8,66 @@ const execAsync = promisify(exec);
 const ADDIN_FILE_NAME = 'MacroFlow.xlam';
 const DEFAULT_EXCEL_OPTIONS_KEY = 'HKCU\\Software\\Microsoft\\Office\\16.0\\Excel\\Options';
 
+function escapePowerShellSingleQuotedString(value) {
+  return String(value).replace(/'/g, "''");
+}
+
+function buildPowerShellEncodedCommand(script) {
+  return Buffer.from(String(script), 'utf16le').toString('base64');
+}
+
+async function runPowerShellEncoded(script) {
+  const encoded = buildPowerShellEncodedCommand(script);
+  return execAsync(`powershell.exe -NoProfile -NonInteractive -STA -ExecutionPolicy Bypass -EncodedCommand ${encoded}`);
+}
+
+async function doesRegistryKeyExist(key) {
+  try {
+    await execAsync(`reg query "${key}" 2>nul`);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function getInstalledExcelMajorVersion() {
+  const versions = ['16.0', '15.0', '14.0'];
+  const installRootTemplates = [
+    'HKLM\\Software\\Microsoft\\Office\\{ver}\\Excel\\InstallRoot',
+    'HKLM\\Software\\WOW6432Node\\Microsoft\\Office\\{ver}\\Excel\\InstallRoot',
+  ];
+
+  for (const ver of versions) {
+    for (const template of installRootTemplates) {
+      const key = template.replace('{ver}', ver);
+      if (await doesRegistryKeyExist(key)) {
+        return ver;
+      }
+    }
+  }
+
+  return null;
+}
+
 async function getExcelOptionsRegistryKey() {
   // Excel 365 / Office 2016+ is typically 16.0, but older installations can differ.
   const versions = ['16.0', '15.0', '14.0'];
+
+  // Prefer whichever HKCU key exists (Excel has likely been run at least once)
   for (const v of versions) {
     const key = `HKCU\\Software\\Microsoft\\Office\\${v}\\Excel\\Options`;
-    try {
-      await execAsync(`reg query "${key}" 2>nul`);
+    if (await doesRegistryKeyExist(key)) {
       return key;
-    } catch {
-      // try next
     }
   }
-  // If nothing matches, we still write to the default (reg add will create it).
+
+  // If HKCU keys aren't present yet, infer from install roots in HKLM
+  const installed = await getInstalledExcelMajorVersion();
+  if (installed) {
+    return `HKCU\\Software\\Microsoft\\Office\\${installed}\\Excel\\Options`;
+  }
+
+  // If nothing matches, we still write to the default (registry write will create it).
   return DEFAULT_EXCEL_OPTIONS_KEY;
 }
 
@@ -29,7 +76,7 @@ async function getExcelOptionsRegistryKey() {
 // ============================================================================
 
 /**
- * Get the path to the add-in .xlam file
+ * Get the path to the MacroFlow.xlam file
  * Handles both development and production environments
  */
 function getAddinSourcePath() {
@@ -149,8 +196,7 @@ async function findNextOpenSlot() {
     }
   }
 
-  // All slots taken, overwrite OPEN as fallback
-  return { slot: 'OPEN', alreadyRegistered: false };
+  throw new Error('All Excel Add-in slots (OPEN-OPEN10) are full.');
 }
 
 /**
@@ -169,18 +215,52 @@ async function registerAddinInRegistry(destinationPath) {
 
   // Format: /R "C:\Users\...\AppData\Roaming\Microsoft\AddIns\MacroFlow.xlam"
   // The /R switch tells Excel to load as a hidden add-in (not a visible workbook)
-  // We must escape the inner quotes for the Windows reg command
-  const valueData = `/R \\"${destinationPath}\\"`;
+  const valueData = `/R "${destinationPath}"`;
 
-  // Build the reg command
-  // REG_SZ is the string type for registry values
-  const regCommand = `reg add "${baseKey}" /v ${slot} /t REG_SZ /d "${valueData}" /f`;
+  const psKeyPath = baseKey.replace(/^HKCU\\/, 'HKCU:\\');
+  const escapedKeyPath = escapePowerShellSingleQuotedString(psKeyPath);
+  const escapedSlot = escapePowerShellSingleQuotedString(slot);
+  const escapedValueData = escapePowerShellSingleQuotedString(valueData);
 
   try {
-    await execAsync(regCommand);
+    await runPowerShellEncoded(
+      [
+        "$ErrorActionPreference = 'Stop'",
+        `$keyPath = '${escapedKeyPath}'`,
+        'New-Item -Path $keyPath -Force | Out-Null',
+        `New-ItemProperty -Path $keyPath -Name '${escapedSlot}' -PropertyType String -Value '${escapedValueData}' -Force | Out-Null`,
+      ].join('; ')
+    );
     return { registered: true, slot, path: destinationPath };
   } catch (error) {
     throw new Error(`Registry write failed: ${error.message}`);
+  }
+}
+
+async function tryLoadAddinIntoRunningExcel(destinationPath) {
+  const escapedPath = escapePowerShellSingleQuotedString(destinationPath);
+  const escapedName = escapePowerShellSingleQuotedString(ADDIN_FILE_NAME);
+
+  const script = [
+    "$ErrorActionPreference = 'Stop'",
+    `$addinPath = '${escapedPath}'`,
+    `$addinName = '${escapedName}'`,
+    '$excel = $null',
+    "try { $excel = [Runtime.InteropServices.Marshal]::GetActiveObject('Excel.Application') } catch { exit 2 }",
+    '$addin = $excel.AddIns | Where-Object { $_.FullName -eq $addinPath -or $_.Name -eq $addinName } | Select-Object -First 1',
+    'if (-not $addin) { $addin = $excel.AddIns.Add($addinPath, $false) }',
+    '$addin.Installed = $true',
+  ].join('; ');
+
+  try {
+    await runPowerShellEncoded(script);
+    return { attempted: true, loaded: true };
+  } catch (error) {
+    // Exit code 2 means no running Excel instance to attach to (not an error for install)
+    if (typeof error?.code === 'number' && error.code === 2) {
+      return { attempted: true, loaded: false, reason: 'excel_not_running' };
+    }
+    return { attempted: true, loaded: false, reason: 'load_failed', error: error.message };
   }
 }
 
@@ -194,6 +274,9 @@ async function registerAddinInRegistry(destinationPath) {
  * 2. Register in Windows Registry for auto-load
  */
 async function installExcelAddin() {
+  if (process.platform !== 'win32') {
+    return { success: false, error: 'Windows only.' };
+  }
   try {
     // Step 1: Get source path
     const sourcePath = getAddinSourcePath();
@@ -227,12 +310,18 @@ async function installExcelAddin() {
     // Step 3: Register in registry for auto-load
     const registryResult = await registerAddinInRegistry(copyResult.path);
 
+    // Step 4 (best-effort): If Excel is already running, load the add-in into the live instance
+    const liveLoadResult = await tryLoadAddinIntoRunningExcel(copyResult.path);
+
     return {
       success: true,
       addinPath: copyResult.path,
       fileCopied: copyResult.copied,
       registrySlot: registryResult.slot,
-      registryUpdated: registryResult.registered
+      registryUpdated: registryResult.registered,
+      liveLoadAttempted: liveLoadResult.attempted,
+      liveLoadSucceeded: liveLoadResult.loaded,
+      liveLoadReason: liveLoadResult.reason
     };
 
   } catch (error) {
@@ -250,6 +339,9 @@ async function installExcelAddin() {
  * 2. Delete from AddIns folder
  */
 async function uninstallExcelAddin() {
+  if (process.platform !== 'win32') {
+    return { success: false, error: 'Windows only.' };
+  }
   try {
     const baseKey = await getExcelOptionsRegistryKey();
     const addInsFolder = getAddInsFolder();
@@ -261,8 +353,7 @@ async function uninstallExcelAddin() {
     for (const slot of slots) {
       try {
         const { stdout } = await execAsync(`reg query "${baseKey}" /v ${slot} 2>nul`);
-        const hasCurrent = stdout.includes(ADDIN_FILE_NAME);
-        if (hasCurrent) {
+        if (stdout.includes(ADDIN_FILE_NAME)) {
           await execAsync(`reg delete "${baseKey}" /v ${slot} /f`);
         }
       } catch {

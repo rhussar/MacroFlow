@@ -7,6 +7,10 @@
  * Usage in React:
  *   const result = await window.excel.vba.inject({ code: '...' });
  *   const cell = await window.excel.cell.read({ address: 'A1' });
+ *   
+ * Window control (for alwaysOnTop management):
+ *   await window.excel.window.setAlwaysOnTop(false);
+ *   const { value } = await window.excel.window.getAlwaysOnTop();
  */
 
 const { contextBridge, ipcRenderer } = require('electron');
@@ -125,6 +129,24 @@ contextBridge.exposeInMainWorld('excel', {
      * @returns {Promise<{ success: boolean, sheet?: object, structuralContext?: object, dataContext?: object }>}
      */
     metadataClosed: (args) => ipcRenderer.invoke('workbook:metadata:closed', args),
+  },
+
+  // ==========================================================================
+  // WINDOW CONTROLS (for alwaysOnTop management)
+  // ==========================================================================
+  window: {
+    /**
+     * Set the alwaysOnTop state of the main window
+     * @param {boolean} value - Whether to keep window on top
+     * @returns {Promise<{ success: boolean, previousValue?: boolean, currentValue?: boolean }>}
+     */
+    setAlwaysOnTop: (value) => ipcRenderer.invoke('window:setAlwaysOnTop', value),
+
+    /**
+     * Get the current alwaysOnTop state
+     * @returns {Promise<{ success: boolean, value?: boolean }>}
+     */
+    getAlwaysOnTop: () => ipcRenderer.invoke('window:getAlwaysOnTop'),
   },
 
   // ==========================================================================

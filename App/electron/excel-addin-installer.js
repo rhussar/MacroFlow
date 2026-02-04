@@ -5,12 +5,31 @@ const { promisify } = require('util');
 
 const execAsync = promisify(exec);
 
+const ADDIN_FILE_NAME = 'MacroFlow.xlam';
+const DEFAULT_EXCEL_OPTIONS_KEY = 'HKCU\\Software\\Microsoft\\Office\\16.0\\Excel\\Options';
+
+async function getExcelOptionsRegistryKey() {
+  // Excel 365 / Office 2016+ is typically 16.0, but older installations can differ.
+  const versions = ['16.0', '15.0', '14.0'];
+  for (const v of versions) {
+    const key = `HKCU\\Software\\Microsoft\\Office\\${v}\\Excel\\Options`;
+    try {
+      await execAsync(`reg query "${key}" 2>nul`);
+      return key;
+    } catch {
+      // try next
+    }
+  }
+  // If nothing matches, we still write to the default (reg add will create it).
+  return DEFAULT_EXCEL_OPTIONS_KEY;
+}
+
 // ============================================================================
 // PATH HELPERS
 // ============================================================================
 
 /**
- * Get the path to the MacroFlowLoader.xlam file
+ * Get the path to the add-in .xlam file
  * Handles both development and production environments
  */
 function getAddinSourcePath() {
@@ -18,13 +37,15 @@ function getAddinSourcePath() {
 
   if (isDev) {
     // Development: resources folder is at project root
-    return path.join(__dirname, '../Resources/MacroFlowLoader.xlam');
+    return path.join(__dirname, '../Resources', ADDIN_FILE_NAME);
   } else {
     // Production: extraResource copies to process.resourcesPath/resources
     if (process.resourcesPath) {
       const candidates = [
-        path.join(process.resourcesPath, 'Resources', 'MacroFlowLoader.xlam'),
-        path.join(process.resourcesPath, 'resources', 'MacroFlowLoader.xlam'),
+        // Some packagers copy individual files directly into the resources root.
+        path.join(process.resourcesPath, ADDIN_FILE_NAME),
+        path.join(process.resourcesPath, 'Resources', ADDIN_FILE_NAME),
+        path.join(process.resourcesPath, 'resources', ADDIN_FILE_NAME),
       ];
       for (const candidate of candidates) {
         if (fs.existsSync(candidate)) {
@@ -33,7 +54,7 @@ function getAddinSourcePath() {
       }
     }
     // Fallback
-    return path.join(__dirname, '../Resources/MacroFlowLoader.xlam');
+    return path.join(__dirname, '../Resources', ADDIN_FILE_NAME);
   }
 }
 
@@ -73,7 +94,7 @@ async function areFilesIdentical(file1, file2) {
  */
 async function copyAddinToAddInsFolder(sourcePath) {
   const addInsFolder = getAddInsFolder();
-  const destPath = path.join(addInsFolder, 'MacroFlowLoader.xlam');
+  const destPath = path.join(addInsFolder, ADDIN_FILE_NAME);
 
   // Ensure AddIns directory exists
   await fs.ensureDir(addInsFolder);
@@ -100,13 +121,13 @@ async function copyAddinToAddInsFolder(sourcePath) {
  * Excel uses OPEN, OPEN1, OPEN2, etc. for auto-load add-ins
  */
 async function findNextOpenSlot() {
-  const baseKey = 'HKCU\\Software\\Microsoft\\Office\\16.0\\Excel\\Options';
+  const baseKey = await getExcelOptionsRegistryKey();
 
   // Check OPEN first
   try {
     const { stdout } = await execAsync(`reg query "${baseKey}" /v OPEN 2>nul`);
     // OPEN exists, check if it's our add-in
-    if (stdout.includes('MacroFlowLoader.xlam')) {
+    if (stdout.includes(ADDIN_FILE_NAME)) {
       return { slot: 'OPEN', alreadyRegistered: true };
     }
   } catch {
@@ -119,7 +140,7 @@ async function findNextOpenSlot() {
     const valueName = `OPEN${i}`;
     try {
       const { stdout } = await execAsync(`reg query "${baseKey}" /v ${valueName} 2>nul`);
-      if (stdout.includes('MacroFlowLoader.xlam')) {
+      if (stdout.includes(ADDIN_FILE_NAME)) {
         return { slot: valueName, alreadyRegistered: true };
       }
     } catch {
@@ -137,7 +158,7 @@ async function findNextOpenSlot() {
  * @param {string} destinationPath - The path where the add-in was copied to (in AddIns folder)
  */
 async function registerAddinInRegistry(destinationPath) {
-  const baseKey = 'HKCU\\Software\\Microsoft\\Office\\16.0\\Excel\\Options';
+  const baseKey = await getExcelOptionsRegistryKey();
 
   // Find available slot
   const { slot, alreadyRegistered } = await findNextOpenSlot();
@@ -146,7 +167,7 @@ async function registerAddinInRegistry(destinationPath) {
     return { registered: false, slot, reason: 'already_registered' };
   }
 
-  // Format: /R "C:\Users\...\AppData\Roaming\Microsoft\AddIns\MacroFlowLoader.xlam"
+  // Format: /R "C:\Users\...\AppData\Roaming\Microsoft\AddIns\MacroFlow.xlam"
   // The /R switch tells Excel to load as a hidden add-in (not a visible workbook)
   // We must escape the inner quotes for the Windows reg command
   const valueData = `/R \\"${destinationPath}\\"`;
@@ -178,11 +199,30 @@ async function installExcelAddin() {
     const sourcePath = getAddinSourcePath();
 
     if (!await fs.pathExists(sourcePath)) {
-      throw new Error(`MacroFlowLoader.xlam not found at ${sourcePath}`);
+      throw new Error(`${ADDIN_FILE_NAME} not found at ${sourcePath}`);
     }
 
     // Step 2: Copy to AddIns folder
     const copyResult = await copyAddinToAddInsFolder(sourcePath);
+
+    // Step 2.5: Clean up any old/stale MacroFlow registry entries so Excel doesn't try to load missing add-ins.
+    const baseKey = await getExcelOptionsRegistryKey();
+    const slots = ['OPEN', ...Array.from({ length: 10 }, (_, i) => `OPEN${i + 1}`)];
+    for (const slot of slots) {
+      try {
+        const { stdout } = await execAsync(`reg query "${baseKey}" /v ${slot} 2>nul`);
+        const hasCurrent = stdout.includes(ADDIN_FILE_NAME);
+        if (hasCurrent) {
+          // If it already points at the correct file path, keep it.
+          if (stdout.includes(copyResult.path)) {
+            continue;
+          }
+          await execAsync(`reg delete "${baseKey}" /v ${slot} /f`);
+        }
+      } catch {
+        // Slot doesn't exist, continue
+      }
+    }
 
     // Step 3: Register in registry for auto-load
     const registryResult = await registerAddinInRegistry(copyResult.path);
@@ -211,9 +251,9 @@ async function installExcelAddin() {
  */
 async function uninstallExcelAddin() {
   try {
-    const baseKey = 'HKCU\\Software\\Microsoft\\Office\\16.0\\Excel\\Options';
+    const baseKey = await getExcelOptionsRegistryKey();
     const addInsFolder = getAddInsFolder();
-    const addinPath = path.join(addInsFolder, 'MacroFlowLoader.xlam');
+    const addinPath = path.join(addInsFolder, ADDIN_FILE_NAME);
 
     // Remove from registry (check all OPEN slots)
     const slots = ['OPEN', ...Array.from({ length: 10 }, (_, i) => `OPEN${i + 1}`)];
@@ -221,7 +261,8 @@ async function uninstallExcelAddin() {
     for (const slot of slots) {
       try {
         const { stdout } = await execAsync(`reg query "${baseKey}" /v ${slot} 2>nul`);
-        if (stdout.includes('MacroFlowLoader.xlam')) {
+        const hasCurrent = stdout.includes(ADDIN_FILE_NAME);
+        if (hasCurrent) {
           await execAsync(`reg delete "${baseKey}" /v ${slot} /f`);
         }
       } catch {

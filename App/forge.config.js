@@ -1,8 +1,9 @@
-const { FusesPlugin } = require('@electron-forge/plugin-fuses');
+﻿const { FusesPlugin } = require('@electron-forge/plugin-fuses');
 const { FuseV1Options, FuseVersion } = require('@electron/fuses');
 
 module.exports = {
   packagerConfig: {
+    icon: './assets/app-icon',
     asar: {
       unpack: '*.node'
     },
@@ -14,7 +15,9 @@ module.exports = {
   makers: [
     {
       name: '@electron-forge/maker-squirrel',
-      config: {},
+      // Keep this in sync with `app.setAppUserModelId(...)` in `electron/main.js` so
+      // Windows taskbar grouping/pinning uses the right icon.
+      config: { setupIcon: './assets/app-icon.ico', appId: 'com.macroflow.desktop' },
     },
     {
       name: '@electron-forge/maker-zip',
@@ -47,3 +50,4 @@ module.exports = {
     }),
   ],
 };
+

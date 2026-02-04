@@ -1,5 +1,7 @@
-const { app, BrowserWindow, screen } = require('electron');
+﻿const { app, BrowserWindow, screen, ipcMain } = require('electron');
 const path = require('node:path');
+
+const iconPath = path.join(__dirname, '../assets', process.platform === 'win32' ? 'app-icon.ico' : 'app-icon.png');
 const { registerHandlers } = require('./ipc-handlers');
 const { installExcelAddin } = require('./excel-addin-installer');
 
@@ -9,8 +11,24 @@ if (require('electron-squirrel-startup')) {
   return;
 }
 
+// Ensure Windows uses our app identity for taskbar grouping (helps avoid a stale pinned/shortcut icon).
+if (process.platform === 'win32') {
+  app.setAppUserModelId('com.macroflow.desktop');
+}
+
 // Determine if running in development mode
 const isDev = process.env.NODE_ENV === 'development';
+
+// Store reference to main window for IPC handlers
+let mainWindow = null;
+
+/**
+ * Get the main window reference (used by ipc-handlers)
+ * @returns {BrowserWindow|null}
+ */
+function getMainWindow() {
+  return mainWindow;
+}
 
 // CRITICAL: Request single instance lock - prevent multiple windows
 const gotLock = app.requestSingleInstanceLock();
@@ -26,11 +44,11 @@ if (!gotLock) {
   app.on('second-instance', () => {
     const windows = BrowserWindow.getAllWindows();
     if (windows.length > 0) {
-      const mainWindow = windows[0];
-      if (mainWindow.isMinimized()) {
-        mainWindow.restore();
+      const win = windows[0];
+      if (win.isMinimized()) {
+        win.restore();
       }
-      mainWindow.focus();
+      win.focus();
     }
   });
 
@@ -39,6 +57,9 @@ if (!gotLock) {
     // Install Excel Add-in before anything else
     await installExcelAddin();
 
+    // Register window control handlers BEFORE creating window
+    registerWindowHandlers();
+    
     registerHandlers();
     createWindow();
 
@@ -58,6 +79,33 @@ if (!gotLock) {
   });
 }
 
+/**
+ * Register IPC handlers for window control (alwaysOnTop, etc.)
+ * These are registered separately to avoid circular dependencies
+ */
+function registerWindowHandlers() {
+  // Set alwaysOnTop state
+  ipcMain.handle('window:setAlwaysOnTop', (_, value) => {
+    const win = getMainWindow();
+    if (win && !win.isDestroyed()) {
+      const wasOnTop = win.isAlwaysOnTop();
+      win.setAlwaysOnTop(Boolean(value));
+      console.log(`[Window] alwaysOnTop: ${wasOnTop} -> ${value}`);
+      return { success: true, previousValue: wasOnTop, currentValue: Boolean(value) };
+    }
+    return { success: false, message: 'Window not available' };
+  });
+
+  // Get alwaysOnTop state
+  ipcMain.handle('window:getAlwaysOnTop', () => {
+    const win = getMainWindow();
+    if (win && !win.isDestroyed()) {
+      return { success: true, value: win.isAlwaysOnTop() };
+    }
+    return { success: false, message: 'Window not available' };
+  });
+}
+
 // Window creation function
 function createWindow() {
   const primaryDisplay = screen.getPrimaryDisplay();
@@ -69,7 +117,7 @@ function createWindow() {
   const RIGHT_MARGIN = 21;
   const BOTTOM_MARGIN = 55;
 
-  const mainWindow = new BrowserWindow({
+  mainWindow = new BrowserWindow({
     width: WIN_WIDTH,
     height: WIN_HEIGHT,
     x: x + width - WIN_WIDTH - RIGHT_MARGIN,
@@ -80,6 +128,7 @@ function createWindow() {
     movable: false,
     skipTaskbar: false,
     title: 'MacroFlow',
+    icon: iconPath,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -95,4 +144,12 @@ function createWindow() {
   } else {
     mainWindow.loadFile(path.join(__dirname, '../dist/index.html'));
   }
+
+  // Clean up reference when window is closed
+  mainWindow.on('closed', () => {
+    mainWindow = null;
+  });
 }
+
+module.exports = { getMainWindow };
+

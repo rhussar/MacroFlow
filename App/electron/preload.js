@@ -150,6 +150,35 @@ contextBridge.exposeInMainWorld('excel', {
   },
 
   // ==========================================================================
+  // DIAGNOSTICS (for troubleshooting Excel integration)
+  // ==========================================================================
+  diagnostics: {
+    /**
+     * Collect full system diagnostics
+     * @returns {Promise<{ success: boolean, timestamp?: string, system?: object, excel?: object, addin?: object, ribbon?: object }>}
+     */
+    collect: () => ipcRenderer.invoke('diagnostics:collect'),
+
+    /**
+     * Check add-in installation status
+     * @returns {Promise<{ success: boolean, installed?: boolean, registered?: boolean, loadedInExcel?: boolean }>}
+     */
+    addin: () => ipcRenderer.invoke('diagnostics:addin'),
+
+    /**
+     * Check ribbon status
+     * @returns {Promise<{ success: boolean, hasRibbon?: boolean, ribbonErrors?: Array, ribbonInfo?: object }>}
+     */
+    ribbon: () => ipcRenderer.invoke('diagnostics:ribbon'),
+
+    /**
+     * Check Excel modal/focus state
+     * @returns {Promise<{ success: boolean, hasModal?: boolean, interactive?: boolean, ready?: boolean }>}
+     */
+    excelState: () => ipcRenderer.invoke('diagnostics:excel-state'),
+  },
+
+  // ==========================================================================
   // APP CONTROLS
   // ==========================================================================
   app: {
@@ -159,3 +188,4 @@ contextBridge.exposeInMainWorld('excel', {
     close: () => ipcRenderer.send('app:close'),
   },
 });
+

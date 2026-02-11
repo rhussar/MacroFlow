@@ -15,19 +15,34 @@
 
 const { ipcMain, app, BrowserWindow } = require('electron');
 const excel = require('./excel-bridge');
+const {
+  logger,
+  checkExcelModalState,
+  collectDiagnostics,
+  checkAddinStatus,
+  checkRibbonStatus
+} = require('./diagnostics');
+
+// Configuration for focus handling
+const FOCUS_CONFIG = {
+  // Base delay before restoring alwaysOnTop (ms)
+  baseRestoreDelay: 150,
+  // Extra delay if Excel might be showing a modal (ms)  
+  modalExtraDelay: 500,
+  // Maximum number of modal check attempts
+  maxModalCheckAttempts: 3,
+  // Delay between modal check attempts (ms)
+  modalCheckInterval: 200
+};
 
 /**
- * Simple logger for IPC events
+ * Simple logger for IPC events (uses diagnostics logger)
  * @param {string} channel - IPC channel name
  * @param {string} phase - 'start' | 'end' | 'error'
  * @param {object} [details] - Additional details to log
  */
 function logIpc(channel, phase, details = {}) {
-  const timestamp = new Date().toISOString().substr(11, 12);
-  const detailStr = Object.keys(details).length > 0 
-    ? ` ${JSON.stringify(details)}` 
-    : '';
-  console.log(`[IPC ${timestamp}] ${channel} ${phase}${detailStr}`);
+  logger.debug('IPC', `${channel} ${phase}`, details);
 }
 
 /**
@@ -40,21 +55,54 @@ function getMainWindow() {
 }
 
 /**
+ * Wait until Excel is no longer showing a modal, or timeout
+ * @param {number} maxAttempts - Maximum check attempts
+ * @param {number} interval - Delay between checks (ms)
+ * @returns {Promise<boolean>} - true if Excel is ready, false if still blocked
+ */
+async function waitForExcelReady(maxAttempts = FOCUS_CONFIG.maxModalCheckAttempts, interval = FOCUS_CONFIG.modalCheckInterval) {
+  for (let i = 0; i < maxAttempts; i++) {
+    const modalState = await checkExcelModalState();
+    if (!modalState.hasModal) {
+      return true;
+    }
+    logger.debug('Excel', `Waiting for Excel to be ready (attempt ${i + 1}/${maxAttempts})`, modalState);
+    await new Promise(resolve => setTimeout(resolve, interval));
+  }
+  return false;
+}
+
+/**
  * Temporarily disable alwaysOnTop, run a function, then restore it.
  * This prevents the Electron window from hiding Excel modal dialogs (MsgBox, etc.)
+ * 
+ * Enhanced version with:
+ * - Excel modal state detection
+ * - Configurable delays
+ * - Better logging
+ * 
  * @param {Function} fn - Function to execute (can be async)
+ * @param {object} [options] - Options
+ * @param {boolean} [options.checkModal=true] - Whether to check for Excel modals before restoring
+ * @param {number} [options.restoreDelay] - Custom restore delay (ms)
  * @returns {Promise<any>} - Result of the function
  */
-async function withExcelFocus(fn) {
+async function withExcelFocus(fn, options = {}) {
+  const {
+    checkModal = true,
+    restoreDelay = FOCUS_CONFIG.baseRestoreDelay
+  } = options;
+
   const win = getMainWindow();
   let wasOnTop = false;
+  const operationStart = Date.now();
 
   // Step 1: Disable alwaysOnTop if it's enabled
   if (win && !win.isDestroyed()) {
     wasOnTop = win.isAlwaysOnTop();
     if (wasOnTop) {
       win.setAlwaysOnTop(false);
-      console.log('[Window] Temporarily disabled alwaysOnTop for Excel operation');
+      logger.debug('Window', 'Temporarily disabled alwaysOnTop for Excel operation');
     }
   }
 
@@ -64,13 +112,32 @@ async function withExcelFocus(fn) {
   } finally {
     // Step 3: Restore alwaysOnTop (always runs, even if fn throws)
     if (win && !win.isDestroyed() && wasOnTop) {
-      // Small delay to ensure Excel dialog can appear before we restore
-      setTimeout(() => {
+      const operationDuration = Date.now() - operationStart;
+
+      // Determine the appropriate restore delay
+      let finalDelay = restoreDelay;
+
+      // For very quick operations, we might not need much delay
+      // For longer operations, Excel might still be processing
+      if (operationDuration > 1000) {
+        finalDelay = Math.max(restoreDelay, FOCUS_CONFIG.modalExtraDelay);
+      }
+
+      // Restore with delay, optionally checking for modals first
+      setTimeout(async () => {
         if (win && !win.isDestroyed()) {
+          // Optionally wait for Excel to finish showing any modals
+          if (checkModal) {
+            const isReady = await waitForExcelReady();
+            if (!isReady) {
+              logger.warn('Window', 'Excel may still be showing a modal, restoring alwaysOnTop anyway');
+            }
+          }
+
           win.setAlwaysOnTop(true);
-          console.log('[Window] Restored alwaysOnTop');
+          logger.debug('Window', 'Restored alwaysOnTop', { delayMs: finalDelay });
         }
-      }, 100);
+      }, finalDelay);
     }
   }
 }
@@ -97,10 +164,10 @@ function registerHandlers() {
    */
   ipcMain.handle('vba:inject', async (_, { moduleName = 'MacroFlowModule', code }) => {
     logIpc('vba:inject', 'start', { moduleName, codeLength: code?.length });
-    
+
     // Use withExcelFocus to prevent hiding Excel dialogs during injection
     const result = await withExcelFocus(() => excel.injectModule(moduleName, code));
-    
+
     logIpc('vba:inject', 'end', { success: result.success });
     return result;
   });
@@ -115,10 +182,10 @@ function registerHandlers() {
    */
   ipcMain.handle('vba:run', async (_, { macroName }) => {
     logIpc('vba:run', 'start', { macroName });
-    
+
     // Use withExcelFocus - CRITICAL for MsgBox/dialog visibility
     const result = await withExcelFocus(() => excel.runMacro(macroName));
-    
+
     logIpc('vba:run', 'end', { success: result.success, message: result.message });
     return result;
   });
@@ -130,9 +197,9 @@ function registerHandlers() {
    */
   ipcMain.handle('vba:modules', async () => {
     logIpc('vba:modules', 'start');
-    
+
     const result = await withExcelFocus(() => excel.listModules());
-    
+
     logIpc('vba:modules', 'end', { success: result.success, count: result.modules?.length });
     return result;
   });
@@ -143,9 +210,9 @@ function registerHandlers() {
    */
   ipcMain.handle('vba:procedures', async () => {
     logIpc('vba:procedures', 'start');
-    
+
     const result = await withExcelFocus(() => excel.listProcedures());
-    
+
     logIpc('vba:procedures', 'end', { success: result.success, count: result.procedures?.length });
     return result;
   });
@@ -157,9 +224,9 @@ function registerHandlers() {
    */
   ipcMain.handle('vba:shortcut:set', async (_, { macroName, shortcutKey }) => {
     logIpc('vba:shortcut:set', 'start', { macroName, shortcutKey });
-    
+
     const result = await withExcelFocus(() => excel.setMacroShortcut(macroName, shortcutKey));
-    
+
     logIpc('vba:shortcut:set', 'end', { success: result.success });
     return result;
   });
@@ -170,9 +237,9 @@ function registerHandlers() {
    */
   ipcMain.handle('vba:shortcut:audit', async () => {
     logIpc('vba:shortcut:audit', 'start');
-    
+
     const result = await withExcelFocus(() => excel.auditShortcuts());
-    
+
     logIpc('vba:shortcut:audit', 'end', { success: result.success });
     return result;
   });
@@ -289,6 +356,82 @@ function registerHandlers() {
     logIpc('workbook:metadata:closed', 'end', { success: result.success });
     return result;
   });
+
+  // ==========================================================================
+  // DIAGNOSTICS
+  // ==========================================================================
+
+  /**
+   * Get full system diagnostics
+   * Channel: 'diagnostics:collect'
+   * Returns: { timestamp, system, excel, addin, ribbon, recentLogs }
+   */
+  ipcMain.handle('diagnostics:collect', async () => {
+    logIpc('diagnostics:collect', 'start');
+    try {
+      const result = await collectDiagnostics();
+      logIpc('diagnostics:collect', 'end', { success: true });
+      return { success: true, ...result };
+    } catch (error) {
+      logIpc('diagnostics:collect', 'error', { error: error.message });
+      return { success: false, error: error.message };
+    }
+  });
+
+  /**
+   * Check add-in installation status
+   * Channel: 'diagnostics:addin'
+   * Returns: { installed, registered, loadedInExcel, ... }
+   */
+  ipcMain.handle('diagnostics:addin', async () => {
+    logIpc('diagnostics:addin', 'start');
+    try {
+      const result = await checkAddinStatus();
+      logIpc('diagnostics:addin', 'end', {
+        installed: result.installed,
+        loaded: result.loadedInExcel
+      });
+      return { success: true, ...result };
+    } catch (error) {
+      logIpc('diagnostics:addin', 'error', { error: error.message });
+      return { success: false, error: error.message };
+    }
+  });
+
+  /**
+   * Check ribbon status
+   * Channel: 'diagnostics:ribbon'
+   * Returns: { hasRibbon, ribbonErrors, ribbonInfo }
+   */
+  ipcMain.handle('diagnostics:ribbon', async () => {
+    logIpc('diagnostics:ribbon', 'start');
+    try {
+      const result = await checkRibbonStatus();
+      logIpc('diagnostics:ribbon', 'end', { hasRibbon: result.hasRibbon });
+      return { success: true, ...result };
+    } catch (error) {
+      logIpc('diagnostics:ribbon', 'error', { error: error.message });
+      return { success: false, error: error.message };
+    }
+  });
+
+  /**
+   * Check Excel modal/focus state
+   * Channel: 'diagnostics:excel-state'
+   * Returns: { hasModal, interactive, ready, reason }
+   */
+  ipcMain.handle('diagnostics:excel-state', async () => {
+    logIpc('diagnostics:excel-state', 'start');
+    try {
+      const result = await checkExcelModalState();
+      logIpc('diagnostics:excel-state', 'end', { hasModal: result.hasModal });
+      return { success: true, ...result };
+    } catch (error) {
+      logIpc('diagnostics:excel-state', 'error', { error: error.message });
+      return { success: false, error: error.message };
+    }
+  });
 }
 
 module.exports = { registerHandlers };
+

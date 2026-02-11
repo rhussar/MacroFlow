@@ -41,6 +41,7 @@ const SearchMode = ({
     <>
       {/* Header / Search Bar */}
       <header className="header">
+        <div className="drag-region" />
         <div className="search-input-wrapper">
           <input
             type="text"

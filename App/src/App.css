@@ -42,8 +42,6 @@
   --code-number: #b5cea8;
 
   /* Sizing */
-  --window-width: 620px;
-  --window-height: 580px;
   --header-height: 52px;
   --footer-height: 48px;
   --border-radius: 12px;
@@ -62,17 +60,26 @@ body {
   font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
   font-size: 13px;
   color: var(--text-primary);
-  background: transparent;
+  background: var(--bg-primary);
   overflow: hidden;
   -webkit-font-smoothing: antialiased;
 }
 
-#root {
+#root,
+html,
+body {
+  margin: 0;
+  padding: 0;
   width: 100%;
-  height: 100vh;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  height: 100%;
+  background: var(--bg-primary);
+  border: none;
+  outline: none;
+  box-shadow: none;
+}
+
+#root {
+  height: 100%;
 }
 
 /* ============================================
@@ -80,15 +87,17 @@ body {
    ============================================ */
 
 .app-container {
-  width: var(--window-width);
-  height: var(--window-height);
+  width: 100%;
+  height: 100%;
   background: var(--bg-primary);
   border-radius: var(--border-radius);
-  border: 1px solid var(--border-default);
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+  border: none;
+  outline: none;
+  box-shadow: none;
+  -webkit-app-region: drag;
 }
 
 /* ============================================
@@ -103,6 +112,16 @@ body {
   gap: 10px;
   background: var(--bg-secondary);
   border-bottom: 1px solid var(--border-default);
+  -webkit-app-region: drag;
+  position: relative;
+}
+
+.drag-region {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 12px;
   -webkit-app-region: drag;
 }
 
@@ -129,7 +148,6 @@ body {
 .search-input-wrapper {
   flex: 1;
   position: relative;
-  -webkit-app-region: no-drag;
 }
 
 .search-input {
@@ -141,6 +159,7 @@ body {
   color: var(--text-primary);
   font-size: 14px;
   outline: none;
+  -webkit-app-region: no-drag;
 }
 
 .search-input::placeholder {
@@ -151,7 +170,6 @@ body {
   display: flex;
   align-items: center;
   gap: 8px;
-  -webkit-app-region: no-drag;
 }
 
 .build-mode-btn {
@@ -160,18 +178,18 @@ body {
   gap: 6px;
   padding: 6px 10px;
   background: transparent;
-  border: 1px solid var(--border-default);
+  border: none;
   border-radius: var(--border-radius-sm);
   color: var(--text-secondary);
   font-size: 12px;
   cursor: pointer;
   transition: all 0.15s;
+  -webkit-app-region: no-drag;
 }
 
 .build-mode-btn:hover {
   background: var(--bg-hover);
   color: var(--text-primary);
-  border-color: var(--border-light);
 }
 
 .kbd {
@@ -200,6 +218,7 @@ body {
   cursor: pointer;
   border-radius: var(--border-radius-xs);
   transition: all 0.15s;
+  -webkit-app-region: no-drag;
 }
 
 .close-btn:hover {
@@ -235,6 +254,7 @@ body {
   flex: 1;
   overflow-y: auto;
   overflow-x: hidden;
+  -webkit-app-region: no-drag;
 }
 
 .main-content::-webkit-scrollbar {
@@ -397,6 +417,7 @@ body {
   justify-content: space-between;
   background: var(--bg-secondary);
   border-top: 1px solid var(--border-default);
+  -webkit-app-region: no-drag;
 }
 
 .footer-left {
@@ -468,6 +489,7 @@ body {
   position: fixed;
   inset: 0;
   z-index: 100;
+  -webkit-app-region: no-drag;
 }
 
 .settings-menu {
@@ -919,6 +941,7 @@ body {
 
 @media (max-height: 600px) {
   :root {
-    --window-height: 500px;
+    --header-height: 48px;
+    --footer-height: 44px;
   }
 }

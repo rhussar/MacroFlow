@@ -112,10 +112,10 @@ function createWindow() {
   const { width, height, x, y } = primaryDisplay.workArea;
 
   // Window dimensions
-  const WIN_WIDTH = 750;
-  const WIN_HEIGHT = 738;
-  const RIGHT_MARGIN = 21;
-  const BOTTOM_MARGIN = 55;
+  const WIN_WIDTH = 620;
+  const WIN_HEIGHT = 580;
+  const RIGHT_MARGIN = 50;
+  const BOTTOM_MARGIN = 150;
 
   mainWindow = new BrowserWindow({
     width: WIN_WIDTH,
@@ -123,10 +123,14 @@ function createWindow() {
     x: x + width - WIN_WIDTH - RIGHT_MARGIN,
     y: y + height - WIN_HEIGHT - BOTTOM_MARGIN,
     frame: false,
+    transparent: false,
+    hasShadow: false,
+    roundedCorners: false,
     alwaysOnTop: true,
-    resizable: false,
-    movable: false,
+    resizable: true,
+    movable: true,
     skipTaskbar: false,
+    backgroundColor: '#1e1e1e',
     title: 'MacroFlow',
     icon: iconPath,
     webPreferences: {
@@ -152,4 +156,3 @@ function createWindow() {
 }
 
 module.exports = { getMainWindow };
-

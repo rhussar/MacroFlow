@@ -155,6 +155,7 @@ const BuildMode = ({ onBack, onClose, onEditMode }) => {
     <>
       {/* Header */}
       <header className="header">
+        <div className="drag-region" />
         <button className="header-back-btn" onClick={onBack}>
           <ArrowLeftIcon size={20} />
         </button>

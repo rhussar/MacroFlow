@@ -90,10 +90,33 @@ function App() {
     setMode('explorer');
   };
 
-  // Handle shortcut click (could run macro)
-  const handleShortcutClick = (shortcut) => {
+  // Handle shortcut click - runs the VBA macro
+  const handleShortcutClick = async (shortcut) => {
     console.log('Shortcut clicked:', shortcut);
-    // Could run the macro here via window.excel.vba.run
+
+    // Try to run the macro via the Excel bridge
+    if (window.excel?.vba?.run) {
+      try {
+        // Convert display name to macro name (e.g., "Auto-Fit & Zoom 100" -> "AutoFitAndZoom100")
+        const macroName = shortcut.name
+          .replace(/[^a-zA-Z0-9\s]/g, '') // Remove special chars
+          .replace(/\s+/g, '_');           // Spaces to underscores
+
+        console.log(`Running macro: ${macroName}`);
+        const result = await window.excel.vba.run({ macroName });
+
+        if (!result.success) {
+          console.error('Macro execution failed:', result.message);
+          // Could show a notification to the user here
+        } else {
+          console.log('Macro executed successfully:', result.message);
+        }
+      } catch (error) {
+        console.error('Error running macro:', error);
+      }
+    } else {
+      console.warn('Excel VBA API not available - running in browser mode?');
+    }
   };
 
   // Render current mode content

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { ArrowLeftIcon, CloseIcon, MacroFlowLogo } from './icons';
 import { highlightVBA } from './CodePreview';
 

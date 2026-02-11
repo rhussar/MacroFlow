@@ -1,35 +1,61 @@
-﻿const { FusesPlugin } = require('@electron-forge/plugin-fuses');
+const path = require('path');
+const { FusesPlugin } = require('@electron-forge/plugin-fuses');
 const { FuseV1Options, FuseVersion } = require('@electron/fuses');
 
 module.exports = {
   packagerConfig: {
     icon: './assets/app-icon',
     asar: {
-      unpack: '*.node'
+      unpackDir: 'node_modules',
     },
+    // Copy each subfolder individually so they land directly under
+    // process.resourcesPath (e.g. resourcesPath/models/, resourcesPath/llm/)
     extraResource: [
-      './Resources'
-    ]
+      './Resources/llm',
+      './Resources/models',
+      './Resources/MacroFlow.xlam',
+    ],
+    // Keep large build-time folders OUT of the asar
+    ignore: [
+      /^[/\\]Resources($|[/\\])/,
+      /^[/\\]models($|[/\\])/,
+      /^[/\\]scripts($|[/\\])/,
+      // Strip GPU backends (CPU-only) and ARM64 — saves ~650 MB
+      /^[/\\]node_modules[/\\]@node-llama-cpp[/\\]win-arm64($|[/\\])/,
+      /^[/\\]node_modules[/\\]@node-llama-cpp[/\\]win-x64-cuda($|[/\\])/,
+      /^[/\\]node_modules[/\\]@node-llama-cpp[/\\]win-x64-cuda-ext($|[/\\])/,
+      /^[/\\]node_modules[/\\]@node-llama-cpp[/\\]win-x64-vulkan($|[/\\])/,
+    ],
   },
   rebuildConfig: {},
   makers: [
+    // 1. Wix (Creates a standard .msi installer that handles large files)
     {
-      name: '@electron-forge/maker-squirrel',
-      // Keep this in sync with `app.setAppUserModelId(...)` in `electron/main.js` so
-      // Windows taskbar grouping/pinning uses the right icon.
-      config: { setupIcon: './assets/app-icon.ico', appId: 'com.macroflow.desktop' },
+      name: '@electron-forge/maker-wix',
+      config: {
+        language: 1033,
+        manufacturer: 'MacroFlow',
+        icon: path.join(__dirname, 'assets', 'app-icon.ico'),
+        // Per-user install (AppData) — no UAC prompt, no admin required
+        defaultInstallMode: 'perUser',
+        // Unique UUID required by Windows for updates (do not change this once set)
+        upgradeCode: '46200234-8025-4513-8877-111002345678',
+        // Suppress per-user directory ICE checks (expected for LocalAppDataFolder)
+        lightSwitches: ['-sice:ICE38', '-sice:ICE91', '-sice:ICE64'],
+        // Redirect install dir from Program Files → %LOCALAPPDATA%\MacroFlow
+        // (ProgramFilesFolder requires admin even with perUser scope)
+        beforeCreate: (creator) => {
+          creator.wixTemplate = creator.wixTemplate.replace(
+            '{{ProgramFilesFolder}}',
+            'LocalAppDataFolder',
+          );
+        },
+      },
     },
+    // 2. ZIP (Backup for testing)
     {
       name: '@electron-forge/maker-zip',
-      platforms: ['darwin'],
-    },
-    {
-      name: '@electron-forge/maker-deb',
-      config: {},
-    },
-    {
-      name: '@electron-forge/maker-rpm',
-      config: {},
+      platforms: ['win32'],
     },
   ],
   plugins: [
@@ -50,4 +76,3 @@ module.exports = {
     }),
   ],
 };
-

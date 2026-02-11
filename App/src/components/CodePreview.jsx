@@ -1,20 +1,9 @@
-import React from 'react';
-
 /**
  * Syntax highlight VBA code
  * Returns HTML with span elements for different code elements
  */
 export const highlightVBA = (code) => {
   if (!code) return '';
-
-  // Keywords (Sub, Function, Dim, Set, End, etc.)
-  const keywords = /\b(Sub|End Sub|Function|End Function|Dim|Set|As|If|Then|Else|End If|For|To|Next|Each|In|Do|Loop|While|Wend|With|End With|Select|Case|End Select|On Error|Resume|GoTo|Exit|Private|Public|ByVal|ByRef|Optional|Const|Type|End Type|Enum|End Enum|Property|Get|Let|Nothing|New|Me|True|False|And|Or|Not|Mod|Is|Like)\b/g;
-
-  // Data types
-  const dataTypes = /\b(String|Integer|Long|Double|Single|Boolean|Variant|Object|Date|Currency|Byte|Worksheet|Workbook|Range|Collection|Dictionary)\b/g;
-
-  // Built-in objects/functions
-  const builtIns = /\b(MsgBox|InputBox|Debug|Print|ActiveSheet|ActiveWorkbook|ActiveCell|Application|ThisWorkbook|Cells|Columns|Rows|Range|Sheets|Worksheets|Workbooks)\b/g;
 
   // Process line by line to handle comments properly
   const lines = code.split('\n');
@@ -28,14 +17,14 @@ export const highlightVBA = (code) => {
       const commentPart = line.substring(commentIndex);
 
       // Highlight code part
-      const highlightedCode = highlightCodePart(codePart, keywords, dataTypes, builtIns);
+      const highlightedCode = highlightCodePart(codePart);
 
       // Wrap comment in span
       const highlightedComment = `<span class="code-comment">${escapeHtml(commentPart)}</span>`;
 
       return highlightedCode + highlightedComment;
     } else {
-      return highlightCodePart(line, keywords, dataTypes, builtIns);
+      return highlightCodePart(line);
     }
   });
 
@@ -51,7 +40,7 @@ const escapeHtml = (text) => {
     .replace(/'/g, '&#039;');
 };
 
-const highlightCodePart = (code, keywords, dataTypes, builtIns) => {
+const highlightCodePart = (code) => {
   let result = escapeHtml(code);
 
   // Highlight strings first (to avoid highlighting keywords inside strings)

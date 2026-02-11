@@ -677,11 +677,11 @@ body {
   font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
   font-size: 12px;
   line-height: 1.6;
+  white-space: pre-wrap;
 }
 
 .code-preview-body.editable {
   outline: none;
-  white-space: pre-wrap;
 }
 
 /* Code Editor (Manual Edit Mode) */

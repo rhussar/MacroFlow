@@ -1,4 +1,3 @@
-import React from 'react';
 import { FolderIcon, ReturnIcon, CloseIcon } from './icons';
 
 // Mock data for files/modules

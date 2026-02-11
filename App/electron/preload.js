@@ -132,6 +132,24 @@ contextBridge.exposeInMainWorld('excel', {
   },
 
   // ==========================================================================
+  // AI OPERATIONS
+  // ==========================================================================
+  ai: {
+    /**
+     * Initialize local AI model
+     * @returns {Promise<{ success: boolean, error?: string }>}
+     */
+    init: () => ipcRenderer.invoke('ai:init'),
+
+    /**
+     * Ask AI to generate VBA
+     * @param {{ prompt: string, context?: object }} args
+     * @returns {Promise<{ success: boolean, data?: string, error?: string }>}
+     */
+    ask: (args) => ipcRenderer.invoke('ai:ask', args),
+  },
+
+  // ==========================================================================
   // WINDOW CONTROLS (for alwaysOnTop management)
   // ==========================================================================
   window: {

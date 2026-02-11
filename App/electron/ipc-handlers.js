@@ -15,6 +15,9 @@
 
 const { ipcMain, app, BrowserWindow } = require('electron');
 const excel = require('./excel-bridge');
+const { initLLM, chat } = require('./llm-service');
+const fs = require('fs');
+const path = require('path');
 
 /**
  * Simple logger for IPC events
@@ -37,6 +40,24 @@ function logIpc(channel, phase, details = {}) {
 function getMainWindow() {
   const windows = BrowserWindow.getAllWindows();
   return windows.length > 0 ? windows[0] : null;
+}
+
+/**
+ * Helper: Find the model file in Dev (root/models) or Prod (resources/models)
+ * @returns {string}
+ */
+function getModelPath() {
+  const isDev = process.env.NODE_ENV === 'development';
+  // EXACT filename downloaded by the user
+  const fileName = 'qwen2.5-coder-1.5b-instruct-q4_k_m.gguf';
+
+  if (isDev) {
+    // In Dev: App/electron/ipc-handlers.js -> up 1 level -> App/models
+    return path.join(__dirname, '../models', fileName);
+  }
+
+  // In Prod: Resources folder
+  return path.join(process.resourcesPath, 'models', fileName);
 }
 
 /**
@@ -84,6 +105,32 @@ function registerHandlers() {
   ipcMain.on('app:close', () => {
     logIpc('app:close', 'start');
     app.quit();
+  });
+
+  // ==========================================================================
+  // AI HANDLERS
+  // ==========================================================================
+
+  // 1. Initialize AI (Call on startup)
+  ipcMain.handle('ai:init', async () => {
+    const modelPath = getModelPath();
+    console.log('Initializing AI with model at:', modelPath);
+
+    if (!fs.existsSync(modelPath)) {
+      return { success: false, error: `Model not found at ${modelPath}` };
+    }
+
+    return await initLLM(modelPath);
+  });
+
+  // 2. Ask AI
+  ipcMain.handle('ai:ask', async (_, { prompt, context }) => {
+    try {
+      const reply = await chat(prompt, context);
+      return { success: true, data: reply };
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
   });
 
   // ==========================================================================

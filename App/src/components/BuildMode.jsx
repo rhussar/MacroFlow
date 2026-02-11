@@ -1,26 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { ArrowLeftIcon, CloseIcon, CheckIcon, MacroFlowLogo } from './icons';
 import CodePreview from './CodePreview';
-
-// Mock generated VBA code
-const mockGeneratedCode = `Sub CleanData()
-    Dim ws As Worksheet
-    Set ws = ActiveSheet
-    
-    ' 1. Remove Empty Rows
-    On Error Resume Next
-    ws.Columns("A:A").SpecialCells(xlCellTypeBlanks).EntireRow.Delete
-    
-    ' 2. Trim Whitespace
-    For Each cell In ws.Range("B1:B150")
-        cell.Value = Trim(cell.Value)
-    Next cell
-    
-    ' 3. Fix Date Format
-    ws.Columns("C:C").NumberFormat = "mm/dd/yyyy"
-    
-    MsgBox "Cleanup Complete!"
-End Sub`;
 
 // Build states: 'empty', 'typing', 'processing', 'complete', 'success', 'error', 'fixing', 'fixed'
 const BuildMode = ({ onBack, onClose, onEditMode }) => {
@@ -29,40 +9,154 @@ const BuildMode = ({ onBack, onClose, onEditMode }) => {
   const [buildState, setBuildState] = useState('empty');
   const [steps, setSteps] = useState([]);
   const [errorInfo, setErrorInfo] = useState(null);
+  const [generatedCode, setGeneratedCode] = useState('');
+  const initPromiseRef = useRef(null);
+
+  const extractVbaCode = (text) => {
+    if (!text) return '';
+    const match = text.match(/```(?:vba)?\s*([\s\S]*?)```/i);
+    return match ? match[1].trim() : text.trim();
+  };
+
+  const ensureAiReady = async () => {
+    if (!window.excel?.ai?.init || !window.excel?.ai?.ask) {
+      return { success: false, error: 'AI API not available in this environment.' };
+    }
+
+    if (!initPromiseRef.current) {
+      initPromiseRef.current = window.excel.ai.init();
+    }
+
+    const result = await initPromiseRef.current;
+    if (!result?.success) {
+      initPromiseRef.current = null;
+      return result || { success: false, error: 'AI initialization failed.' };
+    }
+
+    return result;
+  };
+
+  const gatherContext = async () => {
+    const context = {};
+
+    try {
+      const workbookInfo = await window.excel?.workbook?.info?.();
+      if (workbookInfo?.success) {
+        context.workbook = workbookInfo;
+      }
+    } catch (_) {
+      // Non-fatal: context is optional
+    }
+
+    try {
+      const selectionInfo = await window.excel?.cell?.selection?.();
+      if (selectionInfo?.success) {
+        context.selection = selectionInfo;
+      }
+    } catch (_) {
+      // Non-fatal: context is optional
+    }
+
+    return context;
+  };
 
   // Handle prompt submission
-  const handleSubmit = () => {
-    if (!prompt.trim()) return;
+  const handleSubmit = async () => {
+    if (!prompt.trim() || buildState === 'processing') return;
 
+    setErrorInfo(null);
+    setGeneratedCode('');
     setBuildState('processing');
+    setSteps([{ text: 'Initializing AI', status: 'loading' }]);
+
+    const initResult = await ensureAiReady();
+    if (!initResult?.success) {
+      setSteps([{ text: 'AI initialization failed', status: 'complete' }]);
+      setErrorInfo({ title: `AI Init Failed: ${initResult?.error || 'Unknown error'}` });
+      setBuildState('error');
+      return;
+    }
+
     setSteps([
-      { text: 'Scanned Active Workbook', status: 'loading' },
+      { text: 'Initializing AI', status: 'complete' },
+      { text: 'Scanning Active Workbook', status: 'loading' },
     ]);
 
-    // Simulate processing steps
-    setTimeout(() => {
-      setSteps([
-        { text: 'Scanned Active Workbook', status: 'complete' },
-        { text: 'Scanned Active Workbook', status: 'loading' },
-      ]);
-    }, 800);
+    const context = await gatherContext();
 
-    setTimeout(() => {
-      setSteps([
-        { text: 'Scanned Active Workbook', status: 'complete' },
-        { text: 'Detected Range F1:C140', status: 'complete' },
-        { text: 'Built custom macro', status: 'loading' },
-      ]);
-    }, 1600);
+    setSteps([
+      { text: 'Initializing AI', status: 'complete' },
+      { text: 'Scanning Active Workbook', status: 'complete' },
+      { text: 'Building custom macro', status: 'loading' },
+    ]);
 
-    setTimeout(() => {
+    const aiResult = await window.excel.ai.ask({
+      prompt: prompt.trim(),
+      context,
+    });
+
+    if (!aiResult?.success) {
       setSteps([
-        { text: 'Scanned Active Workbook', status: 'complete' },
-        { text: 'Detected Range F1:C140', status: 'complete' },
-        { text: 'Built custom macro', status: 'complete' },
+        { text: 'Initializing AI', status: 'complete' },
+        { text: 'Scanning Active Workbook', status: 'complete' },
+        { text: 'Macro build failed', status: 'complete' },
       ]);
-      setBuildState('complete');
-    }, 2400);
+      setErrorInfo({ title: `AI Error: ${aiResult?.error || 'Unknown error'}` });
+      setBuildState('error');
+      return;
+    }
+
+    const code = extractVbaCode(aiResult.data || '');
+    setGeneratedCode(code);
+    setSteps([
+      { text: 'Initializing AI', status: 'complete' },
+      { text: 'Scanning Active Workbook', status: 'complete' },
+      { text: 'Built custom macro', status: 'complete' },
+    ]);
+    setBuildState('complete');
+  };
+
+  const handleFollowUpSubmit = async () => {
+    if (!followUp.trim() || buildState === 'processing') return;
+
+    setErrorInfo(null);
+    setBuildState('processing');
+    setSteps([{ text: 'Applying follow-up request', status: 'loading' }]);
+
+    const initResult = await ensureAiReady();
+    if (!initResult?.success) {
+      setSteps([{ text: 'AI initialization failed', status: 'complete' }]);
+      setErrorInfo({ title: `AI Init Failed: ${initResult?.error || 'Unknown error'}` });
+      setBuildState('error');
+      return;
+    }
+
+    const context = await gatherContext();
+    const followUpPrompt = `You previously generated this VBA code:
+${generatedCode || '(no code provided)'}
+
+Follow-up request:
+${followUp}
+
+Return the full updated VBA code only.`;
+
+    const aiResult = await window.excel.ai.ask({
+      prompt: followUpPrompt,
+      context,
+    });
+
+    if (!aiResult?.success) {
+      setSteps([{ text: 'Follow-up failed', status: 'complete' }]);
+      setErrorInfo({ title: `AI Error: ${aiResult?.error || 'Unknown error'}` });
+      setBuildState('error');
+      return;
+    }
+
+    const code = extractVbaCode(aiResult.data || '');
+    setGeneratedCode(code);
+    setSteps([{ text: 'Follow-up applied', status: 'complete' }]);
+    setBuildState('complete');
+    setFollowUp('');
   };
 
   // Handle running macro
@@ -167,8 +261,11 @@ const BuildMode = ({ onBack, onClose, onEditMode }) => {
             value={showCodePanel ? followUp : prompt}
             onChange={(e) => showCodePanel ? setFollowUp(e.target.value) : setPrompt(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === 'Enter' && !showCodePanel && prompt.trim()) {
+              if (e.key !== 'Enter') return;
+              if (!showCodePanel && prompt.trim()) {
                 handleSubmit();
+              } else if (showCodePanel && followUp.trim()) {
+                handleFollowUpSubmit();
               }
             }}
           />
@@ -243,7 +340,7 @@ const BuildMode = ({ onBack, onClose, onEditMode }) => {
             {/* Right Panel - Code */}
             <div className="split-right">
               <CodePreview
-                code={mockGeneratedCode}
+                code={generatedCode}
                 title="Preview"
                 showHeader={true}
                 showEdit={true}

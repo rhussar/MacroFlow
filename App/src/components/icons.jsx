@@ -1,4 +1,3 @@
-import React from 'react';
 import appIcon from '../../assets/app-icon.png';
 
 // MacroFlow Logo (app icon)

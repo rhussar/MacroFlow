@@ -88,3 +88,8 @@ _LEGACY_CONTEXT/
 .yarn-integrity
 report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 ~$*
+# Native window helper (.NET) artifacts
+App/native/window-focus-helper/bin/
+App/native/window-focus-helper/obj/
+App/native/window-focus-helper/bin-helper/
+App/native/window-focus-helper/bin-helper-test/

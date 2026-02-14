@@ -8,7 +8,8 @@ module.exports = {
       unpack: '*.node'
     },
     extraResource: [
-      './Resources'
+      './Resources',
+      './native/window-focus-helper/bin-helper'
     ]
   },
   rebuildConfig: {},
@@ -50,4 +51,5 @@ module.exports = {
     }),
   ],
 };
+
 

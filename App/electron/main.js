@@ -1,10 +1,10 @@
 ﻿const { app, BrowserWindow, screen, ipcMain } = require('electron');
 const path = require('node:path');
-const { execFile } = require('node:child_process');
 
 const iconPath = path.join(__dirname, '../assets', process.platform === 'win32' ? 'app-icon.ico' : 'app-icon.png');
 const { registerHandlers } = require('./ipc-handlers');
 const { installExcelAddin } = require('./excel-addin-installer');
+const logger = require('./logger');
 
 // CRITICAL: Handle Squirrel installer events FIRST (must be before any other code)
 if (require('electron-squirrel-startup')) {
@@ -22,9 +22,8 @@ const isDev = process.env.NODE_ENV === 'development';
 
 // Store reference to main window for IPC handlers
 let mainWindow = null;
-let excelWindowMonitor = null;
-let topmostReassertTimers = [];
-let currentExcelOwnerHwnd = null;
+let windowFocusHelper = null;
+let helperFallbackMode = false;
 
 /**
  * Get the main window reference (used by ipc-handlers)
@@ -32,11 +31,6 @@ let currentExcelOwnerHwnd = null;
  */
 function getMainWindow() {
   return mainWindow;
-}
-
-function clearTopmostReassertTimers() {
-  topmostReassertTimers.forEach((timer) => clearTimeout(timer));
-  topmostReassertTimers = [];
 }
 
 function getNativeWindowHandleValue(win) {
@@ -56,109 +50,29 @@ function getNativeWindowHandleValue(win) {
   return null;
 }
 
-function setWindowOwnerWin32(win, ownerHwnd) {
-  if (process.platform !== 'win32') {
-    return;
-  }
-  const hwnd = getNativeWindowHandleValue(win);
-  if (hwnd === null || hwnd === undefined) {
+function enableFallbackAlwaysOnTop(reason) {
+  if (!mainWindow || mainWindow.isDestroyed()) {
     return;
   }
 
-  const hwndValue = hwnd.toString();
-  const ownerValue = ownerHwnd ? ownerHwnd.toString() : '0';
-  const script = [
-    '$ErrorActionPreference = "SilentlyContinue";',
-    'Add-Type -TypeDefinition @\'',
-    'using System;',
-    'using System.Runtime.InteropServices;',
-    'public class User32 {',
-    '  [DllImport("user32.dll", SetLastError=true)] public static extern IntPtr SetWindowLongPtr(IntPtr hWnd, int nIndex, IntPtr dwNewLong);',
-    '  [DllImport("user32.dll", SetLastError=true)] public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);',
-    '}',
-    '\'@ | Out-Null;',
-    '$GWL_HWNDPARENT = -8;',
-    '$SWP_NOMOVE = 0x0002;',
-    '$SWP_NOSIZE = 0x0001;',
-    '$SWP_NOACTIVATE = 0x0010;',
-    '$SWP_SHOWWINDOW = 0x0040;',
-    `$hWnd = [IntPtr]::new(${hwndValue});`,
-    `$owner = [IntPtr]::new(${ownerValue});`,
-    '[User32]::SetWindowLongPtr($hWnd, $GWL_HWNDPARENT, $owner) | Out-Null;',
-    '[User32]::SetWindowPos($hWnd, [IntPtr]::Zero, 0, 0, 0, 0, ' +
-      '$SWP_NOMOVE -bor $SWP_NOSIZE -bor $SWP_NOACTIVATE -bor $SWP_SHOWWINDOW) | Out-Null;'
-  ].join('\n');
-
-  execFile(
-    'powershell.exe',
-    [
-      '-NoProfile',
-      '-NonInteractive',
-      '-ExecutionPolicy',
-      'Bypass',
-      '-EncodedCommand',
-      Buffer.from(script, 'utf16le').toString('base64')
-    ],
-    { windowsHide: true, timeout: 1500 },
-    () => {}
-  );
+  helperFallbackMode = true;
+  mainWindow.setAlwaysOnTop(true);
+  logger.warn('[WindowMonitor] fallback always-on-top enabled', { reason });
 }
 
-function enforceTopmostForExcel(win) {
-  if (!win || win.isDestroyed()) {
-    return;
-  }
-  win.setAlwaysOnTop(true, 'screen-saver');
-  try {
-    win.moveTop();
-  } catch (error) {
-    // Ignore z-order errors.
-  }
-  try {
-    win.showInactive();
-  } catch (error) {
-    // Ignore visibility errors.
-  }
-}
-
-function applyExcelForegroundState(win, state) {
-  if (!win || win.isDestroyed()) {
+function disableFallbackAlwaysOnTop(reason) {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    helperFallbackMode = false;
     return;
   }
 
-  const isExcelActive = Boolean(state && state.isExcelActive);
-  const excelHwnd = state && state.hwnd ? state.hwnd : null;
-
-  clearTopmostReassertTimers();
-
-  if (!isExcelActive) {
-    if (currentExcelOwnerHwnd !== null) {
-      setWindowOwnerWin32(win, null);
-      currentExcelOwnerHwnd = null;
-    }
-    win.setAlwaysOnTop(false);
+  if (!helperFallbackMode) {
     return;
   }
 
-  if (excelHwnd && currentExcelOwnerHwnd !== excelHwnd) {
-    setWindowOwnerWin32(win, excelHwnd);
-    currentExcelOwnerHwnd = excelHwnd;
-  } else if (!excelHwnd && currentExcelOwnerHwnd !== null) {
-    setWindowOwnerWin32(win, null);
-    currentExcelOwnerHwnd = null;
-  }
-
-  // Immediate assert reduces visible flicker during Excel activation.
-  enforceTopmostForExcel(win);
-
-  // Short, finite reassert burst to win activation races without constant churn.
-  [35, 90, 170, 280, 420].forEach((delayMs) => {
-    const timer = setTimeout(() => enforceTopmostForExcel(win), delayMs);
-    if (typeof timer.unref === 'function') {
-      timer.unref();
-    }
-    topmostReassertTimers.push(timer);
-  });
+  helperFallbackMode = false;
+  mainWindow.setAlwaysOnTop(false);
+  logger.info('[WindowMonitor] fallback always-on-top disabled', { reason });
 }
 
 function startExcelWindowMonitor(win) {
@@ -168,40 +82,68 @@ function startExcelWindowMonitor(win) {
   if (!win || win.isDestroyed()) {
     return;
   }
-  if (excelWindowMonitor) {
+  if (windowFocusHelper) {
     return;
   }
 
   try {
-    // WinEvent foreground hook monitor (no polling).
-    const ExcelForegroundHook = require('./excel-foreground-hook');
-    excelWindowMonitor = new ExcelForegroundHook((state) => {
-      applyExcelForegroundState(win, state);
+    const hwnd = getNativeWindowHandleValue(win);
+    if (hwnd === null) {
+      throw new Error('Main window handle unavailable.');
+    }
+
+    const WindowFocusHelperClient = require('./window-focus-helper-client');
+    windowFocusHelper = new WindowFocusHelperClient({
+      logger,
+      maxRestartAttempts: 3,
+      onStateChange: (state) => {
+        logger.debug('[WindowHelper] state', state);
+        if (helperFallbackMode) {
+          disableFallbackAlwaysOnTop('helper-state-received');
+        }
+      },
+      onError: (message) => {
+        logger.warn('[WindowHelper] warning', { message });
+      },
+      onFatal: (message) => {
+        logger.error('[WindowHelper] fatal', { message });
+        if (windowFocusHelper) {
+          try {
+            windowFocusHelper.stop();
+          } catch {
+            // Ignore shutdown errors in fatal path.
+          }
+          windowFocusHelper = null;
+        }
+        enableFallbackAlwaysOnTop(message);
+      }
     });
-    excelWindowMonitor.start();
+
+    windowFocusHelper.start(hwnd.toString());
+    if (windowFocusHelper) {
+      logger.info('[WindowMonitor] helper monitor started', { hwnd: hwnd.toString() });
+    }
   } catch (error) {
-    excelWindowMonitor = null;
-    console.error(`[WindowMonitor] Foreground hook unavailable: ${error.message}`);
+    windowFocusHelper = null;
+    logger.error('[WindowMonitor] failed to start helper monitor', { error: error.message });
+    enableFallbackAlwaysOnTop(error.message);
   }
 }
 
 function stopExcelWindowMonitor() {
-  if (excelWindowMonitor) {
+  if (windowFocusHelper) {
     try {
-      excelWindowMonitor.stop();
+      windowFocusHelper.stop();
     } catch (error) {
-      console.error(`[WindowMonitor] Failed to stop cleanly: ${error.message}`);
+      logger.error('[WindowMonitor] failed to stop helper monitor', { error: error.message });
     } finally {
-      excelWindowMonitor = null;
+      windowFocusHelper = null;
     }
   }
 
-  clearTopmostReassertTimers();
+  disableFallbackAlwaysOnTop('monitor-stop');
+
   if (mainWindow && !mainWindow.isDestroyed()) {
-    if (currentExcelOwnerHwnd !== null) {
-      setWindowOwnerWin32(mainWindow, null);
-      currentExcelOwnerHwnd = null;
-    }
     mainWindow.setAlwaysOnTop(false);
   }
 }
@@ -270,7 +212,10 @@ function registerWindowHandlers() {
     if (win && !win.isDestroyed()) {
       const wasOnTop = win.isAlwaysOnTop();
       win.setAlwaysOnTop(Boolean(value));
-      console.log(`[Window] alwaysOnTop: ${wasOnTop} -> ${value}`);
+      logger.info('[Window] alwaysOnTop changed', {
+        previousValue: wasOnTop,
+        currentValue: Boolean(value)
+      });
       return { success: true, previousValue: wasOnTop, currentValue: Boolean(value) };
     }
     return { success: false, message: 'Window not available' };
@@ -339,3 +284,6 @@ function createWindow() {
 }
 
 module.exports = { getMainWindow };
+
+
+

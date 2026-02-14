@@ -10,10 +10,11 @@
     "build": "vite build",
     "preview": "vite preview",
     "start": "electron-forge start",
-    "package": "npm run build && electron-forge package",
-    "make": "npm run build && electron-forge make",
-    "publish": "npm run build && electron-forge publish",
-    "lint": "echo \"No linting configured\""
+    "package": "npm run build:window-helper && npm run build && electron-forge package",
+    "make": "npm run build:window-helper && npm run build && electron-forge make",
+    "publish": "npm run build:window-helper && npm run build && electron-forge publish",
+    "lint": "echo \"No linting configured\"",
+    "build:window-helper": "dotnet publish native\\window-focus-helper\\WindowFocusHelper.csproj -c Release -r win-x64 --self-contained true /p:PublishSingleFile=true /p:EnableCompressionInSingleFile=true -o native\\window-focus-helper\\bin-helper"
   },
   "keywords": [],
   "author": {
@@ -26,6 +27,7 @@
     "@radix-ui/react-scroll-area": "^1.2.10",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "electron-log": "^5.4.3",
     "electron-squirrel-startup": "^1.0.1",
     "fs-extra": "^11.3.3",
     "lucide-react": "^0.562.0",

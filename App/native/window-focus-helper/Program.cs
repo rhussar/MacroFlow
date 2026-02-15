@@ -1,4 +1,4 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Threading;
@@ -9,24 +9,29 @@ namespace WindowFocusHelper;
 internal static class Program
 {
   private const uint EVENT_SYSTEM_FOREGROUND = 0x0003;
-  private const uint WINEVENT_OUTOFCONTEXT = 0x0000;
   private const uint WINEVENT_SKIPOWNPROCESS = 0x0002;
 
-  private const int GWL_HWNDPARENT = -8;
   private const uint SWP_NOSIZE = 0x0001;
   private const uint SWP_NOMOVE = 0x0002;
   private const uint SWP_NOACTIVATE = 0x0010;
   private const uint SWP_SHOWWINDOW = 0x0040;
   private const int OBJID_WINDOW = 0;
+  private const uint GA_ROOT = 2;
 
-  private const int FOREGROUND_DEBOUNCE_MS = 100;
+  private const int FOREGROUND_DEBOUNCE_MS = 40;
+  private const int EXCEL_INACTIVE_DEBOUNCE_MS = 140;
 
   private static readonly IntPtr HWND_TOPMOST = new(-1);
   private static readonly IntPtr HWND_NOTOPMOST = new(-2);
   private static readonly int[] REASSERT_DELAYS_MS = [35, 90, 170, 280, 420];
+  private static readonly int[] DEMOTE_REASSERT_DELAYS_MS = [30, 85, 170, 280];
 
+  // Sync: core state (_targetWindow, _excelActive, _reassertToken).
+  // DebounceSync / InactiveSync: timer bookkeeping only, so the STA
+  // win-event callback never blocks on slow stdout writes under Sync.
   private static readonly object Sync = new();
   private static readonly object DebounceSync = new();
+  private static readonly object InactiveSync = new();
 
   private static readonly JsonSerializerOptions JsonOptions = new()
   {
@@ -39,13 +44,23 @@ internal static class Program
   private static IntPtr _hookHandle = IntPtr.Zero;
 
   private static IntPtr _targetWindow = IntPtr.Zero;
-  private static IntPtr _currentOwner = IntPtr.Zero;
   private static bool _excelActive;
   private static int _reassertToken;
   private static string _lastStateKey = string.Empty;
 
   private static System.Threading.Timer? _foregroundDebounceTimer;
   private static IntPtr _pendingForeground = IntPtr.Zero;
+  private static int _foregroundDebounceSequence;
+  private static int _scheduledForegroundSequence;
+
+  private static System.Threading.Timer? _excelInactiveDebounceTimer;
+  private static IntPtr _pendingInactiveForeground = IntPtr.Zero;
+  private static int _inactiveDebounceSequence;
+  private static int _scheduledInactiveSequence;
+
+  // -----------------------------------------------------------------------
+  // Entry point
+  // -----------------------------------------------------------------------
 
   [STAThread]
   private static int Main()
@@ -60,7 +75,7 @@ internal static class Program
       _hookCallback,
       0,
       0,
-      WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS
+      WINEVENT_SKIPOWNPROCESS
     );
 
     if (_hookHandle == IntPtr.Zero)
@@ -83,6 +98,10 @@ internal static class Program
     Cleanup();
     return 0;
   }
+
+  // -----------------------------------------------------------------------
+  // Stdin command loop
+  // -----------------------------------------------------------------------
 
   private static async Task ReadCommandsAsync()
   {
@@ -159,12 +178,54 @@ internal static class Program
     lock (Sync)
     {
       _targetWindow = hwnd;
+      _excelActive = false;
       _reassertToken++;
-      _currentOwner = IntPtr.Zero;
+      _lastStateKey = string.Empty;
     }
 
-    ScheduleForegroundPublish(GetForegroundWindow());
+    CancelForegroundDebounce();
+    CancelExcelInactiveDebounce();
+
+    // Determine the initial foreground. If it is our own window (common at
+    // startup when launched from the Excel ribbon), look for an Excel
+    // window instead so we immediately overlay.
+    var fg = GetForegroundWindow();
+    if (fg == IntPtr.Zero || IsTargetSelf(fg))
+    {
+      var excelHwnd = FindExcelMainWindow();
+      if (excelHwnd != IntPtr.Zero)
+      {
+        fg = excelHwnd;
+      }
+    }
+
+    PublishForegroundState(fg);
   }
+
+  private static IntPtr FindExcelMainWindow()
+  {
+    try
+    {
+      foreach (var proc in Process.GetProcessesByName("EXCEL"))
+      {
+        var hwnd = proc.MainWindowHandle;
+        if (hwnd != IntPtr.Zero && IsWindow(hwnd))
+        {
+          return hwnd;
+        }
+      }
+    }
+    catch
+    {
+      // Process enumeration can fail; not critical.
+    }
+
+    return IntPtr.Zero;
+  }
+
+  // -----------------------------------------------------------------------
+  // Foreground event handling & debounce
+  // -----------------------------------------------------------------------
 
   private static void OnWinEvent(
     IntPtr hWinEventHook,
@@ -189,33 +250,54 @@ internal static class Program
     lock (DebounceSync)
     {
       _pendingForeground = hwnd;
+      var sequence = ++_foregroundDebounceSequence;
+      _scheduledForegroundSequence = sequence;
 
-      if (_foregroundDebounceTimer is null)
-      {
-        _foregroundDebounceTimer = new System.Threading.Timer(
-          _ => FlushDebouncedForeground(),
-          null,
-          FOREGROUND_DEBOUNCE_MS,
-          Timeout.Infinite
-        );
-      }
-      else
-      {
-        _foregroundDebounceTimer.Change(FOREGROUND_DEBOUNCE_MS, Timeout.Infinite);
-      }
+      _foregroundDebounceTimer?.Dispose();
+      _foregroundDebounceTimer = new System.Threading.Timer(
+        _ => FlushDebouncedForeground(sequence),
+        null,
+        FOREGROUND_DEBOUNCE_MS,
+        Timeout.Infinite
+      );
     }
   }
 
-  private static void FlushDebouncedForeground()
+  private static void FlushDebouncedForeground(int sequence)
   {
     IntPtr hwnd;
     lock (DebounceSync)
     {
+      if (sequence != _scheduledForegroundSequence)
+      {
+        return;
+      }
+
       hwnd = _pendingForeground;
+      _pendingForeground = IntPtr.Zero;
+      _scheduledForegroundSequence = 0;
+      _foregroundDebounceTimer?.Dispose();
+      _foregroundDebounceTimer = null;
     }
 
     PublishForegroundState(hwnd);
   }
+
+  private static void CancelForegroundDebounce()
+  {
+    lock (DebounceSync)
+    {
+      _foregroundDebounceSequence++;
+      _scheduledForegroundSequence = 0;
+      _pendingForeground = IntPtr.Zero;
+      _foregroundDebounceTimer?.Dispose();
+      _foregroundDebounceTimer = null;
+    }
+  }
+
+  // -----------------------------------------------------------------------
+  // Core state machine
+  // -----------------------------------------------------------------------
 
   private static void PublishForegroundState(IntPtr foregroundHwnd)
   {
@@ -227,8 +309,121 @@ internal static class Program
     var processName = GetProcessNameForWindow(foregroundHwnd);
     var isExcel = string.Equals(processName, "EXCEL", StringComparison.OrdinalIgnoreCase);
 
+    if (isExcel)
+    {
+      CancelExcelInactiveDebounce();
+
+      var excelHwnd = GetExcelOwnerWindow(foregroundHwnd);
+      var excelRect = TryGetWindowRectPayload(excelHwnd);
+      ApplyForegroundState(true, excelHwnd, excelRect, processName);
+      return;
+    }
+
+    // If the foreground window belongs to our own target (MacroFlow),
+    // keep the current state to avoid flicker when clicking on the overlay.
+    if (foregroundHwnd != IntPtr.Zero && IsTargetSelf(foregroundHwnd))
+    {
+      CancelExcelInactiveDebounce();
+      return;
+    }
+
+    bool shouldDebounceInactive;
+    lock (Sync)
+    {
+      shouldDebounceInactive = _excelActive;
+      // Immediately cancel pending topmost reasserts so they cannot
+      // re-promote the window during the inactive debounce window.
+      if (shouldDebounceInactive)
+      {
+        _reassertToken++;
+      }
+    }
+
+    if (shouldDebounceInactive)
+    {
+      ScheduleExcelInactiveDebounce(foregroundHwnd);
+      return;
+    }
+
+    CancelExcelInactiveDebounce();
+    ApplyForegroundState(false, IntPtr.Zero, null, processName);
+  }
+
+  private static void ScheduleExcelInactiveDebounce(IntPtr foregroundHwnd)
+  {
+    lock (InactiveSync)
+    {
+      _pendingInactiveForeground = foregroundHwnd;
+      var sequence = ++_inactiveDebounceSequence;
+      _scheduledInactiveSequence = sequence;
+
+      _excelInactiveDebounceTimer?.Dispose();
+      _excelInactiveDebounceTimer = new System.Threading.Timer(
+        _ => FlushExcelInactiveDebounce(sequence),
+        null,
+        EXCEL_INACTIVE_DEBOUNCE_MS,
+        Timeout.Infinite
+      );
+    }
+  }
+
+  private static void FlushExcelInactiveDebounce(int sequence)
+  {
+    IntPtr hwnd;
+    lock (InactiveSync)
+    {
+      if (sequence != _scheduledInactiveSequence)
+      {
+        return;
+      }
+
+      hwnd = _pendingInactiveForeground;
+      _pendingInactiveForeground = IntPtr.Zero;
+      _scheduledInactiveSequence = 0;
+      _excelInactiveDebounceTimer?.Dispose();
+      _excelInactiveDebounceTimer = null;
+    }
+
+    if (hwnd == IntPtr.Zero || !IsWindow(hwnd))
+    {
+      hwnd = GetForegroundWindow();
+    }
+
+    if (hwnd != IntPtr.Zero && IsWindow(hwnd))
+    {
+      var processName = GetProcessNameForWindow(hwnd);
+      if (string.Equals(processName, "EXCEL", StringComparison.OrdinalIgnoreCase))
+      {
+        PublishForegroundState(hwnd);
+        return;
+      }
+
+      ApplyForegroundState(false, IntPtr.Zero, null, processName);
+      return;
+    }
+
+    ApplyForegroundState(false, IntPtr.Zero, null, string.Empty);
+  }
+
+  private static void CancelExcelInactiveDebounce()
+  {
+    lock (InactiveSync)
+    {
+      _inactiveDebounceSequence++;
+      _scheduledInactiveSequence = 0;
+      _pendingInactiveForeground = IntPtr.Zero;
+      _excelInactiveDebounceTimer?.Dispose();
+      _excelInactiveDebounceTimer = null;
+    }
+  }
+
+  // -----------------------------------------------------------------------
+  // Window Z-order management
+  // -----------------------------------------------------------------------
+
+  private static void ApplyForegroundState(bool isExcel, IntPtr excelHwnd, WindowRectPayload? excelRect, string processName)
+  {
     IntPtr target;
-    IntPtr excelHwnd = isExcel ? foregroundHwnd : IntPtr.Zero;
 
     lock (Sync)
     {
@@ -238,7 +433,6 @@ internal static class Program
       {
         Emit(new { type = "error", message = "Target window handle became invalid. Clearing target." });
         _targetWindow = IntPtr.Zero;
-        _currentOwner = IntPtr.Zero;
         target = IntPtr.Zero;
       }
 
@@ -246,7 +440,7 @@ internal static class Program
       {
         if (isExcel && excelHwnd != IntPtr.Zero)
         {
-          ApplyExcelActiveLocked(target, excelHwnd);
+          ApplyExcelActiveLocked(target);
         }
         else
         {
@@ -257,30 +451,37 @@ internal static class Program
       _excelActive = isExcel;
     }
 
-    EmitState(isExcel, excelHwnd, processName, target);
+    EmitState(isExcel, excelHwnd, excelRect, processName, target);
   }
 
-  private static void ApplyExcelActiveLocked(IntPtr target, IntPtr excelHwnd)
+  private static void ApplyExcelActiveLocked(IntPtr target)
   {
-    if (_currentOwner != excelHwnd)
-    {
-      if (TrySetWindowOwner(target, excelHwnd, "excel-active"))
-      {
-        _currentOwner = excelHwnd;
-      }
-    }
-
     var token = ++_reassertToken;
     EnforceTopmost(target);
+    ScheduleReassertions(token, REASSERT_DELAYS_MS, () => !_excelActive, EnforceTopmost);
+  }
 
-    foreach (var delay in REASSERT_DELAYS_MS)
+  private static void ApplyExcelInactiveLocked(IntPtr target)
+  {
+    _reassertToken++;
+    DemoteWindow(target, "excel-inactive");
+    ScheduleReassertions(
+      _reassertToken, DEMOTE_REASSERT_DELAYS_MS,
+      () => _excelActive,
+      t => DemoteWindow(t, "demote-reassert")
+    );
+  }
+
+  private static void ScheduleReassertions(int token, int[] delays, Func<bool> shouldCancel, Action<IntPtr> action)
+  {
+    foreach (var delay in delays)
     {
       _ = Task.Run(async () =>
       {
         await Task.Delay(delay).ConfigureAwait(false);
         lock (Sync)
         {
-          if (!_excelActive || token != _reassertToken || _targetWindow == IntPtr.Zero)
+          if (shouldCancel() || token != _reassertToken || _targetWindow == IntPtr.Zero)
           {
             return;
           }
@@ -288,34 +489,37 @@ internal static class Program
           if (!IsWindow(_targetWindow))
           {
             _targetWindow = IntPtr.Zero;
-            _currentOwner = IntPtr.Zero;
             return;
           }
 
-          EnforceTopmost(_targetWindow);
+          action(_targetWindow);
         }
       });
     }
   }
 
-  private static void ApplyExcelInactiveLocked(IntPtr target)
+  private static void DemoteWindow(IntPtr target, string phase)
   {
-    _reassertToken++;
-
-    if (_currentOwner != IntPtr.Zero)
-    {
-      if (TrySetWindowOwner(target, IntPtr.Zero, "excel-inactive"))
-      {
-        _currentOwner = IntPtr.Zero;
-      }
-    }
-
     _ = TrySetWindowPos(
       target,
       HWND_NOTOPMOST,
       SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
-      "excel-inactive"
+      phase
     );
+
+    // Place behind the current foreground window.
+    // HWND_NOTOPMOST alone leaves the window at the TOP of all non-topmost
+    // windows, so it still visually covers the app the user switched to.
+    var fg = GetForegroundWindow();
+    if (fg != IntPtr.Zero && fg != target && IsWindow(fg))
+    {
+      _ = TrySetWindowPos(
+        target,
+        fg,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+        phase + "-zorder"
+      );
+    }
   }
 
   private static void EnforceTopmost(IntPtr target)
@@ -326,33 +530,6 @@ internal static class Program
       SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
       "excel-active"
     );
-  }
-
-  private static bool TrySetWindowOwner(IntPtr target, IntPtr owner, string phase)
-  {
-    if (!IsWindow(target))
-    {
-      Emit(new { type = "error", message = "Cannot set owner: target hwnd invalid.", phase });
-      return false;
-    }
-
-    if (owner != IntPtr.Zero && !IsWindow(owner))
-    {
-      Emit(new { type = "error", message = "Cannot set owner: owner hwnd invalid.", phase });
-      return false;
-    }
-
-    SetLastError(0);
-    _ = SetWindowLongPtrCompat(target, GWL_HWNDPARENT, owner);
-    var error = Marshal.GetLastWin32Error();
-
-    if (error != 0)
-    {
-      EmitWin32Error("SetWindowLongPtr", error, phase, target, owner);
-      return false;
-    }
-
-    return true;
   }
 
   private static bool TrySetWindowPos(IntPtr target, IntPtr insertAfter, uint flags, string phase)
@@ -373,40 +550,71 @@ internal static class Program
     return false;
   }
 
-  private static void EmitWin32Error(string api, int error, string phase, IntPtr target, IntPtr related)
-  {
-    Emit(new
-    {
-      type = "error",
-      message = $"{api} failed.",
-      api,
-      phase,
-      win32Error = error,
-      targetHwnd = target.ToInt64().ToString(),
-      relatedHwnd = related.ToInt64().ToString()
-    });
-  }
+  // -----------------------------------------------------------------------
+  // Window query helpers
+  // -----------------------------------------------------------------------
 
-  private static void EmitState(bool excelActive, IntPtr excelHwnd, string processName, IntPtr target)
+  private static IntPtr GetExcelOwnerWindow(IntPtr hwnd)
   {
-    var key = $"{excelActive}:{excelHwnd.ToInt64()}:{target.ToInt64()}";
-    lock (Sync)
+    if (hwnd == IntPtr.Zero || !IsWindow(hwnd))
     {
-      if (_lastStateKey == key)
-      {
-        return;
-      }
-      _lastStateKey = key;
+      return IntPtr.Zero;
     }
 
-    Emit(new
+    var root = GetAncestor(hwnd, GA_ROOT);
+    return root != IntPtr.Zero && IsWindow(root) ? root : hwnd;
+  }
+
+  private static bool IsTargetSelf(IntPtr foregroundHwnd)
+  {
+    IntPtr target;
+    lock (Sync)
     {
-      type = "state",
-      excelActive,
-      excelHwnd = excelActive ? excelHwnd.ToInt64().ToString() : null,
-      process = processName,
-      targetHwnd = target != IntPtr.Zero ? target.ToInt64().ToString() : null
-    });
+      target = _targetWindow;
+    }
+
+    if (target == IntPtr.Zero)
+    {
+      return false;
+    }
+
+    if (foregroundHwnd == target)
+    {
+      return true;
+    }
+
+    var root = GetAncestor(foregroundHwnd, GA_ROOT);
+    if (root != IntPtr.Zero && root == target)
+    {
+      return true;
+    }
+
+    // Same-process check covers child and popup windows.
+    _ = GetWindowThreadProcessId(foregroundHwnd, out var fgPid);
+    _ = GetWindowThreadProcessId(target, out var targetPid);
+    return fgPid != 0 && targetPid != 0 && fgPid == targetPid;
+  }
+
+  private static WindowRectPayload? TryGetWindowRectPayload(IntPtr hwnd)
+  {
+    if (hwnd == IntPtr.Zero || !IsWindow(hwnd))
+    {
+      return null;
+    }
+
+    if (!GetWindowRect(hwnd, out var rect))
+    {
+      EmitWin32Error("GetWindowRect", Marshal.GetLastWin32Error(), "excel-state", hwnd, IntPtr.Zero);
+      return null;
+    }
+
+    return new WindowRectPayload
+    {
+      Left = rect.Left,
+      Top = rect.Top,
+      Right = rect.Right,
+      Bottom = rect.Bottom
+    };
   }
 
   private static string GetProcessNameForWindow(IntPtr hwnd)
@@ -426,19 +634,73 @@ internal static class Program
     {
       return Process.GetProcessById((int)processId).ProcessName;
     }
-    catch (ArgumentException)
-    {
-      return string.Empty;
-    }
-    catch (InvalidOperationException)
-    {
-      return string.Empty;
-    }
     catch
     {
       return string.Empty;
     }
   }
+
+  // -----------------------------------------------------------------------
+  // JSON output
+  // -----------------------------------------------------------------------
+
+  private static void EmitWin32Error(string api, int error, string phase, IntPtr target, IntPtr related)
+  {
+    Emit(new
+    {
+      type = "error",
+      message = $"{api} failed.",
+      api,
+      phase,
+      win32Error = error,
+      targetHwnd = target.ToInt64().ToString(),
+      relatedHwnd = related.ToInt64().ToString()
+    });
+  }
+
+  private static void EmitState(bool excelActive, IntPtr excelHwnd, WindowRectPayload? excelRect, string processName, IntPtr target)
+  {
+    var rectKey = excelRect is null
+      ? "none"
+      : $"{excelRect.Left}:{excelRect.Top}:{excelRect.Right}:{excelRect.Bottom}";
+
+    var key = $"{excelActive}:{excelHwnd.ToInt64()}:{target.ToInt64()}:{rectKey}:{processName}";
+    lock (Sync)
+    {
+      if (_lastStateKey == key)
+      {
+        return;
+      }
+      _lastStateKey = key;
+    }
+
+    Emit(new
+    {
+      type = "state",
+      excelActive,
+      excelHwnd = excelActive ? excelHwnd.ToInt64().ToString() : null,
+      excelRect,
+      process = processName,
+      targetHwnd = target != IntPtr.Zero ? target.ToInt64().ToString() : null
+    });
+  }
+
+  private static void Emit(object payload)
+  {
+    try
+    {
+      Console.WriteLine(JsonSerializer.Serialize(payload, JsonOptions));
+      Console.Out.Flush();
+    }
+    catch
+    {
+      // Ignore broken pipe or serialization failures.
+    }
+  }
+
+  // -----------------------------------------------------------------------
+  // Lifecycle helpers
+  // -----------------------------------------------------------------------
 
   private static bool TryParseHwnd(string? raw, out IntPtr hwnd)
   {
@@ -459,19 +721,13 @@ internal static class Program
 
   private static void Cleanup()
   {
+    CancelExcelInactiveDebounce();
+
     lock (Sync)
     {
       _reassertToken++;
       if (_targetWindow != IntPtr.Zero && IsWindow(_targetWindow))
       {
-        if (_currentOwner != IntPtr.Zero)
-        {
-          if (TrySetWindowOwner(_targetWindow, IntPtr.Zero, "cleanup"))
-          {
-            _currentOwner = IntPtr.Zero;
-          }
-        }
-
         _ = TrySetWindowPos(
           _targetWindow,
           HWND_NOTOPMOST,
@@ -481,15 +737,9 @@ internal static class Program
       }
 
       _targetWindow = IntPtr.Zero;
-      _currentOwner = IntPtr.Zero;
     }
 
-    lock (DebounceSync)
-    {
-      _foregroundDebounceTimer?.Dispose();
-      _foregroundDebounceTimer = null;
-      _pendingForeground = IntPtr.Zero;
-    }
+    CancelForegroundDebounce();
 
     if (_hookHandle != IntPtr.Zero)
     {
@@ -498,24 +748,36 @@ internal static class Program
     }
   }
 
-  private static void Emit(object payload)
-  {
-    try
-    {
-      Console.WriteLine(JsonSerializer.Serialize(payload, JsonOptions));
-      Console.Out.Flush();
-    }
-    catch
-    {
-      // Ignore broken pipe or serialization failures.
-    }
-  }
+  // -----------------------------------------------------------------------
+  // Types
+  // -----------------------------------------------------------------------
 
   private sealed class HelperCommand
   {
     public string? Type { get; set; }
     public string? Hwnd { get; set; }
   }
+
+  private sealed class WindowRectPayload
+  {
+    public int Left { get; set; }
+    public int Top { get; set; }
+    public int Right { get; set; }
+    public int Bottom { get; set; }
+  }
+
+  [StructLayout(LayoutKind.Sequential)]
+  private struct RECT
+  {
+    public int Left;
+    public int Top;
+    public int Right;
+    public int Bottom;
+  }
+
+  // -----------------------------------------------------------------------
+  // Win32 interop
+  // -----------------------------------------------------------------------
 
   private delegate void WinEventDelegate(
     IntPtr hWinEventHook,
@@ -552,14 +814,12 @@ internal static class Program
   [return: MarshalAs(UnmanagedType.Bool)]
   private static extern bool IsWindow(IntPtr hWnd);
 
-  [DllImport("kernel32.dll")]
-  private static extern void SetLastError(uint dwErrCode);
+  [DllImport("user32.dll")]
+  private static extern IntPtr GetAncestor(IntPtr hWnd, uint gaFlags);
 
-  [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW", SetLastError = true)]
-  private static extern IntPtr SetWindowLongPtr64(IntPtr hWnd, int nIndex, IntPtr dwNewLong);
-
-  [DllImport("user32.dll", EntryPoint = "SetWindowLongW", SetLastError = true)]
-  private static extern int SetWindowLong32(IntPtr hWnd, int nIndex, int dwNewLong);
+  [DllImport("user32.dll", SetLastError = true)]
+  [return: MarshalAs(UnmanagedType.Bool)]
+  private static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
 
   [DllImport("user32.dll", SetLastError = true)]
   [return: MarshalAs(UnmanagedType.Bool)]
@@ -572,16 +832,4 @@ internal static class Program
     int cy,
     uint uFlags
   );
-
-  private static IntPtr SetWindowLongPtrCompat(IntPtr hWnd, int nIndex, IntPtr dwNewLong)
-  {
-    if (IntPtr.Size == 8)
-    {
-      return SetWindowLongPtr64(hWnd, nIndex, dwNewLong);
-    }
-
-    return new IntPtr(SetWindowLong32(hWnd, nIndex, dwNewLong.ToInt32()));
-  }
 }
-
-

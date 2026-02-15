@@ -25,7 +25,7 @@ Commands sent by Electron:
 - `{"type":"shutdown"}`
 
 Events emitted by helper:
-- `{"type":"state",...}`
+- `{"type":"state","excelActive":true|false,"excelRect":{...}|null,...}`
 - `{"type":"pong"}`
 - `{"type":"error",...}`
 
@@ -36,3 +36,4 @@ Events emitted by helper:
 4. Multiple Excel windows: verify the active Excel window is used as owner.
 5. Freeze/Not-Responding Excel: verify helper heartbeat timeout triggers recovery.
 6. Start app without helper binary: verify fallback always-on-top mode is enabled and logged.
+

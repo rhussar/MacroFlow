@@ -143,7 +143,7 @@ class WindowFocusHelperClient {
     child.stderr.on('data', (chunk) => {
       const message = String(chunk || '').trim();
       if (message) {
-        this.onError(`[WindowHelper STDERR] ${message}`);
+        this.onError(`[WindowHelper STDERR] ${message}`, { type: 'stderr', message });
       }
     });
 
@@ -182,7 +182,7 @@ class WindowFocusHelperClient {
     }
     this.unexpectedExitHandled = true;
 
-    this.onError(message);
+    this.onError(message, { type: 'process-exit', message });
     this.log('warn', 'Window helper unexpected termination', {
       message,
       attempt: this.restartAttempts,
@@ -224,7 +224,7 @@ class WindowFocusHelperClient {
   reportFatal(message) {
     this.unexpectedExitHandled = true;
     this.log('error', 'Window helper fatal', { message });
-    this.onError(message);
+    this.onError(message, { type: 'fatal', message });
     this.onFatal(message);
   }
 
@@ -301,7 +301,7 @@ class WindowFocusHelperClient {
     try {
       this.process.stdin.write(`${JSON.stringify(message)}\n`);
     } catch (error) {
-      this.onError(`Failed to send helper message: ${error.message}`);
+      this.onError(`Failed to send helper message: ${error.message}`, { type: 'send-failed', error: error.message });
     }
   }
 
@@ -315,7 +315,7 @@ class WindowFocusHelperClient {
     try {
       payload = JSON.parse(trimmed);
     } catch {
-      this.onError(`Malformed helper output: ${trimmed}`);
+      this.onError(`Malformed helper output: ${trimmed}`, { type: 'malformed-output', raw: trimmed });
       return;
     }
 
@@ -335,7 +335,7 @@ class WindowFocusHelperClient {
     }
 
     if (payload.type === 'error') {
-      this.onError(payload.message || 'Unknown helper error');
+      this.onError(payload.message || 'Unknown helper error', payload);
     }
   }
 
@@ -374,4 +374,8 @@ class WindowFocusHelperClient {
 }
 
 module.exports = WindowFocusHelperClient;
+
+
+
+
 

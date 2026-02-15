@@ -1,4 +1,4 @@
-/**
+﻿/**
  * IPC Handlers - Routes frontend requests to ExcelBridge
  *
  * This file is a thin routing layer. All Excel logic lives in excel-bridge.js.
@@ -94,13 +94,14 @@ async function withExcelFocus(fn, options = {}) {
   } = options;
 
   const win = getMainWindow();
+  const helperManagedTopmost = Boolean(win && win.__macroflowHelperManagedTopmost === true);
   let wasOnTop = false;
   const operationStart = Date.now();
 
   // Step 1: Disable alwaysOnTop if it's enabled
   if (win && !win.isDestroyed()) {
     wasOnTop = win.isAlwaysOnTop();
-    if (wasOnTop) {
+    if (wasOnTop && !helperManagedTopmost) {
       win.setAlwaysOnTop(false);
       logger.debug('Window', 'Temporarily disabled alwaysOnTop for Excel operation');
     }
@@ -111,7 +112,7 @@ async function withExcelFocus(fn, options = {}) {
     return await Promise.resolve(fn());
   } finally {
     // Step 3: Restore alwaysOnTop (always runs, even if fn throws)
-    if (win && !win.isDestroyed() && wasOnTop) {
+    if (win && !win.isDestroyed() && wasOnTop && !helperManagedTopmost) {
       const operationDuration = Date.now() - operationStart;
 
       // Determine the appropriate restore delay
@@ -138,6 +139,8 @@ async function withExcelFocus(fn, options = {}) {
           logger.debug('Window', 'Restored alwaysOnTop', { delayMs: finalDelay });
         }
       }, finalDelay);
+    } else if (helperManagedTopmost) {
+      logger.debug('Window', 'Skipped alwaysOnTop restore (managed by focus helper)');
     }
   }
 }
@@ -434,4 +437,5 @@ function registerHandlers() {
 }
 
 module.exports = { registerHandlers };
+
 

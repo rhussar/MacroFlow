@@ -42,6 +42,8 @@ let helperFallbackMode = false;
 let adaptiveLayoutTimer = null;
 let lastAdaptiveLayoutKey = '';
 let detachDisplayListeners = null;
+let lastExcelDisplayId = null;
+let hasInitialContextPlacement = false;
 
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
@@ -65,17 +67,74 @@ function getAdaptiveLayout(display) {
   };
 }
 
-function getDisplayForWindow(win) {
-  const bounds = win.getBounds();
-  return screen.getDisplayMatching(bounds);
+function getDisplayById(id) {
+  if (id === null || id === undefined) {
+    return null;
+  }
+
+  return screen.getAllDisplays().find((display) => display.id === id) || null;
 }
 
-function applyAdaptiveLayout(win, reason = 'unspecified') {
+function getCursorDisplay() {
+  try {
+    const cursorPoint = screen.getCursorScreenPoint();
+    return screen.getDisplayNearestPoint(cursorPoint);
+  } catch {
+    return null;
+  }
+}
+
+function getDisplayFromRect(rect) {
+  if (!rect || typeof rect !== 'object') {
+    return null;
+  }
+
+  const left = Number(rect.left);
+  const top = Number(rect.top);
+  const right = Number(rect.right);
+  const bottom = Number(rect.bottom);
+
+  if ([left, top, right, bottom].some((value) => Number.isNaN(value))) {
+    return null;
+  }
+
+  const center = {
+    x: Math.round((left + right) / 2),
+    y: Math.round((top + bottom) / 2)
+  };
+
+  return screen.getDisplayNearestPoint(center);
+}
+
+function resolveTargetDisplay(win, options = {}) {
+  if (options.preferExcel && lastExcelDisplayId !== null) {
+    const excelDisplay = getDisplayById(lastExcelDisplayId);
+    if (excelDisplay) {
+      return excelDisplay;
+    }
+    lastExcelDisplayId = null;
+  }
+
+  if (options.preferCursor) {
+    const cursorDisplay = getCursorDisplay();
+    if (cursorDisplay) {
+      return cursorDisplay;
+    }
+  }
+
+  if (win && !win.isDestroyed()) {
+    return screen.getDisplayMatching(win.getBounds());
+  }
+
+  return screen.getPrimaryDisplay();
+}
+
+function applyAdaptiveLayout(win, reason = 'unspecified', options = {}) {
   if (!win || win.isDestroyed()) {
     return;
   }
 
-  const display = getDisplayForWindow(win);
+  const display = resolveTargetDisplay(win, options);
   const workArea = display.workArea;
   const layout = getAdaptiveLayout(display);
 
@@ -97,11 +156,13 @@ function applyAdaptiveLayout(win, reason = 'unspecified') {
     displayId: display.id,
     scale: layout.scale,
     width: layout.width,
-    height: layout.height
+    height: layout.height,
+    preferExcel: Boolean(options.preferExcel),
+    preferCursor: Boolean(options.preferCursor)
   });
 }
 
-function scheduleAdaptiveLayout(win, reason, delayMs = 100) {
+function scheduleAdaptiveLayout(win, reason, delayMs = 100, options = {}) {
   if (adaptiveLayoutTimer) {
     clearTimeout(adaptiveLayoutTimer);
     adaptiveLayoutTimer = null;
@@ -109,7 +170,7 @@ function scheduleAdaptiveLayout(win, reason, delayMs = 100) {
 
   adaptiveLayoutTimer = setTimeout(() => {
     adaptiveLayoutTimer = null;
-    applyAdaptiveLayout(win, reason);
+    applyAdaptiveLayout(win, reason, options);
   }, delayMs);
 
   if (typeof adaptiveLayoutTimer.unref === 'function') {
@@ -118,22 +179,25 @@ function scheduleAdaptiveLayout(win, reason, delayMs = 100) {
 }
 
 function attachAdaptiveWindowListeners(win) {
-  const onDisplayMetricsChanged = () => scheduleAdaptiveLayout(win, 'display-metrics-changed', 120);
-  const onDisplayAdded = () => scheduleAdaptiveLayout(win, 'display-added', 120);
-  const onDisplayRemoved = () => scheduleAdaptiveLayout(win, 'display-removed', 120);
-  const onWindowMoved = () => scheduleAdaptiveLayout(win, 'window-moved', 120);
+  const onDisplayMetricsChanged = () => scheduleAdaptiveLayout(win, 'display-metrics-changed', 120, { preferExcel: true });
+  const onDisplayAdded = () => scheduleAdaptiveLayout(win, 'display-added', 120, { preferExcel: true });
+  const onDisplayRemoved = () => scheduleAdaptiveLayout(win, 'display-removed', 120, { preferExcel: true });
+  const onWindowShow = () => scheduleAdaptiveLayout(win, 'window-show', 80, { preferExcel: true, preferCursor: true });
+  const onWindowRestore = () => scheduleAdaptiveLayout(win, 'window-restore', 80, { preferExcel: true, preferCursor: true });
 
   screen.on('display-metrics-changed', onDisplayMetricsChanged);
   screen.on('display-added', onDisplayAdded);
   screen.on('display-removed', onDisplayRemoved);
-  win.on('move', onWindowMoved);
+  win.on('show', onWindowShow);
+  win.on('restore', onWindowRestore);
 
   detachDisplayListeners = () => {
     screen.removeListener('display-metrics-changed', onDisplayMetricsChanged);
     screen.removeListener('display-added', onDisplayAdded);
     screen.removeListener('display-removed', onDisplayRemoved);
     if (!win.isDestroyed()) {
-      win.removeListener('move', onWindowMoved);
+      win.removeListener('show', onWindowShow);
+      win.removeListener('restore', onWindowRestore);
     }
   };
 }
@@ -169,6 +233,7 @@ function enableFallbackAlwaysOnTop(reason) {
   }
 
   helperFallbackMode = true;
+  mainWindow.__macroflowHelperManagedTopmost = false;
   mainWindow.setAlwaysOnTop(true);
   logger.warn('[WindowMonitor] fallback always-on-top enabled', { reason });
 }
@@ -184,6 +249,7 @@ function disableFallbackAlwaysOnTop(reason) {
   }
 
   helperFallbackMode = false;
+  mainWindow.__macroflowHelperManagedTopmost = false;
   mainWindow.setAlwaysOnTop(false);
   logger.info('[WindowMonitor] fallback always-on-top disabled', { reason });
 }
@@ -199,23 +265,92 @@ function startExcelWindowMonitor(win) {
     return;
   }
 
+  // Token-based reassert mechanism: delayed setAlwaysOnTop(true) calls
+  // through Electron's API to ensure topmost sticks after window transitions.
+  // Direct Win32 SetWindowPos calls from the C# helper can be overridden by
+  // Electron's internal window management, so we mirror reasserts here.
+  let jsReassertToken = 0;
+  const JS_REASSERT_DELAYS = [50, 150, 350];
+  let helperTargetConfirmed = false;
+
   try {
     const hwnd = getNativeWindowHandleValue(win);
     if (hwnd === null) {
       throw new Error('Main window handle unavailable.');
     }
 
+    const targetHwnd = hwnd.toString();
     const WindowFocusHelperClient = require('./window-focus-helper-client');
     windowFocusHelper = new WindowFocusHelperClient({
       logger,
       maxRestartAttempts: 3,
       onStateChange: (state) => {
+        const stateTargetHwnd = state && state.targetHwnd ? String(state.targetHwnd) : null;
+        if (!helperTargetConfirmed) {
+          if (stateTargetHwnd !== targetHwnd) {
+            logger.debug('[WindowHelper] ignoring pre-target state', {
+              expectedTargetHwnd: targetHwnd,
+              stateTargetHwnd
+            });
+            return;
+          }
+          helperTargetConfirmed = true;
+        }
+
         logger.debug('[WindowHelper] state', state);
+
         if (helperFallbackMode) {
           disableFallbackAlwaysOnTop('helper-state-received');
         }
+
+        // Increment token on every state change to cancel stale reasserts
+        jsReassertToken += 1;
+        const currentToken = jsReassertToken;
+
+        if (win && !win.isDestroyed()) {
+          const excelActive = Boolean(state && state.excelActive);
+          // Keep Electron's internal alwaysOnTop state in sync with the
+          // C# helper's Win32 SetWindowPos calls. Without this, Electron
+          // may re-apply a stale HWND_NOTOPMOST on its next internal
+          // window event, undoing the helper's HWND_TOPMOST.
+          win.setAlwaysOnTop(excelActive);
+
+          // When Excel becomes active, schedule delayed reasserts through
+          // Electron's API. This ensures topmost sticks even if Electron
+          // overrides the C# helper's direct Win32 SetWindowPos calls
+          // during window transitions.
+          if (excelActive) {
+            for (const delay of JS_REASSERT_DELAYS) {
+              setTimeout(() => {
+                if (currentToken !== jsReassertToken) return;
+                if (!win || win.isDestroyed()) return;
+                win.setAlwaysOnTop(true);
+                logger.debug('[WindowHelper] JS reassert applied', { delay, token: currentToken });
+              }, delay);
+            }
+          }
+        }
+
+        if (state && state.excelActive && state.excelRect) {
+          const excelDisplay = getDisplayFromRect(state.excelRect);
+          if (excelDisplay) {
+            lastExcelDisplayId = excelDisplay.id;
+
+            if (!hasInitialContextPlacement) {
+              scheduleAdaptiveLayout(win, 'excel-display-anchor', 80, { preferExcel: true });
+              hasInitialContextPlacement = true;
+            }
+          }
+        } else if (!hasInitialContextPlacement) {
+          scheduleAdaptiveLayout(win, 'initial-cursor-anchor', 80, { preferCursor: true });
+          hasInitialContextPlacement = true;
+        }
       },
-      onError: (message) => {
+      onError: (message, payload) => {
+        if (payload && typeof payload === 'object') {
+          logger.warn('[WindowHelper] warning', payload);
+          return;
+        }
         logger.warn('[WindowHelper] warning', { message });
       },
       onFatal: (message) => {
@@ -228,16 +363,21 @@ function startExcelWindowMonitor(win) {
           }
           windowFocusHelper = null;
         }
+        if (win && !win.isDestroyed()) {
+          win.__macroflowHelperManagedTopmost = false;
+        }
         enableFallbackAlwaysOnTop(message);
       }
     });
 
-    windowFocusHelper.start(hwnd.toString());
+    windowFocusHelper.start(targetHwnd);
     if (windowFocusHelper) {
-      logger.info('[WindowMonitor] helper monitor started', { hwnd: hwnd.toString() });
+      win.__macroflowHelperManagedTopmost = true;
+      logger.info('[WindowMonitor] helper monitor started', { hwnd: targetHwnd });
     }
   } catch (error) {
     windowFocusHelper = null;
+    win.__macroflowHelperManagedTopmost = false;
     logger.error('[WindowMonitor] failed to start helper monitor', { error: error.message });
     enableFallbackAlwaysOnTop(error.message);
   }
@@ -252,6 +392,10 @@ function stopExcelWindowMonitor() {
     } finally {
       windowFocusHelper = null;
     }
+  }
+
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.__macroflowHelperManagedTopmost = false;
   }
 
   disableFallbackAlwaysOnTop('monitor-stop');
@@ -346,9 +490,9 @@ function registerWindowHandlers() {
 
 // Window creation function
 function createWindow() {
-  const primaryDisplay = screen.getPrimaryDisplay();
-  const layout = getAdaptiveLayout(primaryDisplay);
-  const { workArea } = primaryDisplay;
+  const launchDisplay = resolveTargetDisplay(null, { preferExcel: true, preferCursor: true });
+  const layout = getAdaptiveLayout(launchDisplay);
+  const { workArea } = launchDisplay;
 
   const initialX = workArea.x + Math.max(0, workArea.width - layout.width - layout.rightMargin);
   const initialY = workArea.y + Math.max(0, workArea.height - layout.height - layout.bottomMargin);
@@ -358,11 +502,13 @@ function createWindow() {
     height: layout.height,
     x: initialX,
     y: initialY,
+    minWidth: WINDOW_BASELINE.minWidth,
+    minHeight: WINDOW_BASELINE.minHeight,
     frame: false,
     transparent: false,
     hasShadow: false,
     roundedCorners: false,
-    alwaysOnTop: false,
+    alwaysOnTop: true,
     resizable: true,
     movable: true,
     skipTaskbar: false,
@@ -376,6 +522,7 @@ function createWindow() {
     }
   });
 
+  mainWindow.__macroflowHelperManagedTopmost = false;
   mainWindow.webContents.setZoomFactor(layout.scale);
   attachAdaptiveWindowListeners(mainWindow);
 
@@ -389,7 +536,12 @@ function createWindow() {
   }
 
   mainWindow.webContents.on('did-finish-load', () => {
-    applyAdaptiveLayout(mainWindow, 'did-finish-load');
+    applyAdaptiveLayout(mainWindow, 'did-finish-load', { preferExcel: true, preferCursor: true });
+    // Start the helper AFTER the window is fully loaded so that
+    // setAlwaysOnTop toggles operate on a fully-ready native window.
+    // Starting earlier causes Electron's internal alwaysOnTop state to
+    // initialise incorrectly, making the first demotion/promotion cycle fail.
+    startExcelWindowMonitor(mainWindow);
   });
 
   // Clean up reference when window is closed
@@ -405,11 +557,15 @@ function createWindow() {
     stopExcelWindowMonitor();
     mainWindow = null;
     lastAdaptiveLayoutKey = '';
+    hasInitialContextPlacement = false;
+    lastExcelDisplayId = null;
   });
-
-  startExcelWindowMonitor(mainWindow);
 }
 
 module.exports = { getMainWindow };
+
+
+
+
 
 

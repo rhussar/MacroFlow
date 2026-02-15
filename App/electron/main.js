@@ -1,10 +1,14 @@
-﻿const { app, BrowserWindow, screen, ipcMain } = require('electron');
+const { app, BrowserWindow, screen, ipcMain } = require('electron');
 const path = require('node:path');
+const { execFile } = require('node:child_process');
+const { promisify } = require('node:util');
 
 const iconPath = path.join(__dirname, '../assets', process.platform === 'win32' ? 'app-icon.ico' : 'app-icon.png');
 const { registerHandlers } = require('./ipc-handlers');
 const { installExcelAddin } = require('./excel-addin-installer');
 const logger = require('./logger');
+
+const execFileAsync = promisify(execFile);
 
 const WINDOW_BASELINE = {
   displayWidth: 1920,
@@ -44,6 +48,37 @@ let lastAdaptiveLayoutKey = '';
 let detachDisplayListeners = null;
 let lastExcelDisplayId = null;
 let hasInitialContextPlacement = false;
+
+async function writeRegistryStringValue(keyPath, valueName, valueData) {
+  const args = ['add', keyPath];
+  if (valueName === null) {
+    args.push('/ve');
+  } else {
+    args.push('/v', valueName);
+  }
+  args.push('/t', 'REG_SZ', '/d', valueData, '/f');
+
+  await execFileAsync('reg.exe', args, { windowsHide: true });
+}
+
+async function registerInstallPathInRegistry() {
+  if (process.platform !== 'win32' || !app.isPackaged) {
+    return;
+  }
+
+  const exePath = process.execPath;
+  const appPathsKey = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\MacroFlow.exe';
+
+  try {
+    await writeRegistryStringValue('HKCU\\Software\\MacroFlow', 'InstallPath', exePath);
+    await writeRegistryStringValue(appPathsKey, null, exePath);
+    await writeRegistryStringValue(appPathsKey, 'Path', path.dirname(exePath));
+
+    logger.info('[InstallPath] registry updated', { exePath });
+  } catch (error) {
+    logger.warn('[InstallPath] registry update failed', { exePath, error: error.message });
+  }
+}
 
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
@@ -438,14 +473,19 @@ if (!gotLock) {
 
   // ONLY register app lifecycle events if we have the lock
   app.whenReady().then(async () => {
-    // Install Excel Add-in before anything else
-    await installExcelAddin();
-
     // Register window control handlers BEFORE creating window
     registerWindowHandlers();
 
     registerHandlers();
     createWindow();
+
+    // Persist current installed exe path so VBA launcher is location-independent.
+    registerInstallPathInRegistry();
+
+    // Install/update Excel add-in in the background so first paint is fast.
+    installExcelAddin().catch((error) => {
+      logger.error('[AddinInstaller] background install failed', { error: error.message });
+    });
 
     // On macOS, re-create window when dock icon is clicked and no windows are open
     app.on('activate', () => {

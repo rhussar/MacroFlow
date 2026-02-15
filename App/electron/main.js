@@ -286,15 +286,20 @@ function startExcelWindowMonitor(win) {
       maxRestartAttempts: 3,
       onStateChange: (state) => {
         const stateTargetHwnd = state && state.targetHwnd ? String(state.targetHwnd) : null;
-        if (!helperTargetConfirmed) {
-          if (stateTargetHwnd !== targetHwnd) {
-            logger.debug('[WindowHelper] ignoring pre-target state', {
-              expectedTargetHwnd: targetHwnd,
-              stateTargetHwnd
-            });
-            return;
+        if (stateTargetHwnd !== targetHwnd) {
+          if (helperTargetConfirmed) {
+            helperTargetConfirmed = false;
           }
+          logger.debug('[WindowHelper] ignoring mismatched helper state', {
+            expectedTargetHwnd: targetHwnd,
+            stateTargetHwnd
+          });
+          return;
+        }
+
+        if (!helperTargetConfirmed) {
           helperTargetConfirmed = true;
+          logger.debug('[WindowHelper] helper target confirmed', { targetHwnd });
         }
 
         logger.debug('[WindowHelper] state', state);
@@ -347,6 +352,9 @@ function startExcelWindowMonitor(win) {
         }
       },
       onError: (message, payload) => {
+        if (payload && payload.type === 'process-exit') {
+          helperTargetConfirmed = false;
+        }
         if (payload && typeof payload === 'object') {
           logger.warn('[WindowHelper] warning', payload);
           return;
@@ -354,6 +362,7 @@ function startExcelWindowMonitor(win) {
         logger.warn('[WindowHelper] warning', { message });
       },
       onFatal: (message) => {
+        helperTargetConfirmed = false;
         logger.error('[WindowHelper] fatal', { message });
         if (windowFocusHelper) {
           try {
@@ -508,7 +517,7 @@ function createWindow() {
     transparent: false,
     hasShadow: false,
     roundedCorners: false,
-    alwaysOnTop: true,
+    alwaysOnTop: false,
     resizable: true,
     movable: true,
     skipTaskbar: false,

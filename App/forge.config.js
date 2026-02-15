@@ -4,9 +4,22 @@ const { FuseV1Options, FuseVersion } = require('@electron/fuses');
 module.exports = {
   packagerConfig: {
     icon: './assets/app-icon',
+    prune: true,
     asar: {
       unpack: '*.node'
     },
+    // Keep the packaged app lean: runtime gets helper/resources from extraResource.
+    ignore: [
+      /^\/out($|\/)/,
+      /^\/dist-electron($|\/)/,
+      /^\/window-monitor\.log$/,
+      /^\/Resources($|\/)/,
+      /^\/native\/window-focus-helper($|\/)/,
+      /^\/node_modules\/@electron-forge($|\/)/,
+      /^\/node_modules\/@electron\/fuses($|\/)/,
+      /^\/node_modules\/electron-rebuild($|\/)/,
+      /^\/node_modules\/(vite|@vitejs|tailwindcss|@tailwindcss|concurrently|wait-on|cross-env|tw-animate-css)($|\/)/
+    ],
     extraResource: [
       './Resources',
       './native/window-focus-helper/bin-helper'

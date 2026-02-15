@@ -57,6 +57,7 @@ class WindowFocusHelperClient {
     this.awaitingPong = false;
     this.lastPongAt = 0;
     this.unexpectedExitHandled = false;
+    this.helperHealthy = false;
   }
 
   start(targetHwnd) {
@@ -75,6 +76,7 @@ class WindowFocusHelperClient {
 
     this.restartAttempts = 0;
     this.unexpectedExitHandled = false;
+    this.helperHealthy = false;
     this.launchHelper('initial-start');
   }
 
@@ -133,6 +135,7 @@ class WindowFocusHelperClient {
 
     this.process = child;
     this.unexpectedExitHandled = false;
+    this.helperHealthy = false;
     this.log('info', 'Window helper started', {
       pid: child.pid,
       reason,
@@ -181,6 +184,7 @@ class WindowFocusHelperClient {
       return;
     }
     this.unexpectedExitHandled = true;
+    this.helperHealthy = false;
 
     this.onError(message, { type: 'process-exit', message });
     this.log('warn', 'Window helper unexpected termination', {
@@ -305,6 +309,21 @@ class WindowFocusHelperClient {
     }
   }
 
+  markHelperHealthy(signalType) {
+    if (this.helperHealthy) {
+      return;
+    }
+
+    this.helperHealthy = true;
+    if (this.restartAttempts > 0) {
+      this.log('info', 'Window helper healthy after restart', {
+        signalType,
+        previousAttempts: this.restartAttempts
+      });
+    }
+    this.restartAttempts = 0;
+  }
+
   handleMessage(line) {
     const trimmed = String(line || '').trim();
     if (!trimmed) {
@@ -320,11 +339,13 @@ class WindowFocusHelperClient {
     }
 
     if (payload.type === 'state') {
+      this.markHelperHealthy('state');
       this.onStateChange(payload);
       return;
     }
 
     if (payload.type === 'pong') {
+      this.markHelperHealthy('pong');
       this.awaitingPong = false;
       this.lastPongAt = Date.now();
       if (this.pongTimeout) {
@@ -357,6 +378,8 @@ class WindowFocusHelperClient {
       this.process.removeAllListeners();
       this.process = null;
     }
+
+    this.helperHealthy = false;
 
     if (this.pongTimeout) {
       clearTimeout(this.pongTimeout);

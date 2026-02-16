@@ -296,6 +296,75 @@ body {
   color: var(--text-muted);
 }
 
+.search-context-bar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  padding: 10px 16px 6px;
+}
+
+.search-context-text {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.search-status-panel {
+  margin: 16px;
+  padding: 14px;
+  border-radius: var(--border-radius-sm);
+  border: 1px solid var(--border-default);
+  background: var(--bg-secondary);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.search-status-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.search-status-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.search-status-message {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.search-status-no_excel {
+  border-color: var(--accent-orange);
+}
+
+.search-status-no_workbook {
+  border-color: var(--accent-yellow);
+}
+
+.search-status-error {
+  border-color: var(--accent-red);
+}
+
+.search-empty-state {
+  padding: 0 12px 10px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.search-empty-state-grid {
+  grid-column: 1 / -1;
+  padding-top: 8px;
+}
+
 /* ============================================
    File List Items
    ============================================ */

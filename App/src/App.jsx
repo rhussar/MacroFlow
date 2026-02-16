@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import './App.css';
 
 // Import components
@@ -8,6 +8,14 @@ import FileExplorer from './components/FileExplorer';
 import ManualEditMode from './components/ManualEditMode';
 import SettingsMenu from './components/SettingsMenu';
 import { MacroFlowLogo } from './components/icons';
+import {
+  mapSearchError,
+  normalizeMacros,
+  normalizeModules,
+  normalizeWorkbook
+} from './lib/search-data';
+
+const SEARCH_AUTO_REFRESH_INTERVAL_MS = 3000;
 
 /**
  * Main App Component
@@ -19,6 +27,14 @@ import { MacroFlowLogo } from './components/icons';
  * - 'edit': Manual code editor mode
  */
 function App() {
+  const initialSearchData = {
+    status: 'idle',
+    workbook: null,
+    modules: [],
+    macros: [],
+    error: null
+  };
+
   // Current view mode
   const [mode, setMode] = useState('search');
 
@@ -27,6 +43,150 @@ function App() {
 
   // Settings menu open state
   const [settingsOpen, setSettingsOpen] = useState(false);
+
+  // Live search data from Excel
+  const [searchData, setSearchData] = useState(initialSearchData);
+  const searchRequestSequence = useRef(0);
+  const searchLoadInFlight = useRef(false);
+
+  const loadSearchData = useCallback(async ({ silent = false } = {}) => {
+    if (searchLoadInFlight.current) {
+      return;
+    }
+
+    searchLoadInFlight.current = true;
+    const requestId = ++searchRequestSequence.current;
+
+    if (!silent) {
+      setSearchData((prev) => ({
+        ...prev,
+        status: 'loading',
+        error: null
+      }));
+    }
+
+    try {
+      const workbookApi = window.excel?.workbook?.info;
+      const modulesApi = window.excel?.vba?.modules;
+      const proceduresApi = window.excel?.vba?.procedures;
+
+      if (!workbookApi || !modulesApi || !proceduresApi) {
+        const mappedError = mapSearchError('NO_EXCEL: Excel bridge API is unavailable.');
+        if (requestId !== searchRequestSequence.current) {
+          return;
+        }
+        setSearchData({
+          status: mappedError.status,
+          workbook: null,
+          modules: [],
+          macros: [],
+          error: {
+            code: mappedError.code,
+            message: mappedError.message
+          }
+        });
+        return;
+      }
+
+      const [workbookResult, modulesResult, proceduresResult] = await Promise.all([
+        workbookApi(),
+        modulesApi(),
+        proceduresApi()
+      ]);
+
+      if (requestId !== searchRequestSequence.current) {
+        return;
+      }
+
+      const failedResults = [workbookResult, modulesResult, proceduresResult].filter(
+        (result) => !result?.success
+      );
+
+      if (failedResults.length > 0) {
+        const failureMessage = failedResults
+          .map((result) => result?.message)
+          .filter(Boolean)
+          .join(' | ');
+        const mappedError = mapSearchError(failureMessage);
+
+        setSearchData({
+          status: mappedError.status,
+          workbook: null,
+          modules: [],
+          macros: [],
+          error: {
+            code: mappedError.code,
+            message: mappedError.message
+          }
+        });
+        return;
+      }
+
+      const fallbackWorkbook = modulesResult?.workbook || proceduresResult?.workbook || null;
+      const workbook = normalizeWorkbook(workbookResult, fallbackWorkbook);
+      const modules = normalizeModules(modulesResult?.modules, workbook);
+      const macros = normalizeMacros(proceduresResult?.procedures);
+
+      setSearchData({
+        status: 'ready',
+        workbook,
+        modules,
+        macros,
+        error: null
+      });
+    } catch (error) {
+      if (requestId !== searchRequestSequence.current) {
+        return;
+      }
+      const mappedError = mapSearchError(error?.message);
+      setSearchData({
+        status: mappedError.status,
+        workbook: null,
+        modules: [],
+        macros: [],
+        error: {
+          code: mappedError.code,
+          message: mappedError.message
+        }
+      });
+    }
+    finally {
+      searchLoadInFlight.current = false;
+    }
+  }, []);
+
+  useEffect(() => {
+    loadSearchData();
+  }, [loadSearchData]);
+
+  useEffect(() => {
+    if (mode !== 'search') {
+      return undefined;
+    }
+
+    const refreshSilently = () => {
+      loadSearchData({ silent: true });
+    };
+
+    refreshSilently();
+    const intervalId = window.setInterval(refreshSilently, SEARCH_AUTO_REFRESH_INTERVAL_MS);
+
+    const handleFocus = () => refreshSilently();
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        refreshSilently();
+      }
+    };
+
+    window.addEventListener('focus', handleFocus);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener('focus', handleFocus);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [mode, loadSearchData]);
 
   // Handle keyboard shortcuts
   useEffect(() => {
@@ -97,10 +257,17 @@ function App() {
     // Try to run the macro via the Excel bridge
     if (window.excel?.vba?.run) {
       try {
-        // Convert display name to macro name (e.g., "Auto-Fit & Zoom 100" -> "AutoFitAndZoom100")
-        const macroName = shortcut.name
-          .replace(/[^a-zA-Z0-9\s]/g, '') // Remove special chars
-          .replace(/\s+/g, '_');           // Spaces to underscores
+        const fallbackMacroName = shortcut?.name
+          ? shortcut.name
+              .replace(/[^a-zA-Z0-9\s]/g, '')
+              .replace(/\s+/g, '_')
+          : '';
+        const macroName = shortcut?.runTarget || shortcut?.macroName || fallbackMacroName;
+
+        if (!macroName) {
+          console.error('Cannot run macro: no run target or name provided');
+          return;
+        }
 
         console.log(`Running macro: ${macroName}`);
         const result = await window.excel.vba.run({ macroName });
@@ -130,6 +297,7 @@ function App() {
             onBuildModeClick={() => setMode('build')}
             onFileClick={handleFileClick}
             onShortcutClick={handleShortcutClick}
+            searchData={searchData}
             onClose={handleClose}
           />
         );

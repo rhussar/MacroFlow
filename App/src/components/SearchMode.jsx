@@ -1,23 +1,36 @@
 import React from 'react';
 import { FolderIcon, ReturnIcon, CloseIcon } from './icons';
 
-// Mock data for files/modules
-const mockFiles = [
-  { id: 1, name: 'Module 1', type: 'folder', tag: 'Personal' },
-  { id: 2, name: 'Module 2', type: 'folder', tag: 'Personal' },
-];
+const defaultSearchData = {
+  status: 'idle',
+  workbook: null,
+  modules: [],
+  macros: [],
+  error: null
+};
 
-// Mock data for VBA shortcuts
-const mockShortcuts = [
-  { id: 1, name: 'Bottom bolded line', shortcut: 'Shift + w' },
-  { id: 2, name: 'Apply Client Theme', shortcut: 'Shift + w' },
-  { id: 3, name: 'Reload Pivot Tables', shortcut: 'Ctrl + Shift + w' },
-  { id: 4, name: 'Bottom bolded line', shortcut: 'Ctrl + Alt + w' },
-  { id: 5, name: 'Clean Data', shortcut: 'Shift + w' },
-  { id: 6, name: 'Upload to Sharepoint', shortcut: 'Shift + w' },
-  { id: 7, name: 'Auto-Fit & Zoom 100', shortcut: 'Ctrl + Shift + w' },
-  { id: 8, name: 'Email as PDF', shortcut: 'Ctrl + Alt + w' },
-];
+const statusConfig = {
+  idle: {
+    title: 'Loading workbook data',
+    message: 'Connecting to the active Excel workbook.'
+  },
+  loading: {
+    title: 'Loading workbook data',
+    message: 'Refreshing modules and macros from Excel.'
+  },
+  no_excel: {
+    title: 'Excel is not running',
+    message: 'Open Excel. MacroFlow will retry automatically.'
+  },
+  no_workbook: {
+    title: 'No active workbook',
+    message: 'Open or create a workbook. MacroFlow will retry automatically.'
+  },
+  error: {
+    title: 'Could not load workbook data',
+    message: 'Something went wrong while reading workbook data. Retrying automatically.'
+  }
+};
 
 const SearchMode = ({
   searchQuery,
@@ -25,16 +38,107 @@ const SearchMode = ({
   onBuildModeClick,
   onFileClick,
   onShortcutClick,
-  onClose,
+  searchData = defaultSearchData,
+  onClose
 }) => {
-  // Filter files based on search
-  const filteredFiles = mockFiles.filter((file) =>
-    file.name.toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  const normalizedQuery = searchQuery.toLowerCase().trim();
+  const status = searchData.status || 'idle';
+  const workbookLabel = searchData.workbook?.name
+    ? `Active workbook: ${searchData.workbook.name}`
+    : 'Active workbook unavailable';
+  const workbookPath = searchData.workbook?.path || '';
 
-  // Filter shortcuts based on search
-  const filteredShortcuts = mockShortcuts.filter((shortcut) =>
-    shortcut.name.toLowerCase().includes(searchQuery.toLowerCase())
+  const filteredFiles = searchData.modules.filter((file) => {
+    const haystack = `${file.name} ${file.type} ${file.workbookName}`.toLowerCase();
+    return haystack.includes(normalizedQuery);
+  });
+
+  const filteredMacros = searchData.macros.filter((macro) => {
+    const haystack = `${macro.name} ${macro.module}`.toLowerCase();
+    return haystack.includes(normalizedQuery);
+  });
+
+  const renderNonReadyState = () => {
+    const config = statusConfig[status] || statusConfig.error;
+    const message = status === 'error' && searchData.error?.message
+      ? searchData.error.message
+      : config.message;
+    const isLoadingState = status === 'idle' || status === 'loading';
+
+    return (
+      <div className={`search-status-panel search-status-${status}`}>
+        <div className="search-status-header">
+          {isLoadingState && <span className="status-spinner" />}
+          <span className="search-status-title">{config.title}</span>
+        </div>
+        <p className="search-status-message">{message}</p>
+      </div>
+    );
+  };
+
+  const renderReadyState = () => (
+    <>
+      <div className="search-context-bar">
+        <span className="search-context-text" title={workbookPath}>
+          {workbookLabel}
+        </span>
+      </div>
+
+      <div className="section-header">
+        <span className="section-title">All Files</span>
+        <span className="section-count">{filteredFiles.length} items</span>
+      </div>
+
+      <div className="file-list">
+        {filteredFiles.length === 0 && (
+          <div className="search-empty-state">No modules match this search.</div>
+        )}
+
+        {filteredFiles.map((file) => (
+          <div
+            key={file.id}
+            className="file-item"
+            onClick={() => onFileClick(file)}
+          >
+            <div className="file-icon">
+              <FolderIcon size={24} />
+            </div>
+            <div className="file-info">
+              <span className="file-name">
+                {file.name}
+                {file.workbookName && <span className="file-tag">{file.workbookName}</span>}
+              </span>
+            </div>
+            <span className="file-type">{`${file.type} - ${file.lineCount} lines`}</span>
+          </div>
+        ))}
+      </div>
+
+      <div className="section-header">
+        <span className="section-title">Macros</span>
+        <span className="section-count">{filteredMacros.length} items</span>
+      </div>
+
+      <div className="shortcuts-grid">
+        {filteredMacros.length === 0 && (
+          <div className="search-empty-state search-empty-state-grid">No macros match this search.</div>
+        )}
+
+        {filteredMacros.map((macro) => (
+          <div
+            key={macro.id}
+            className="shortcut-item"
+            onClick={() => onShortcutClick(macro)}
+          >
+            <span className="shortcut-icon">
+              <ReturnIcon size={16} />
+            </span>
+            <span className="shortcut-name">{macro.name}</span>
+            <span className="shortcut-keys">{macro.module}</span>
+          </div>
+        ))}
+      </div>
+    </>
   );
 
   return (
@@ -66,54 +170,7 @@ const SearchMode = ({
 
       {/* Main Content */}
       <main className="main-content">
-        {/* All Files Section */}
-        <div className="section-header">
-          <span className="section-title">All Files</span>
-          <span className="section-count">{filteredFiles.length} items</span>
-        </div>
-
-        <div className="file-list">
-          {filteredFiles.map((file) => (
-            <div
-              key={file.id}
-              className="file-item"
-              onClick={() => onFileClick(file)}
-            >
-              <div className="file-icon">
-                <FolderIcon size={24} />
-              </div>
-              <div className="file-info">
-                <span className="file-name">
-                  {file.name}
-                  <span className="file-tag">{file.tag}</span>
-                </span>
-              </div>
-              <span className="file-type">Macro Folder</span>
-            </div>
-          ))}
-        </div>
-
-        {/* VBA Shortcuts Section */}
-        <div className="section-header">
-          <span className="section-title">VBA Shortcuts</span>
-          <span className="section-count">{filteredShortcuts.length} items</span>
-        </div>
-
-        <div className="shortcuts-grid">
-          {filteredShortcuts.map((shortcut) => (
-            <div
-              key={shortcut.id}
-              className="shortcut-item"
-              onClick={() => onShortcutClick(shortcut)}
-            >
-              <span className="shortcut-icon">
-                <ReturnIcon size={16} />
-              </span>
-              <span className="shortcut-name">{shortcut.name}</span>
-              <span className="shortcut-keys">{shortcut.shortcut}</span>
-            </div>
-          ))}
-        </div>
+        {status === 'ready' ? renderReadyState() : renderNonReadyState()}
       </main>
     </>
   );

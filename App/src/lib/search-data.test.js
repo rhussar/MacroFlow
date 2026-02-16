@@ -1,0 +1,68 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import {
+  mapSearchError,
+  normalizeMacros,
+  normalizeModules
+} from './search-data.js';
+
+test('mapSearchError maps NO_EXCEL to no_excel state', () => {
+  const result = mapSearchError('NO_EXCEL: Excel is not running');
+  assert.equal(result.status, 'no_excel');
+  assert.equal(result.code, 'NO_EXCEL');
+});
+
+test('mapSearchError maps NO_WORKBOOK to no_workbook state', () => {
+  const result = mapSearchError('NO_WORKBOOK: No workbook is open');
+  assert.equal(result.status, 'no_workbook');
+  assert.equal(result.code, 'NO_WORKBOOK');
+});
+
+test('mapSearchError maps unknown errors to error and preserves message', () => {
+  const result = mapSearchError('Some unexpected failure');
+  assert.equal(result.status, 'error');
+  assert.equal(result.code, 'UNKNOWN');
+  assert.equal(result.message, 'Some unexpected failure');
+});
+
+test('normalizeModules excludes MacroFlow runtime helper module', () => {
+  const modules = normalizeModules(
+    [
+      { name: 'Module1', type: 'Standard Module', typeId: 1, lineCount: 20 },
+      { name: 'MacroFlow_Runtime', type: 'Standard Module', typeId: 1, lineCount: 12 },
+      { name: 'ClassOne', type: 'Class Module', typeId: 2, lineCount: 5 }
+    ],
+    { name: 'Book1.xlsm', path: 'C:/Book1.xlsm' }
+  );
+
+  assert.equal(modules.length, 2);
+  assert.deepEqual(
+    modules.map((item) => item.name),
+    ['Module1', 'ClassOne']
+  );
+});
+
+test('normalizeMacros keeps only public or implicit Sub procedures and excludes runtime helper', () => {
+  const macros = normalizeMacros([
+    { module: 'Module1', name: 'RunA', kind: 'Sub', scope: 'Public' },
+    { module: 'Module1', name: 'PrivateSub', kind: 'Sub', scope: 'Private' },
+    { module: 'Module1', name: 'FuncA', kind: 'Function', scope: 'Public' },
+    { module: 'Module2', name: 'ImplicitSub', kind: 'Sub', scope: 'Implicit' },
+    { module: 'MacroFlow_Runtime', name: 'MacroFlow_RunMacro', kind: 'Sub', scope: 'Public' }
+  ]);
+
+  assert.equal(macros.length, 2);
+  assert.deepEqual(
+    macros.map((item) => item.name),
+    ['RunA', 'ImplicitSub']
+  );
+});
+
+test('normalizeMacros produces deterministic id and canonical runTarget', () => {
+  const [macro] = normalizeMacros([
+    { module: 'ModuleA', name: 'DoWork', kind: 'Sub', scope: 'Public' }
+  ]);
+
+  assert.equal(macro.id, 'ModuleA::DoWork::Sub::Public');
+  assert.equal(macro.runTarget, 'ModuleA.DoWork');
+});

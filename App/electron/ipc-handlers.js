@@ -198,10 +198,11 @@ function registerHandlers() {
    * List VBA modules in the active workbook
    * Channel: 'vba:modules'
    */
-  ipcMain.handle('vba:modules', async () => {
+  ipcMain.handle('vba:modules', () => {
     logIpc('vba:modules', 'start');
 
-    const result = await withExcelFocus(() => excel.listModules());
+    // Read-only listing path: avoid withExcelFocus to reduce z-order/focus churn.
+    const result = excel.listModules();
 
     logIpc('vba:modules', 'end', { success: result.success, count: result.modules?.length });
     return result;
@@ -211,10 +212,11 @@ function registerHandlers() {
    * List procedures (Subs/Functions/Properties) in the active workbook
    * Channel: 'vba:procedures'
    */
-  ipcMain.handle('vba:procedures', async () => {
+  ipcMain.handle('vba:procedures', () => {
     logIpc('vba:procedures', 'start');
 
-    const result = await withExcelFocus(() => excel.listProcedures());
+    // Read-only listing path: avoid withExcelFocus to reduce z-order/focus churn.
+    const result = excel.listProcedures();
 
     logIpc('vba:procedures', 'end', { success: result.success, count: result.procedures?.length });
     return result;
@@ -238,10 +240,11 @@ function registerHandlers() {
    * Audit tracked shortcuts
    * Channel: 'vba:shortcut:audit'
    */
-  ipcMain.handle('vba:shortcut:audit', async () => {
+  ipcMain.handle('vba:shortcut:audit', () => {
     logIpc('vba:shortcut:audit', 'start');
 
-    const result = await withExcelFocus(() => excel.auditShortcuts());
+    // Read-only audit path: avoid withExcelFocus to reduce z-order/focus churn.
+    const result = excel.auditShortcuts();
 
     logIpc('vba:shortcut:audit', 'end', { success: result.success });
     return result;

@@ -1,4 +1,5 @@
 const INTERNAL_MODULE_NAME = 'MacroFlow_Runtime';
+const VBA_DOCUMENT_TYPE_ID = 100;
 
 function toSafeString(value) {
   if (value === null || value === undefined) {
@@ -14,6 +15,16 @@ function toNumber(value, fallback = 0) {
 
 function isInternalModuleName(name) {
   return toSafeString(name).toLowerCase() === INTERNAL_MODULE_NAME.toLowerCase();
+}
+
+function isVbaDocumentObject(module) {
+  const typeId = Number(module?.typeId);
+  if (Number.isFinite(typeId) && typeId === VBA_DOCUMENT_TYPE_ID) {
+    return true;
+  }
+
+  const typeName = toSafeString(module?.type).toLowerCase();
+  return typeName === 'document';
 }
 
 export function normalizeWorkbook(workbookInfo, fallbackWorkbook = null) {
@@ -46,7 +57,7 @@ export function normalizeModules(apiModules = [], workbook = null) {
   return source
     .filter((module) => {
       const moduleName = toSafeString(module?.name);
-      return moduleName && !isInternalModuleName(moduleName);
+      return moduleName && !isInternalModuleName(moduleName) && !isVbaDocumentObject(module);
     })
     .map((module) => {
       const name = toSafeString(module.name);
@@ -108,7 +119,8 @@ export function normalizeMacros(apiProcedures = []) {
         module,
         kind,
         scope,
-        runTarget
+        runTarget,
+        fullName: runTarget
       };
     });
 }

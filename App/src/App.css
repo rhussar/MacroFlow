@@ -354,6 +354,53 @@ body {
   border-color: var(--accent-red);
 }
 
+.search-run-status {
+  margin: 0 16px 8px;
+  padding: 10px 12px;
+  border-radius: var(--border-radius-sm);
+  border: 1px solid var(--border-default);
+  background: var(--bg-secondary);
+}
+
+.search-run-status-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.search-run-status-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.search-run-status-message {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.45;
+}
+
+.search-run-status-running {
+  border-color: var(--accent-blue);
+}
+
+.search-run-status-success {
+  border-color: var(--accent-green);
+}
+
+.search-run-status-success .search-run-status-title {
+  color: var(--accent-green);
+}
+
+.search-run-status-error {
+  border-color: var(--accent-red);
+}
+
+.search-run-status-error .search-run-status-title {
+  color: var(--accent-red);
+}
+
 .search-empty-state {
   padding: 0 12px 10px;
   font-size: 12px;
@@ -443,10 +490,10 @@ body {
 .shortcut-item {
   display: flex;
   align-items: center;
-  gap: 8px;
+  justify-content: space-between;
+  gap: 10px;
   padding: 8px 12px;
   border-radius: var(--border-radius-sm);
-  cursor: pointer;
   transition: background 0.15s;
 }
 
@@ -454,13 +501,19 @@ body {
   background: var(--bg-hover);
 }
 
+.shortcut-item.selected {
+  background: var(--bg-selected);
+}
+
 .shortcut-icon {
   color: var(--text-muted);
   font-size: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .shortcut-name {
-  flex: 1;
   font-size: 13px;
   color: var(--text-primary);
   white-space: nowrap;
@@ -468,10 +521,77 @@ body {
   text-overflow: ellipsis;
 }
 
-.shortcut-keys {
+.shortcut-run-target {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: transparent;
+  border: none;
+  padding: 0;
+  text-align: left;
+  cursor: pointer;
+}
+
+.shortcut-inline-input {
+  width: 118px;
+  height: 24px;
+  border: 1px solid transparent;
+  border-radius: var(--border-radius-xs);
+  background: transparent;
+  color: var(--text-secondary);
   font-size: 11px;
+  padding: 0 6px;
+  text-align: right;
+  outline: none;
+}
+
+.shortcut-inline-input::placeholder {
   color: var(--text-muted);
-  white-space: nowrap;
+}
+
+.shortcut-inline-input.is-empty {
+  color: var(--text-muted);
+}
+
+.shortcut-inline-input:focus {
+  border-color: var(--border-light);
+  background: var(--bg-input);
+  text-align: left;
+}
+
+.shortcut-inline-input:disabled {
+  opacity: 0.7;
+}
+
+.shortcut-item.selected .shortcut-inline-input {
+  border-color: rgba(255, 255, 255, 0.08);
+}
+
+.shortcut-item.selected .shortcut-inline-input:focus {
+  border-color: var(--accent-blue);
+}
+
+.shortcut-item.selected .shortcut-name {
+  color: var(--text-primary);
+}
+
+.shortcut-run-target:focus-visible {
+  outline: 1px solid var(--accent-blue);
+  border-radius: var(--border-radius-xs);
+}
+
+.shortcut-run-target:hover .shortcut-name {
+  color: #f2f2f2;
+}
+
+.shortcut-item.saving .shortcut-inline-input {
+  border-color: var(--accent-blue);
+}
+
+.shortcut-item.saving .shortcut-name {
+  color: var(--text-muted);
 }
 
 /* ============================================

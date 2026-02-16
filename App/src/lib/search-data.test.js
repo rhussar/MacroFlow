@@ -25,12 +25,14 @@ test('mapSearchError maps unknown errors to error and preserves message', () => 
   assert.equal(result.message, 'Some unexpected failure');
 });
 
-test('normalizeModules excludes MacroFlow runtime helper module', () => {
+test('normalizeModules excludes runtime and VBA document objects (sheets/workbook)', () => {
   const modules = normalizeModules(
     [
       { name: 'Module1', type: 'Standard Module', typeId: 1, lineCount: 20 },
       { name: 'MacroFlow_Runtime', type: 'Standard Module', typeId: 1, lineCount: 12 },
-      { name: 'ClassOne', type: 'Class Module', typeId: 2, lineCount: 5 }
+      { name: 'ClassOne', type: 'Class Module', typeId: 2, lineCount: 5 },
+      { name: 'ThisWorkbook', type: 'Document', typeId: 100, lineCount: 10 },
+      { name: 'Sheet1', type: 'document', typeId: null, lineCount: 8 }
     ],
     { name: 'Book1.xlsm', path: 'C:/Book1.xlsm' }
   );
@@ -58,11 +60,12 @@ test('normalizeMacros keeps only public or implicit Sub procedures and excludes 
   );
 });
 
-test('normalizeMacros produces deterministic id and canonical runTarget', () => {
+test('normalizeMacros produces deterministic id and canonical runTarget/fullName', () => {
   const [macro] = normalizeMacros([
     { module: 'ModuleA', name: 'DoWork', kind: 'Sub', scope: 'Public' }
   ]);
 
   assert.equal(macro.id, 'ModuleA::DoWork::Sub::Public');
   assert.equal(macro.runTarget, 'ModuleA.DoWork');
+  assert.equal(macro.fullName, 'ModuleA.DoWork');
 });

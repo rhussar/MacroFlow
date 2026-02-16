@@ -1,0 +1,98 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import {
+  canonicalizeMacroIdentity,
+  mapAuditShortcutsToMacroIds,
+  normalizeAuditResponse,
+  normalizeShortcutKey,
+  toCompactMacroName
+} from './shortcut-audit.js';
+
+test('normalizeShortcutKey uppercases and normalizes spacing around plus', () => {
+  assert.equal(normalizeShortcutKey('ctrl + shift + a'), 'CTRL+SHIFT+A');
+  assert.equal(normalizeShortcutKey('CTRL+SHIFT+A'), 'CTRL+SHIFT+A');
+  assert.equal(normalizeShortcutKey('  ctrl+  alt +f5  '), 'CTRL+ALT+F5');
+});
+
+test('toCompactMacroName prefers module.procedure from workbook-qualified macro names', () => {
+  assert.equal(toCompactMacroName("'Book 1.xlsm'!Module1.RunReport"), 'Module1.RunReport');
+  assert.equal(toCompactMacroName('Book2.xlsm!Sheet1.RefreshData'), 'Sheet1.RefreshData');
+  assert.equal(toCompactMacroName('Module3.DoWork'), 'Module3.DoWork');
+});
+
+test('normalizeAuditResponse maps rows and computes conflicts using normalized shortcut keys', () => {
+  const result = normalizeAuditResponse({
+    shortcuts: [
+      { macro: 'Book1.xlsm!Module1.RunA', shortcut: 'ctrl + shift + a' },
+      { macro: 'Book1.xlsm!Module2.RunB', shortcut: 'CTRL+SHIFT+A' },
+      { macro: 'Book1.xlsm!Module3.RunC', shortcut: 'Ctrl + Alt + Z' }
+    ],
+    unmapped: ['Book1.xlsm!Module4.NoShortcut'],
+    note: 'Tracked shortcuts only.'
+  });
+
+  assert.equal(result.mapped.length, 3);
+  assert.deepEqual(
+    result.mapped.map((item) => item.shortcutNorm),
+    ['CTRL+ALT+Z', 'CTRL+SHIFT+A', 'CTRL+SHIFT+A']
+  );
+  assert.equal(result.unmapped.length, 1);
+  assert.equal(result.unmapped[0].macroCompact, 'Module4.NoShortcut');
+  assert.equal(result.conflicts.length, 1);
+  assert.equal(result.conflicts[0].shortcutNorm, 'CTRL+SHIFT+A');
+  assert.equal(result.conflicts[0].entries.length, 2);
+  assert.equal(result.note, 'Tracked shortcuts only.');
+});
+
+test('normalizeAuditResponse handles empty or non-conflicting data', () => {
+  const result = normalizeAuditResponse({
+    shortcuts: [{ macro: 'Book1.xlsm!Module1.RunA', shortcut: 'Ctrl+1' }],
+    unmapped: []
+  });
+
+  assert.equal(result.mapped.length, 1);
+  assert.equal(result.conflicts.length, 0);
+  assert.equal(result.unmapped.length, 0);
+  assert.equal(result.note, '');
+});
+
+test('canonicalizeMacroIdentity strips workbook prefix and normalizes case', () => {
+  assert.equal(canonicalizeMacroIdentity("'Book One.xlsm'!Module1.RunA"), 'module1.runa');
+  assert.equal(canonicalizeMacroIdentity('Book2.xlsm!SHEET1.RefreshData'), 'sheet1.refreshdata');
+  assert.equal(canonicalizeMacroIdentity('Module3.DoWork'), 'module3.dowork');
+});
+
+test('mapAuditShortcutsToMacroIds maps workbook-qualified audit entries to macro IDs', () => {
+  const macros = [
+    {
+      id: 'Module1::RunA::Sub::Public',
+      name: 'RunA',
+      module: 'Module1',
+      runTarget: 'Module1.RunA',
+      fullName: 'Module1.RunA'
+    },
+    {
+      id: 'Module2::RunB::Sub::Public',
+      name: 'RunB',
+      module: 'Module2',
+      runTarget: 'Module2.RunB',
+      fullName: 'Module2.RunB'
+    }
+  ];
+
+  const map = mapAuditShortcutsToMacroIds(
+    {
+      shortcuts: [
+        { macro: 'Book1.xlsm!Module1.RunA', shortcut: 'ctrl + shift + a' },
+        { macro: "'Book 1.xlsm'!module2.runb", shortcut: 'CTRL + 2' },
+        { macro: 'Book1.xlsm!Module9.Missing', shortcut: 'CTRL+9' }
+      ]
+    },
+    macros
+  );
+
+  assert.deepEqual(map, {
+    'Module1::RunA::Sub::Public': 'CTRL+SHIFT+A',
+    'Module2::RunB::Sub::Public': 'CTRL+2'
+  });
+});

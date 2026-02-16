@@ -23,6 +23,10 @@ const VBA_COMPONENT_NAME = {
 };
 
 class ExcelBridge {
+  constructor() {
+    this._proceduresCache = null;
+  }
+
   // ===========================================================================
   // CONNECTION
   // ===========================================================================
@@ -32,9 +36,10 @@ class ExcelBridge {
    * @returns {object} Excel.Application COM object
    * @throws {Error} If Excel is not running
    */
-  getApp() {
+  getApp(options = {}) {
+    const { activate = true } = options;
     try {
-      const excel = new winax.Object('Excel.Application', { activate: true });
+      const excel = new winax.Object('Excel.Application', { activate });
       if (!excel) {
         throw new Error('Excel application not found');
       }
@@ -49,8 +54,8 @@ class ExcelBridge {
    * @returns {object} Workbook COM object
    * @throws {Error} If no workbook is open
    */
-  getActiveWorkbook() {
-    const excel = this.getApp();
+  getActiveWorkbook(options = {}) {
+    const excel = this.getApp(options);
     const workbook = excel.ActiveWorkbook;
     if (!workbook) {
       throw new Error('NO_WORKBOOK: No workbook is open. Please open or create a workbook.');
@@ -63,8 +68,8 @@ class ExcelBridge {
    * @returns {object} VBProject COM object
    * @throws {Error} If VBA access is not trusted
    */
-  getVBProject() {
-    const workbook = this.getActiveWorkbook();
+  getVBProject(options = {}) {
+    const workbook = this.getActiveWorkbook(options);
     try {
       const vbProject = workbook.VBProject;
       if (!vbProject) {
@@ -83,6 +88,12 @@ class ExcelBridge {
   // ===========================================================================
   // HELPERS (PURE)
   // ===========================================================================
+
+  _getWorkbookCacheKey(workbook) {
+    const path = workbook && workbook.FullName ? String(workbook.FullName) : '';
+    const name = workbook && workbook.Name ? String(workbook.Name) : '';
+    return `${path}::${name}`;
+  }
 
   _describeWorkbook(workbook) {
     return {
@@ -882,10 +893,11 @@ class ExcelBridge {
    * List modules in the active workbook's VBA project.
    * @returns {{ success: boolean, workbook?: { name: string, path: string }, modules: Array }}
    */
-  listModules() {
+  listModules(options = {}) {
+    const { activate = true } = options;
     try {
-      const workbook = this.getActiveWorkbook();
-      const vbProject = this.getVBProject();
+      const workbook = this.getActiveWorkbook({ activate });
+      const vbProject = this.getVBProject({ activate });
       const components = vbProject.VBComponents;
       const modules = [];
 
@@ -915,34 +927,65 @@ class ExcelBridge {
    * List procedures (Subs/Functions/Properties) in the active workbook.
    * @returns {{ success: boolean, workbook?: { name: string, path: string }, procedures: Array }}
    */
-  listProcedures() {
+  listProcedures(options = {}) {
+    const { activate = true } = options;
     try {
-      const workbook = this.getActiveWorkbook();
-      const vbProject = this.getVBProject();
+      const workbook = this.getActiveWorkbook({ activate });
+      const vbProject = this.getVBProject({ activate });
       const components = vbProject.VBComponents;
+      const workbookKey = this._getWorkbookCacheKey(workbook);
+      // Cache parsed procedures by workbook + module line count to avoid
+      // repeatedly reading full module text on frequent UI refreshes.
+      const previousModuleEntries =
+        this._proceduresCache && this._proceduresCache.workbookKey === workbookKey
+          ? this._proceduresCache.moduleEntries
+          : {};
+      const nextModuleEntries = {};
       const procedures = [];
 
       for (let i = 1; i <= components.Count; i++) {
         const component = components.Item(i);
+        const moduleName = String(component.Name);
         const codeModule = component.CodeModule;
         if (!codeModule) {
           continue;
         }
 
-        const lineCount = codeModule.CountOfLines;
+        const lineCount = Number(codeModule.CountOfLines) || 0;
         if (lineCount < 1) {
+          continue;
+        }
+
+        const cachedModule = previousModuleEntries[moduleName];
+        if (cachedModule && cachedModule.lineCount === lineCount) {
+          nextModuleEntries[moduleName] = cachedModule;
+          cachedModule.procedures.forEach((proc) => {
+            procedures.push({ ...proc });
+          });
           continue;
         }
 
         const codeText = codeModule.Lines(1, lineCount);
         const parsed = this._parseProcedures(codeText);
-        parsed.forEach((proc) => {
-          procedures.push({
-            module: component.Name,
-            ...proc
-          });
+        const moduleProcedures = parsed.map((proc) => ({
+          module: moduleName,
+          ...proc
+        }));
+
+        nextModuleEntries[moduleName] = {
+          lineCount,
+          procedures: moduleProcedures
+        };
+
+        moduleProcedures.forEach((proc) => {
+          procedures.push({ ...proc });
         });
       }
+
+      this._proceduresCache = {
+        workbookKey,
+        moduleEntries: nextModuleEntries
+      };
 
       return {
         success: true,
@@ -950,6 +993,7 @@ class ExcelBridge {
         procedures
       };
     } catch (error) {
+      this._proceduresCache = null;
       return { success: false, procedures: [], message: error.message };
     }
   }
@@ -1114,39 +1158,76 @@ class ExcelBridge {
     prop.Value = JSON.stringify(registry);
   }
 
-  _listMacroProcedures() {
+  _listMacroProcedures(options = {}) {
+    const { activate = true } = options;
     try {
-      const workbook = this.getActiveWorkbook();
-      const vbProject = this.getVBProject();
+      const workbook = this.getActiveWorkbook({ activate });
+      const vbProject = this.getVBProject({ activate });
       const components = vbProject.VBComponents;
+      const workbookKey = this._getWorkbookCacheKey(workbook);
+      const previousModuleEntries =
+        this._proceduresCache && this._proceduresCache.workbookKey === workbookKey
+          ? this._proceduresCache.moduleEntries
+          : {};
+      const nextModuleEntries = {};
       const procedures = [];
 
       for (let i = 1; i <= components.Count; i++) {
         const component = components.Item(i);
+        const moduleName = String(component.Name);
         const codeModule = component.CodeModule;
         if (!codeModule) {
           continue;
         }
 
-        const lineCount = codeModule.CountOfLines;
+        const lineCount = Number(codeModule.CountOfLines) || 0;
         if (lineCount < 1) {
+          continue;
+        }
+
+        const cachedModule = previousModuleEntries[moduleName];
+        if (cachedModule && cachedModule.lineCount === lineCount) {
+          nextModuleEntries[moduleName] = cachedModule;
+          cachedModule.procedures.forEach((proc) => {
+            if (proc.kind.startsWith('Sub')) {
+              procedures.push({
+                name: proc.name,
+                module: moduleName
+              });
+            }
+          });
           continue;
         }
 
         const codeText = codeModule.Lines(1, lineCount);
         const parsed = this._parseProcedures(codeText);
-        parsed.forEach((proc) => {
+        const moduleProcedures = parsed.map((proc) => ({
+          module: moduleName,
+          ...proc
+        }));
+        nextModuleEntries[moduleName] = {
+          lineCount,
+          procedures: moduleProcedures
+        };
+
+        moduleProcedures.forEach((proc) => {
           if (proc.kind.startsWith('Sub')) {
             procedures.push({
               name: proc.name,
-              module: component.Name
+              module: moduleName
             });
           }
         });
       }
 
+      this._proceduresCache = {
+        workbookKey,
+        moduleEntries: nextModuleEntries
+      };
+
       return { workbook, procedures };
     } catch (error) {
+      this._proceduresCache = null;
       return { workbook: null, procedures: [] };
     }
   }

@@ -37,8 +37,16 @@ const SearchMode = ({
   onSearchChange,
   onBuildModeClick,
   onFileClick,
-  onShortcutClick,
+  onRunMacro,
   searchData = defaultSearchData,
+  selectedMacroId = null,
+  shortcutByMacroId = {},
+  shortcutDraftByMacroId = {},
+  shortcutSavingMacroId = null,
+  onShortcutDraftChange,
+  onShortcutCommit,
+  actionState = 'idle',
+  actionMessage = '',
   onClose
 }) => {
   const normalizedQuery = searchQuery.toLowerCase().trim();
@@ -47,14 +55,16 @@ const SearchMode = ({
     ? `Active workbook: ${searchData.workbook.name}`
     : 'Active workbook unavailable';
   const workbookPath = searchData.workbook?.path || '';
+  const allMacros = Array.isArray(searchData.macros) ? searchData.macros : [];
 
   const filteredFiles = searchData.modules.filter((file) => {
     const haystack = `${file.name} ${file.type} ${file.workbookName}`.toLowerCase();
     return haystack.includes(normalizedQuery);
   });
 
-  const filteredMacros = searchData.macros.filter((macro) => {
-    const haystack = `${macro.name} ${macro.module}`.toLowerCase();
+  const filteredMacros = allMacros.filter((macro) => {
+    const savedShortcut = shortcutByMacroId[macro.id] || '';
+    const haystack = `${macro.name} ${macro.module} ${savedShortcut}`.toLowerCase();
     return haystack.includes(normalizedQuery);
   });
 
@@ -76,6 +86,28 @@ const SearchMode = ({
     );
   };
 
+  const renderActionStatus = () => {
+    if (actionState === 'idle' || !actionMessage) {
+      return null;
+    }
+
+    const statusTitle = actionState === 'running'
+      ? 'Processing'
+      : actionState === 'success'
+        ? 'Success'
+        : 'Action failed';
+
+    return (
+      <div className={`search-run-status search-run-status-${actionState}`}>
+        <div className="search-run-status-header">
+          {actionState === 'running' && <span className="status-spinner" />}
+          <span className="search-run-status-title">{statusTitle}</span>
+        </div>
+        <p className="search-run-status-message">{actionMessage}</p>
+      </div>
+    );
+  };
+
   const renderReadyState = () => (
     <>
       <div className="search-context-bar">
@@ -83,6 +115,8 @@ const SearchMode = ({
           {workbookLabel}
         </span>
       </div>
+
+      {renderActionStatus()}
 
       <div className="section-header">
         <span className="section-title">All Files</span>
@@ -124,19 +158,48 @@ const SearchMode = ({
           <div className="search-empty-state search-empty-state-grid">No macros match this search.</div>
         )}
 
-        {filteredMacros.map((macro) => (
-          <div
-            key={macro.id}
-            className="shortcut-item"
-            onClick={() => onShortcutClick(macro)}
-          >
-            <span className="shortcut-icon">
-              <ReturnIcon size={16} />
-            </span>
-            <span className="shortcut-name">{macro.name}</span>
-            <span className="shortcut-keys">{macro.module}</span>
-          </div>
-        ))}
+        {filteredMacros.map((macro) => {
+          const currentShortcut = shortcutDraftByMacroId[macro.id] ?? shortcutByMacroId[macro.id] ?? '';
+          const isSaving = shortcutSavingMacroId === macro.id;
+
+          return (
+            <div
+              key={macro.id}
+              className={`shortcut-item ${selectedMacroId === macro.id ? 'selected' : ''} ${isSaving ? 'saving' : ''}`}
+            >
+              <button
+                type="button"
+                className="shortcut-run-target"
+                onClick={() => onRunMacro?.(macro)}
+              >
+                <span className="shortcut-icon">
+                  <ReturnIcon size={16} />
+                </span>
+                <span className="shortcut-name">{macro.name}</span>
+              </button>
+              <input
+                type="text"
+                className={`shortcut-inline-input ${currentShortcut ? '' : 'is-empty'}`}
+                value={currentShortcut}
+                placeholder="No shortcut"
+                onChange={(event) => onShortcutDraftChange?.(macro.id, event.target.value)}
+                onBlur={() => onShortcutCommit?.(macro, 'blur')}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    event.preventDefault();
+                    event.currentTarget.blur();
+                  } else if (event.key === 'Escape') {
+                    event.preventDefault();
+                    onShortcutDraftChange?.(macro.id, shortcutByMacroId[macro.id] || '');
+                    event.currentTarget.blur();
+                  }
+                }}
+                onClick={(event) => event.stopPropagation()}
+                disabled={isSaving}
+              />
+            </div>
+          );
+        })}
       </div>
     </>
   );

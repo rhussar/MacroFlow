@@ -8,10 +8,11 @@ import {
 import {
   INITIAL_SEARCH_DATA,
   SEARCH_FOCUS_REFRESH_COOLDOWN_MS,
-  SEARCH_FULL_REFRESH_STALE_MS
+  SEARCH_FULL_REFRESH_STALE_MS,
+  SEARCH_PERIODIC_REFRESH_MS
 } from './search-constants';
 
-export function useSearchData({ mode, runState, macroRunInFlightRef }) {
+export function useSearchData({ mode, runState, macroRunInFlightRef, shortcutSaveInFlightRef }) {
   const [searchData, setSearchData] = useState(INITIAL_SEARCH_DATA);
   const searchRequestSequence = useRef(0);
   const searchLoadInFlight = useRef(false);
@@ -60,11 +61,13 @@ export function useSearchData({ mode, runState, macroRunInFlightRef }) {
         return;
       }
 
+      const fetchStart = performance.now();
       const [workbookResult, modulesResult, proceduresResult] = await Promise.all([
         workbookApi(),
         modulesApi(),
         proceduresApi()
       ]);
+      console.log('[SearchData] fetch completed in %dms', Math.round(performance.now() - fetchStart));
 
       if (requestId !== searchRequestSequence.current) {
         return;
@@ -130,7 +133,7 @@ export function useSearchData({ mode, runState, macroRunInFlightRef }) {
   }, []);
 
   const refreshSearchOnForeground = useCallback(async () => {
-    if (mode !== 'search' || runState === 'running' || Boolean(macroRunInFlightRef?.current)) {
+    if (mode !== 'search' || runState === 'running' || Boolean(macroRunInFlightRef?.current) || Boolean(shortcutSaveInFlightRef?.current)) {
       return;
     }
 
@@ -167,7 +170,7 @@ export function useSearchData({ mode, runState, macroRunInFlightRef }) {
     } finally {
       workbookPingInFlight.current = false;
     }
-  }, [loadSearchData, macroRunInFlightRef, mode, runState, searchData.status]);
+  }, [loadSearchData, macroRunInFlightRef, shortcutSaveInFlightRef, mode, runState, searchData.status]);
 
   useEffect(() => {
     if (mode !== 'search' || runState === 'running') {
@@ -189,9 +192,14 @@ export function useSearchData({ mode, runState, macroRunInFlightRef }) {
     window.addEventListener('focus', handleFocus);
     document.addEventListener('visibilitychange', handleVisibilityChange);
 
+    const periodicId = setInterval(() => {
+      refreshSearchOnForeground();
+    }, SEARCH_PERIODIC_REFRESH_MS);
+
     return () => {
       window.removeEventListener('focus', handleFocus);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
+      clearInterval(periodicId);
     };
   }, [loadSearchData, mode, refreshSearchOnForeground, runState]);
 

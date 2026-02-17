@@ -33,6 +33,7 @@ function App() {
   const [actionState, setActionState] = useState('idle');
   const [actionMessage, setActionMessage] = useState('');
   const loadSearchDataRef = useRef(null);
+  const shortcutSaveInFlightRef = useRef(false);
 
   const setActionStatus = useCallback((status, message) => {
     setActionState(status);
@@ -66,7 +67,8 @@ function App() {
   const { searchData, loadSearchData } = useSearchData({
     mode,
     runState,
-    macroRunInFlightRef
+    macroRunInFlightRef,
+    shortcutSaveInFlightRef
   });
 
   useEffect(() => {
@@ -91,12 +93,14 @@ function App() {
   const {
     shortcutByMacroId,
     shortcutDraftByMacroId,
+    shortcutInputErrorByMacroId,
     shortcutSavingMacroId,
     handleShortcutDraftChange,
     handleShortcutCommit
   } = useShortcutState({
     searchData,
-    setActionStatus
+    setActionStatus,
+    shortcutSaveInFlightRef
   });
 
   const modeRef = useRef(mode);
@@ -185,6 +189,7 @@ function App() {
             selectedMacroId={selectedMacro?.id || null}
             shortcutByMacroId={shortcutByMacroId}
             shortcutDraftByMacroId={shortcutDraftByMacroId}
+            shortcutInputErrorByMacroId={shortcutInputErrorByMacroId}
             shortcutSavingMacroId={shortcutSavingMacroId}
             onShortcutDraftChange={handleShortcutDraftChange}
             onShortcutCommit={handleShortcutCommit}

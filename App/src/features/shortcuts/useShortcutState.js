@@ -9,9 +9,10 @@ import {
 } from '../../lib/shortcut-keybind';
 import { SHORTCUT_REFRESH_TTL_MS } from '../search/search-constants';
 
-export function useShortcutState({ searchData, setActionStatus }) {
+export function useShortcutState({ searchData, setActionStatus, shortcutSaveInFlightRef }) {
   const [shortcutByMacroId, setShortcutByMacroId] = useState({});
   const [shortcutDraftByMacroId, setShortcutDraftByMacroId] = useState({});
+  const [shortcutInputErrorByMacroId, setShortcutInputErrorByMacroId] = useState({});
   const [shortcutSavingMacroId, setShortcutSavingMacroId] = useState(null);
 
   const shortcutAuditRequestSequence = useRef(0);
@@ -127,6 +128,7 @@ export function useShortcutState({ searchData, setActionStatus }) {
       shortcutLoadErrorRef.current = '';
       setShortcutByMacroId({});
       setShortcutDraftByMacroId({});
+      setShortcutInputErrorByMacroId({});
       setShortcutSavingMacroId(null);
       shortcutByMacroIdRef.current = {};
       shortcutDraftByMacroIdRef.current = {};
@@ -156,6 +158,14 @@ export function useShortcutState({ searchData, setActionStatus }) {
       ...previous,
       [macroId]: normalizedLetter
     }));
+    setShortcutInputErrorByMacroId((previous) => {
+      if (!previous[macroId]) {
+        return previous;
+      }
+      const next = { ...previous };
+      delete next[macroId];
+      return next;
+    });
   }, []);
 
   const handleShortcutCommit = useCallback(async (macro, _trigger) => {
@@ -186,6 +196,25 @@ export function useShortcutState({ searchData, setActionStatus }) {
           [macro.id]: normalizedShortcut
         }));
       }
+      setShortcutInputErrorByMacroId((previous) => {
+        if (!previous[macro.id]) {
+          return previous;
+        }
+        const next = { ...previous };
+        delete next[macro.id];
+        return next;
+      });
+      return;
+    }
+
+    const duplicateMacroId = Object.keys(savedMap).find(
+      (macroId) => macroId !== macro.id && savedMap[macroId] === normalizedShortcut
+    );
+    if (duplicateMacroId) {
+      setShortcutInputErrorByMacroId((previous) => ({
+        ...previous,
+        [macro.id]: true
+      }));
       return;
     }
 
@@ -202,6 +231,7 @@ export function useShortcutState({ searchData, setActionStatus }) {
     }
 
     shortcutSavingMacroIdRef.current = macro.id;
+    if (shortcutSaveInFlightRef) shortcutSaveInFlightRef.current = true;
     setShortcutSavingMacroId(macro.id);
     setActionStatus('running', `Saving shortcut for ${macro.name}...`);
 
@@ -227,6 +257,14 @@ export function useShortcutState({ searchData, setActionStatus }) {
           ...previous,
           [macro.id]: normalizedShortcut
         }));
+        setShortcutInputErrorByMacroId((previous) => {
+          if (!previous[macro.id]) {
+            return previous;
+          }
+          const next = { ...previous };
+          delete next[macro.id];
+          return next;
+        });
         setActionStatus('success', `Shortcut assigned: ${backendMessage}`);
         await loadMacroShortcuts({ force: true });
       } else {
@@ -238,13 +276,15 @@ export function useShortcutState({ searchData, setActionStatus }) {
       setActionStatus('error', `Shortcut assign failed: ${backendMessage}`);
     } finally {
       shortcutSavingMacroIdRef.current = null;
+      if (shortcutSaveInFlightRef) shortcutSaveInFlightRef.current = false;
       setShortcutSavingMacroId(null);
     }
-  }, [loadMacroShortcuts, setActionStatus]);
+  }, [loadMacroShortcuts, setActionStatus, shortcutSaveInFlightRef]);
 
   return {
     shortcutByMacroId,
     shortcutDraftByMacroId,
+    shortcutInputErrorByMacroId,
     shortcutSavingMacroId,
     handleShortcutDraftChange,
     handleShortcutCommit

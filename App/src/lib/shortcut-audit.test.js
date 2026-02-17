@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   canonicalizeMacroIdentity,
+  mapAuditConflictsByShortcut,
   mapAuditShortcutsToMacroIds,
   normalizeAuditResponse,
   normalizeShortcutKey,
@@ -107,4 +108,107 @@ test('mapAuditShortcutsToMacroIds maps workbook-qualified audit entries to macro
     'Module1::RunA::Sub::Public': 'Ctrl + Shift + A',
     'Module2::RunB::Sub::Public': 'Ctrl + 2'
   });
+});
+
+test('mapAuditConflictsByShortcut groups macro IDs that share the same letter shortcut', () => {
+  const macros = [
+    {
+      id: 'Module1::RunA::Sub::Public',
+      name: 'RunA',
+      module: 'Module1',
+      runTarget: 'Module1.RunA',
+      fullName: 'Module1.RunA'
+    },
+    {
+      id: 'Module2::RunB::Sub::Public',
+      name: 'RunB',
+      module: 'Module2',
+      runTarget: 'Module2.RunB',
+      fullName: 'Module2.RunB'
+    },
+    {
+      id: 'Module3::RunC::Sub::Public',
+      name: 'RunC',
+      module: 'Module3',
+      runTarget: 'Module3.RunC',
+      fullName: 'Module3.RunC'
+    }
+  ];
+
+  const conflicts = mapAuditConflictsByShortcut(
+    {
+      shortcuts: [
+        { macro: 'Book1.xlsm!Module1.RunA', shortcut: 'ctrl + shift + a' },
+        { macro: "'Book 1.xlsm'!module2.runb", shortcut: 'CTRL+SHIFT+A' },
+        { macro: 'Book1.xlsm!Module3.RunC', shortcut: 'Ctrl + c' }
+      ]
+    },
+    macros
+  );
+
+  assert.deepEqual(conflicts, {
+    A: ['Module1::RunA::Sub::Public', 'Module2::RunB::Sub::Public']
+  });
+});
+
+test('mapAuditConflictsByShortcut treats ctrl+shift+a and ctrl+a as different shortcuts', () => {
+  const macros = [
+    {
+      id: 'Module1::RunA::Sub::Public',
+      name: 'RunA',
+      module: 'Module1',
+      runTarget: 'Module1.RunA',
+      fullName: 'Module1.RunA'
+    },
+    {
+      id: 'Module2::RunB::Sub::Public',
+      name: 'RunB',
+      module: 'Module2',
+      runTarget: 'Module2.RunB',
+      fullName: 'Module2.RunB'
+    }
+  ];
+
+  const conflicts = mapAuditConflictsByShortcut(
+    {
+      shortcuts: [
+        { macro: 'Book1.xlsm!Module1.RunA', shortcut: 'Ctrl + Shift + A' },
+        { macro: 'Book1.xlsm!Module2.RunB', shortcut: 'Ctrl + a' }
+      ]
+    },
+    macros
+  );
+
+  assert.deepEqual(conflicts, {});
+});
+
+test('mapAuditConflictsByShortcut ignores non-letter shortcuts', () => {
+  const macros = [
+    {
+      id: 'Module1::RunA::Sub::Public',
+      name: 'RunA',
+      module: 'Module1',
+      runTarget: 'Module1.RunA',
+      fullName: 'Module1.RunA'
+    },
+    {
+      id: 'Module2::RunB::Sub::Public',
+      name: 'RunB',
+      module: 'Module2',
+      runTarget: 'Module2.RunB',
+      fullName: 'Module2.RunB'
+    }
+  ];
+
+  const conflicts = mapAuditConflictsByShortcut(
+    {
+      shortcuts: [
+        { macro: 'Book1.xlsm!Module1.RunA', shortcut: 'Ctrl + 1' },
+        { macro: 'Book1.xlsm!Module2.RunB', shortcut: 'Ctrl + 1' }
+      ]
+    },
+    macros
+  );
+
+  assert.deepEqual(conflicts, {});
 });

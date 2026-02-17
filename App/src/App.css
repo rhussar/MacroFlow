@@ -610,6 +610,12 @@ body {
   color: var(--text-muted);
 }
 
+.shortcut-keycap-input.has-error,
+.shortcut-item.selected .shortcut-keycap-input.has-error {
+  border-color: var(--accent-red);
+  box-shadow: inset 0 0 0 1px rgba(248, 113, 113, 0.35);
+}
+
 /* ============================================
    Bottom Action Status
    ============================================ */

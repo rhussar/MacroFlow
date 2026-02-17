@@ -1,3 +1,5 @@
+import { parseShortcutLetter } from './shortcut-keybind.js';
+
 function toSafeString(value) {
   if (value === null || value === undefined) {
     return '';
@@ -222,18 +224,7 @@ export function normalizeAuditResponse(apiResult) {
 
 export function mapAuditShortcutsToMacroIds(apiResult, macros = []) {
   const mappedRows = normalizeAuditResponse(apiResult).mapped;
-  const sourceMacros = Array.isArray(macros) ? macros : [];
-
-  const macroKeyToId = new Map();
-  sourceMacros.forEach((macro) => {
-    const identity = toSafeString(macro?.fullName || macro?.runTarget || '');
-    const fallbackIdentity =
-      identity || `${toSafeString(macro?.module)}.${toSafeString(macro?.name)}`;
-    const canonical = canonicalizeMacroIdentity(fallbackIdentity);
-    if (canonical && !macroKeyToId.has(canonical) && macro?.id) {
-      macroKeyToId.set(canonical, macro.id);
-    }
-  });
+  const macroKeyToId = buildMacroKeyToId(macros);
 
   const shortcutByMacroId = {};
   mappedRows.forEach((row) => {
@@ -246,4 +237,59 @@ export function mapAuditShortcutsToMacroIds(apiResult, macros = []) {
   });
 
   return shortcutByMacroId;
+}
+
+function buildMacroKeyToId(macros = []) {
+  const sourceMacros = Array.isArray(macros) ? macros : [];
+  const macroKeyToId = new Map();
+
+  sourceMacros.forEach((macro) => {
+    const identity = toSafeString(macro?.fullName || macro?.runTarget || '');
+    const fallbackIdentity =
+      identity || `${toSafeString(macro?.module)}.${toSafeString(macro?.name)}`;
+    const canonical = canonicalizeMacroIdentity(fallbackIdentity);
+    if (canonical && !macroKeyToId.has(canonical) && macro?.id) {
+      macroKeyToId.set(canonical, macro.id);
+    }
+  });
+
+  return macroKeyToId;
+}
+
+export function mapAuditConflictsByShortcut(apiResult, macros = []) {
+  const mappedRows = normalizeAuditResponse(apiResult).mapped;
+  const macroKeyToId = buildMacroKeyToId(macros);
+  const shortcutGroups = new Map();
+
+  mappedRows.forEach((row) => {
+    const shortcutLetter = parseShortcutLetter(row.shortcutNorm);
+    if (!shortcutLetter) {
+      return;
+    }
+
+    const canonical = canonicalizeMacroIdentity(row.macroFull);
+    const macroId = macroKeyToId.get(canonical);
+    if (!macroId) {
+      return;
+    }
+
+    if (!shortcutGroups.has(shortcutLetter)) {
+      shortcutGroups.set(shortcutLetter, new Set());
+    }
+
+    shortcutGroups.get(shortcutLetter).add(macroId);
+  });
+
+  const conflictsByShortcut = {};
+  Array.from(shortcutGroups.entries())
+    .sort(([shortcutA], [shortcutB]) => shortcutA.localeCompare(shortcutB))
+    .forEach(([shortcutLetter, macroIdSet]) => {
+      if (macroIdSet.size <= 1) {
+        return;
+      }
+
+      conflictsByShortcut[shortcutLetter] = Array.from(macroIdSet).sort();
+    });
+
+  return conflictsByShortcut;
 }

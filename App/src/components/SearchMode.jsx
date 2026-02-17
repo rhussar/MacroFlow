@@ -48,6 +48,7 @@ const SearchMode = ({
   selectedMacroId = null,
   shortcutByMacroId = {},
   shortcutDraftByMacroId = {},
+  shortcutInputErrorByMacroId = {},
   shortcutSavingMacroId = null,
   onShortcutDraftChange,
   onShortcutCommit,
@@ -134,6 +135,7 @@ const SearchMode = ({
 
         {filteredMacros.map((macro) => {
           const currentShortcutLetter = shortcutDraftByMacroId[macro.id] ?? shortcutByMacroId[macro.id] ?? '';
+          const hasInputError = Boolean(shortcutInputErrorByMacroId[macro.id]);
           const isSaving = shortcutSavingMacroId === macro.id;
           const shortcutPrefix = formatShortcutPrefix(currentShortcutLetter);
 
@@ -159,7 +161,7 @@ const SearchMode = ({
                 )}
                 <input
                   type="text"
-                  className={`shortcut-keycap-input ${currentShortcutLetter ? '' : 'is-empty'}`}
+                  className={`shortcut-keycap-input ${currentShortcutLetter ? '' : 'is-empty'} ${hasInputError ? 'has-error' : ''}`}
                   value={currentShortcutLetter}
                   placeholder=""
                   maxLength={1}

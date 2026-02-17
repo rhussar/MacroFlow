@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   FolderIcon,
   FolderIconLarge,
@@ -8,73 +8,90 @@ import {
   ListIcon,
   ChevronDownIcon,
 } from './icons';
-import CodePreview from './CodePreview';
+import {
+  filterExplorerItems,
+  buildItemMetadata,
+} from '../features/search/explorer-selectors';
 
-// Mock data for all items (folders + macros)
-const mockItems = [
-  { id: 1, name: 'Module 1', type: 'folder', tag: 'Personal' },
-  { id: 2, name: 'Module 2', type: 'folder', tag: 'Personal' },
-  { id: 3, name: 'Bottom bolded line', type: 'macro', shortcut: 'Shift + w' },
-  { id: 4, name: 'Reload Pivot Tables', type: 'macro', shortcut: 'Ctrl + Shift + w' },
-  { id: 5, name: 'Clean Data', type: 'macro', shortcut: 'Shift + w' },
-  { id: 6, name: 'Auto-Fit & Zoom 100', type: 'macro', shortcut: 'Ctrl + Shift + w' },
-  { id: 7, name: 'Apply Client Theme', type: 'macro', shortcut: 'Shift + w' },
-  { id: 8, name: 'Bottom bolded line', type: 'macro', shortcut: 'Ctrl + Alt + w' },
-  { id: 9, name: 'Upload to Sharepoint', type: 'macro', shortcut: 'Shift + w' },
-];
-
-// Mock folder metadata
-const mockFolderMetadata = {
-  name: 'Module 1',
-  type: 'VBA Module Folder',
-  lastModified: 'Jan 25, 2026 (2h ago)',
-  author: 'Ronan (Finance Ops)',
-  contains: '5 functions, 3 macros',
-  usage: '42 runs / week',
+const defaultSearchData = {
+  status: 'idle',
+  workbook: null,
+  modules: [],
+  macros: [],
+  error: null,
 };
 
-// Mock macro metadata
-const mockMacroMetadata = {
-  name: 'Reload Pivot Tables',
-  type: 'VBA Macro',
-  lastModified: 'Jan 20, 2026 (5d ago)',
-  author: 'Personal',
-  scope: 'Active Workbook',
-  shortcut: 'Alt + Shift + C',
+const statusConfig = {
+  idle: {
+    title: 'Loading workbook data',
+    message: 'Connecting to the active Excel workbook.',
+  },
+  loading: {
+    title: 'Loading workbook data',
+    message: 'Refreshing modules and macros from Excel.',
+  },
+  no_excel: {
+    title: 'Excel is not running',
+    message: 'Open Excel. MacroFlow will retry automatically.',
+  },
+  no_workbook: {
+    title: 'No active workbook',
+    message: 'Open or create a workbook. MacroFlow will retry automatically.',
+  },
+  error: {
+    title: 'Could not load workbook data',
+    message: 'Something went wrong while reading workbook data. Retrying automatically.',
+  },
 };
 
-// Mock VBA code for macro preview
-const mockMacroCode = `Sub ReloadPivotTables()
-    Dim ws As Worksheet
-    Set ws = ActiveSheet
-    
-    ' 1. Find Pivot Tables
-    On Error Resume Next
-    
-    ws.Columns("A:A").SpecialCells(xlCellTypeBlanks).EntireRow.Delete
-    
-    ' 2. Trim Whitespace
-    For Each cell In ws.Range("B1:B150")
-        cell.Value = Trim(cell.Value)
-    Next cell
-    
-    ' 3. Fix Date Format
-    ws.Columns("C:C").NumberFormat = "mm/dd/yyyy"
-    
-    MsgBox "Cleanup Complete!"
-End Sub`;
-
-const FileExplorer = ({ onBack, onClose }) => {
+const FileExplorer = ({
+  onBack,
+  onClose,
+  searchData = defaultSearchData,
+  shortcutByMacroId = {},
+}) => {
   const [searchQuery, setSearchQuery] = useState('');
-  const [selectedItem, setSelectedItem] = useState(mockItems[3]); // Default to a macro
+  const [selectedItem, setSelectedItem] = useState(null);
 
-  // Filter items based on search
-  const filteredItems = mockItems.filter((item) =>
-    item.name.toLowerCase().includes(searchQuery.toLowerCase())
+  const status = searchData.status || 'idle';
+
+  const filteredItems = useMemo(
+    () => filterExplorerItems(searchData.modules, searchData.macros, searchQuery, shortcutByMacroId),
+    [searchData.modules, searchData.macros, searchQuery, shortcutByMacroId]
   );
 
-  const isFolder = selectedItem?.type === 'folder';
-  const metadata = isFolder ? mockFolderMetadata : mockMacroMetadata;
+  const metadata = useMemo(
+    () => buildItemMetadata(selectedItem),
+    [selectedItem]
+  );
+
+  // Clear selection when the selected item no longer exists in the data
+  useEffect(() => {
+    if (!selectedItem) return;
+    const allItems = [...(searchData.modules || []), ...(searchData.macros || [])];
+    const stillExists = allItems.some((item) => item.id === selectedItem.id);
+    if (!stillExists) setSelectedItem(null);
+  }, [searchData.modules, searchData.macros, selectedItem]);
+
+  const isModule = selectedItem?.itemType === 'module';
+
+  const renderNonReadyState = () => {
+    const config = statusConfig[status] || statusConfig.error;
+    const message = status === 'error' && searchData.error?.message
+      ? searchData.error.message
+      : config.message;
+    const isLoadingState = status === 'idle' || status === 'loading';
+
+    return (
+      <div className={`search-status-panel search-status-${status}`}>
+        <div className="search-status-header">
+          {isLoadingState && <span className="status-spinner" />}
+          <span className="search-status-title">{config.title}</span>
+        </div>
+        <p className="search-status-message">{message}</p>
+      </div>
+    );
+  };
 
   return (
     <>
@@ -106,118 +123,70 @@ const FileExplorer = ({ onBack, onClose }) => {
         </div>
       </header>
 
-      {/* Split View */}
-      <div className="split-view">
-        {/* Left Panel - File List */}
-        <div className="split-left">
-          <div className="section-header">
-            <span className="section-title">All Files</span>
-            <span className="section-count">{filteredItems.length} items</span>
-          </div>
+      {/* Main area */}
+      {status !== 'ready' ? (
+        <main className="main-content">
+          {renderNonReadyState()}
+        </main>
+      ) : (
+        <div className="split-view">
+          {/* Left Panel - File List */}
+          <div className="split-left">
+            <div className="section-header">
+              <span className="section-title">All Files</span>
+              <span className="section-count">{filteredItems.length} items</span>
+            </div>
 
-          <div className="file-list">
-            {filteredItems.map((item) => (
-              <div
-                key={item.id}
-                className={`file-item ${selectedItem?.id === item.id ? 'selected' : ''}`}
-                onClick={() => setSelectedItem(item)}
-              >
-                <div className={`file-icon ${item.type === 'macro' ? 'macro' : ''}`}>
-                  {item.type === 'folder' ? (
-                    <FolderIcon size={20} />
-                  ) : (
-                    <ReturnIcon size={16} />
-                  )}
+            <div className="file-list">
+              {filteredItems.length === 0 && (
+                <div className="search-empty-state">No items match this search.</div>
+              )}
+              {filteredItems.map((item) => (
+                <div
+                  key={item.id}
+                  className={`file-item ${selectedItem?.id === item.id ? 'selected' : ''}`}
+                  onClick={() => setSelectedItem(item)}
+                >
+                  <div className={`file-icon ${item.itemType === 'macro' ? 'macro' : ''}`}>
+                    {item.itemType === 'module' ? (
+                      <FolderIcon size={20} />
+                    ) : (
+                      <ReturnIcon size={16} />
+                    )}
+                  </div>
+                  <span className="file-name">{item.name}</span>
                 </div>
-                <span className="file-name">{item.name}</span>
-              </div>
-            ))}
+              ))}
+            </div>
           </div>
-        </div>
 
-        {/* Right Panel - Details */}
-        <div className="split-right">
-          {selectedItem && (
-            <div className="details-panel">
-              {isFolder ? (
-                /* Folder View */
-                <>
+          {/* Right Panel - Details */}
+          <div className="split-right">
+            {selectedItem ? (
+              <div className="details-panel">
+                {isModule && (
                   <div className="folder-icon-large">
                     <FolderIconLarge size={80} />
                   </div>
-
-                  <div className="metadata-section">
-                    <div className="metadata-title">Metadata</div>
-                    <div className="metadata-row">
-                      <span className="metadata-label">Name</span>
-                      <span className="metadata-value">{metadata.name}</span>
+                )}
+                <div className="metadata-section">
+                  <div className="metadata-title">Metadata</div>
+                  {metadata.rows.map((row) => (
+                    <div className="metadata-row" key={row.label}>
+                      <span className="metadata-label">{row.label}</span>
+                      <span className="metadata-value">{row.value}</span>
                     </div>
-                    <div className="metadata-row">
-                      <span className="metadata-label">Type</span>
-                      <span className="metadata-value">{metadata.type}</span>
-                    </div>
-                    <div className="metadata-row">
-                      <span className="metadata-label">Last modified</span>
-                      <span className="metadata-value">{metadata.lastModified}</span>
-                    </div>
-                    <div className="metadata-row">
-                      <span className="metadata-label">Author</span>
-                      <span className="metadata-value">{metadata.author}</span>
-                    </div>
-                    <div className="metadata-row">
-                      <span className="metadata-label">Contains</span>
-                      <span className="metadata-value">{metadata.contains}</span>
-                    </div>
-                    <div className="metadata-row">
-                      <span className="metadata-label">Usage</span>
-                      <span className="metadata-value">{metadata.usage}</span>
-                    </div>
-                  </div>
-                </>
-              ) : (
-                /* Macro View */
-                <>
-                  <CodePreview
-                    code={mockMacroCode}
-                    title="Preview"
-                    showHeader={true}
-                    showEdit={true}
-                    onEdit={() => console.log('Edit clicked')}
-                  />
-
-                  <div className="metadata-section">
-                    <div className="metadata-title">Metadata</div>
-                    <div className="metadata-row">
-                      <span className="metadata-label">Name</span>
-                      <span className="metadata-value">{metadata.name}</span>
-                    </div>
-                    <div className="metadata-row">
-                      <span className="metadata-label">Type</span>
-                      <span className="metadata-value">{metadata.type}</span>
-                    </div>
-                    <div className="metadata-row">
-                      <span className="metadata-label">Last modified</span>
-                      <span className="metadata-value">{metadata.lastModified}</span>
-                    </div>
-                    <div className="metadata-row">
-                      <span className="metadata-label">Author</span>
-                      <span className="metadata-value">{metadata.author}</span>
-                    </div>
-                    <div className="metadata-row">
-                      <span className="metadata-label">Scope</span>
-                      <span className="metadata-value">{metadata.scope}</span>
-                    </div>
-                    <div className="metadata-row">
-                      <span className="metadata-label">Shortcut</span>
-                      <span className="metadata-value">{metadata.shortcut}</span>
-                    </div>
-                  </div>
-                </>
-              )}
-            </div>
-          )}
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <div className="details-panel">
+                <p className="search-status-message">Select an item to view details.</p>
+              </div>
+            )}
+          </div>
         </div>
-      </div>
+      )}
     </>
   );
 };

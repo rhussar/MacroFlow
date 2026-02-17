@@ -133,7 +133,7 @@ export function useSearchData({ mode, runState, macroRunInFlightRef, shortcutSav
   }, []);
 
   const refreshSearchOnForeground = useCallback(async () => {
-    if (mode !== 'search' || runState === 'running' || Boolean(macroRunInFlightRef?.current) || Boolean(shortcutSaveInFlightRef?.current)) {
+    if ((mode !== 'search' && mode !== 'explorer') || runState === 'running' || Boolean(macroRunInFlightRef?.current) || Boolean(shortcutSaveInFlightRef?.current)) {
       return;
     }
 
@@ -173,7 +173,7 @@ export function useSearchData({ mode, runState, macroRunInFlightRef, shortcutSav
   }, [loadSearchData, macroRunInFlightRef, shortcutSaveInFlightRef, mode, runState, searchData.status]);
 
   useEffect(() => {
-    if (mode !== 'search' || runState === 'running') {
+    if ((mode !== 'search' && mode !== 'explorer') || runState === 'running') {
       return undefined;
     }
 

@@ -825,6 +825,7 @@ body {
   display: flex;
   flex: 1;
   overflow: hidden;
+  -webkit-app-region: no-drag;
 }
 
 .split-left {

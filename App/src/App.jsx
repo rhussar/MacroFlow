@@ -207,11 +207,12 @@ function App() {
         );
 
       case 'explorer':
-        // MF-103 scope: Explorer shortcut management is deferred until Explorer is live-data backed.
         return (
           <FileExplorer
             onBack={goToSearch}
             onClose={handleClose}
+            searchData={searchData}
+            shortcutByMacroId={shortcutByMacroId}
           />
         );
 

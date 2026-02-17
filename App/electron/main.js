@@ -531,6 +531,11 @@ function registerWindowHandlers() {
   ipcMain.handle('window:setAlwaysOnTop', (_, value) => {
     const win = getMainWindow();
     if (win && !win.isDestroyed()) {
+      // Skip if C# helper owns Z-order management
+      if (win.__macroflowHelperManagedTopmost) {
+        logger.info('[Window] setAlwaysOnTop ignored (managed by focus helper)');
+        return { success: false, message: 'Z-order managed by focus helper' };
+      }
       const wasOnTop = win.isAlwaysOnTop();
       win.setAlwaysOnTop(Boolean(value));
       logger.info('[Window] alwaysOnTop changed', {

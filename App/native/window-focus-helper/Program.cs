@@ -208,13 +208,22 @@ internal static class Program
   {
     try
     {
-      foreach (var proc in Process.GetProcessesByName("EXCEL"))
+      var processes = Process.GetProcessesByName("EXCEL");
+      try
       {
-        var hwnd = proc.MainWindowHandle;
-        if (hwnd != IntPtr.Zero && IsWindow(hwnd))
+        foreach (var proc in processes)
         {
-          return hwnd;
+          var hwnd = proc.MainWindowHandle;
+          if (hwnd != IntPtr.Zero && IsWindow(hwnd))
+          {
+            return hwnd;
+          }
         }
+      }
+      finally
+      {
+        foreach (var proc in processes)
+          proc.Dispose();
       }
     }
     catch

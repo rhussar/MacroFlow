@@ -5,10 +5,10 @@ function toSafeString(value) {
   return String(value).trim();
 }
 
-export function normalizeShortcutKey(input) {
-  const raw = toSafeString(input).toUpperCase();
+function parseShortcutParts(input) {
+  const raw = toSafeString(input);
   if (!raw) {
-    return '';
+    return null;
   }
 
   const collapsed = raw.replace(/\s+/g, ' ');
@@ -18,14 +18,76 @@ export function normalizeShortcutKey(input) {
     .filter(Boolean);
 
   if (tokens.length === 0) {
+    return null;
+  }
+
+  const modifierTokens = tokens.length > 1 ? tokens.slice(0, -1) : [];
+  const keyToken = tokens[tokens.length - 1];
+  if (!keyToken) {
+    return null;
+  }
+
+  let shift = false;
+  let alt = false;
+  modifierTokens.forEach((token) => {
+    const normalized = token.toLowerCase();
+    if (normalized === 'shift') {
+      shift = true;
+    } else if (normalized === 'alt') {
+      alt = true;
+    }
+  });
+
+  const isLetter = /^[a-zA-Z]$/.test(keyToken);
+  const key = keyToken.toUpperCase();
+
+  // Infer Shift from letter casing (A vs a) for both compact and tokenized inputs.
+  if (isLetter && keyToken === keyToken.toUpperCase() && keyToken !== keyToken.toLowerCase()) {
+    shift = true;
+  }
+
+  return {
+    // Excel macro shortcuts are always Ctrl-based; Shift is encoded by letter case.
+    ctrl: true,
+    shift,
+    alt,
+    key,
+    isLetter
+  };
+}
+
+export function normalizeShortcutKey(input) {
+  const parts = parseShortcutParts(input);
+  if (!parts) {
     return '';
   }
 
-  if (tokens.length === 1) {
-    return tokens[0];
+  const modifierParts = ['Ctrl'];
+  if (parts.shift) {
+    modifierParts.push('Shift');
+  }
+  if (parts.alt) {
+    modifierParts.push('Alt');
   }
 
-  return tokens.join('+');
+  const displayKey = parts.isLetter
+    ? (parts.shift ? parts.key : parts.key.toLowerCase())
+    : parts.key;
+
+  return `${modifierParts.join(' + ')} + ${displayKey}`;
+}
+
+export function toExcelShortcutKey(input) {
+  const parts = parseShortcutParts(input);
+  if (!parts) {
+    return '';
+  }
+
+  if (parts.isLetter) {
+    return parts.shift ? parts.key.toUpperCase() : parts.key.toLowerCase();
+  }
+
+  return parts.key;
 }
 
 export function canonicalizeMacroIdentity(value) {

@@ -552,11 +552,23 @@ internal static class Program
 
   private static void EnforceTopmost(IntPtr target)
   {
+    // Clear then re-set TOPMOST to force a full Z-order transition.
+    // Without this, Windows can treat the TOPMOST call as a no-op
+    // when the flag appears already set from a previous cycle.
+    // SWP_SHOWWINDOW is omitted — the window is already visible,
+    // and the WM_SHOWWINDOW processing it triggers can fight with
+    // concurrent Excel activation z-order changes.
+    _ = TrySetWindowPos(
+      target,
+      HWND_NOTOPMOST,
+      SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+      "enforce-clear"
+    );
     _ = TrySetWindowPos(
       target,
       HWND_TOPMOST,
-      SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
-      "excel-active"
+      SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+      "enforce-topmost"
     );
   }
 

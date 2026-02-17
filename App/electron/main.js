@@ -603,8 +603,6 @@ function createWindow() {
     applyAdaptiveLayout(mainWindow, 'did-finish-load', { preferExcel: true, preferCursor: true });
     // Start the helper AFTER the window is fully loaded so that
     // setAlwaysOnTop toggles operate on a fully-ready native window.
-    // Starting earlier causes Electron's internal alwaysOnTop state to
-    // initialise incorrectly, making the first demotion/promotion cycle fail.
     startExcelWindowMonitor(mainWindow);
   });
 

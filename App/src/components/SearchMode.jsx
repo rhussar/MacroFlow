@@ -1,5 +1,10 @@
 import React from 'react';
 import { FolderIcon, ReturnIcon, CloseIcon } from './icons';
+import {
+  filterMacrosByQuery,
+  filterModulesByQuery,
+  getWorkbookContext
+} from '../features/search/search-selectors';
 
 const defaultSearchData = {
   status: 'idle',
@@ -49,24 +54,12 @@ const SearchMode = ({
   actionMessage = '',
   onClose
 }) => {
-  const normalizedQuery = searchQuery.toLowerCase().trim();
   const status = searchData.status || 'idle';
-  const workbookLabel = searchData.workbook?.name
-    ? `Active workbook: ${searchData.workbook.name}`
-    : 'Active workbook unavailable';
-  const workbookPath = searchData.workbook?.path || '';
+  const workbookContext = getWorkbookContext(searchData.workbook);
   const allMacros = Array.isArray(searchData.macros) ? searchData.macros : [];
 
-  const filteredFiles = searchData.modules.filter((file) => {
-    const haystack = `${file.name} ${file.type} ${file.workbookName}`.toLowerCase();
-    return haystack.includes(normalizedQuery);
-  });
-
-  const filteredMacros = allMacros.filter((macro) => {
-    const savedShortcut = shortcutByMacroId[macro.id] || '';
-    const haystack = `${macro.name} ${macro.module} ${savedShortcut}`.toLowerCase();
-    return haystack.includes(normalizedQuery);
-  });
+  const filteredFiles = filterModulesByQuery(searchData.modules, searchQuery);
+  const filteredMacros = filterMacrosByQuery(allMacros, searchQuery, shortcutByMacroId);
 
   const renderNonReadyState = () => {
     const config = statusConfig[status] || statusConfig.error;
@@ -111,8 +104,8 @@ const SearchMode = ({
   const renderReadyState = () => (
     <>
       <div className="search-context-bar">
-        <span className="search-context-text" title={workbookPath}>
-          {workbookLabel}
+        <span className="search-context-text" title={workbookContext.path}>
+          {workbookContext.label}
         </span>
       </div>
 

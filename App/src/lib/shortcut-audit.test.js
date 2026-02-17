@@ -5,13 +5,25 @@ import {
   mapAuditShortcutsToMacroIds,
   normalizeAuditResponse,
   normalizeShortcutKey,
+  toExcelShortcutKey,
   toCompactMacroName
 } from './shortcut-audit.js';
 
-test('normalizeShortcutKey uppercases and normalizes spacing around plus', () => {
-  assert.equal(normalizeShortcutKey('ctrl + shift + a'), 'CTRL+SHIFT+A');
-  assert.equal(normalizeShortcutKey('CTRL+SHIFT+A'), 'CTRL+SHIFT+A');
-  assert.equal(normalizeShortcutKey('  ctrl+  alt +f5  '), 'CTRL+ALT+F5');
+test('normalizeShortcutKey formats display text and preserves shift semantics from letter case', () => {
+  assert.equal(normalizeShortcutKey('ctrl + shift + a'), 'Ctrl + Shift + A');
+  assert.equal(normalizeShortcutKey('CTRL+SHIFT+A'), 'Ctrl + Shift + A');
+  assert.equal(normalizeShortcutKey('ctrl+a'), 'Ctrl + a');
+  assert.equal(normalizeShortcutKey('a'), 'Ctrl + a');
+  assert.equal(normalizeShortcutKey('A'), 'Ctrl + Shift + A');
+});
+
+test('toExcelShortcutKey maps display/user input to Excel macro shortcut key casing', () => {
+  assert.equal(toExcelShortcutKey('Ctrl + A'), 'A');
+  assert.equal(toExcelShortcutKey('Ctrl + a'), 'a');
+  assert.equal(toExcelShortcutKey('Ctrl + Shift + A'), 'A');
+  assert.equal(toExcelShortcutKey('ctrl+shift+a'), 'A');
+  assert.equal(toExcelShortcutKey('a'), 'a');
+  assert.equal(toExcelShortcutKey('A'), 'A');
 });
 
 test('toCompactMacroName prefers module.procedure from workbook-qualified macro names', () => {
@@ -34,12 +46,12 @@ test('normalizeAuditResponse maps rows and computes conflicts using normalized s
   assert.equal(result.mapped.length, 3);
   assert.deepEqual(
     result.mapped.map((item) => item.shortcutNorm),
-    ['CTRL+ALT+Z', 'CTRL+SHIFT+A', 'CTRL+SHIFT+A']
+    ['Ctrl + Shift + A', 'Ctrl + Shift + A', 'Ctrl + Shift + Alt + Z']
   );
   assert.equal(result.unmapped.length, 1);
   assert.equal(result.unmapped[0].macroCompact, 'Module4.NoShortcut');
   assert.equal(result.conflicts.length, 1);
-  assert.equal(result.conflicts[0].shortcutNorm, 'CTRL+SHIFT+A');
+  assert.equal(result.conflicts[0].shortcutNorm, 'Ctrl + Shift + A');
   assert.equal(result.conflicts[0].entries.length, 2);
   assert.equal(result.note, 'Tracked shortcuts only.');
 });
@@ -92,7 +104,7 @@ test('mapAuditShortcutsToMacroIds maps workbook-qualified audit entries to macro
   );
 
   assert.deepEqual(map, {
-    'Module1::RunA::Sub::Public': 'CTRL+SHIFT+A',
-    'Module2::RunB::Sub::Public': 'CTRL+2'
+    'Module1::RunA::Sub::Public': 'Ctrl + Shift + A',
+    'Module2::RunB::Sub::Public': 'Ctrl + 2'
   });
 });

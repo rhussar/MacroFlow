@@ -306,6 +306,7 @@ function startExcelWindowMonitor(win) {
   // Electron's internal window management, so we mirror reasserts here.
   let jsReassertToken = 0;
   const JS_REASSERT_DELAYS = [50, 150, 350];
+  const JS_DEMOTE_REASSERT_DELAYS = [40, 120];
   let helperTargetConfirmed = false;
 
   try {
@@ -349,17 +350,19 @@ function startExcelWindowMonitor(win) {
 
         if (win && !win.isDestroyed()) {
           const excelActive = Boolean(state && state.excelActive);
-          // Keep Electron's internal alwaysOnTop state in sync with the
-          // C# helper's Win32 SetWindowPos calls. Without this, Electron
-          // may re-apply a stale HWND_NOTOPMOST on its next internal
-          // window event, undoing the helper's HWND_TOPMOST.
-          win.setAlwaysOnTop(excelActive);
+          const stateProcess = String((state && state.process) || '').toLowerCase();
 
-          // When Excel becomes active, schedule delayed reasserts through
-          // Electron's API. This ensures topmost sticks even if Electron
-          // overrides the C# helper's direct Win32 SetWindowPos calls
-          // during window transitions.
-          if (excelActive) {
+          const branch = excelActive
+            ? 'excel-active'
+            : (stateProcess === 'electron' ? 'electron-transient-ignored' : 'nonexcel-decisive');
+
+          if (branch === 'excel-active') {
+            logger.debug('[WindowHelper] excel-active', { process: stateProcess, token: currentToken });
+            win.setAlwaysOnTop(true);
+
+            // When Excel becomes active, schedule delayed reasserts through
+            // Electron's API. This ensures topmost sticks even if Electron
+            // overrides the C# helper's direct Win32 SetWindowPos calls.
             for (const delay of JS_REASSERT_DELAYS) {
               setTimeout(() => {
                 if (currentToken !== jsReassertToken) return;
@@ -368,6 +371,24 @@ function startExcelWindowMonitor(win) {
                 logger.debug('[WindowHelper] JS reassert applied', { delay, token: currentToken });
               }, delay);
             }
+          } else if (branch === 'nonexcel-decisive') {
+            logger.debug('[WindowHelper] nonexcel-decisive', { process: stateProcess, token: currentToken });
+            win.setAlwaysOnTop(false);
+
+            // Non-Excel foregrounds should reliably clear topmost.
+            for (const delay of JS_DEMOTE_REASSERT_DELAYS) {
+              setTimeout(() => {
+                if (currentToken !== jsReassertToken) return;
+                if (!win || win.isDestroyed()) return;
+                win.setAlwaysOnTop(false);
+                logger.debug('[WindowHelper] JS demote reassert applied', { delay, token: currentToken });
+              }, delay);
+            }
+          } else {
+            logger.debug('[WindowHelper] electron-transient-ignored', {
+              process: stateProcess,
+              token: currentToken
+            });
           }
         }
 

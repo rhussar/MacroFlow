@@ -17,12 +17,14 @@ internal static class Program
   private const uint SWP_SHOWWINDOW = 0x0040;
   private const int OBJID_WINDOW = 0;
   private const uint GA_ROOT = 2;
+  private const uint GA_ROOTOWNER = 3;
 
   private const int FOREGROUND_DEBOUNCE_MS = 40;
   private const int EXCEL_INACTIVE_DEBOUNCE_MS = 140;
 
   private static readonly IntPtr HWND_TOPMOST = new(-1);
   private static readonly IntPtr HWND_NOTOPMOST = new(-2);
+  private static readonly IntPtr HWND_BOTTOM = new(1);
   private static readonly int[] REASSERT_DELAYS_MS = [35, 90, 170, 280, 420];
   private static readonly int[] DEMOTE_REASSERT_DELAYS_MS = [30, 85, 170, 280];
 
@@ -280,6 +282,13 @@ internal static class Program
       _foregroundDebounceTimer = null;
     }
 
+    // Use authoritative current foreground to avoid applying stale hook events.
+    var currentForeground = GetForegroundWindow();
+    if (currentForeground != IntPtr.Zero && IsWindow(currentForeground))
+    {
+      hwnd = currentForeground;
+    }
+
     PublishForegroundState(hwnd);
   }
 
@@ -384,9 +393,15 @@ internal static class Program
       _excelInactiveDebounceTimer = null;
     }
 
-    if (hwnd == IntPtr.Zero || !IsWindow(hwnd))
+    // Use current foreground to avoid stale transition events causing false re-activation.
+    var currentForeground = GetForegroundWindow();
+    if (currentForeground != IntPtr.Zero && IsWindow(currentForeground))
     {
-      hwnd = GetForegroundWindow();
+      hwnd = currentForeground;
+    }
+    else if (hwnd == IntPtr.Zero || !IsWindow(hwnd))
+    {
+      hwnd = IntPtr.Zero;
     }
 
     if (hwnd != IntPtr.Zero && IsWindow(hwnd))
@@ -509,7 +524,7 @@ internal static class Program
 
     // Place behind the current foreground window.
     // HWND_NOTOPMOST alone leaves the window at the TOP of all non-topmost
-    // windows, so it still visually covers the app the user switched to.
+    // windows, so it can still visually cover the app the user switched to.
     var fg = GetForegroundWindow();
     if (fg != IntPtr.Zero && fg != target && IsWindow(fg))
     {
@@ -519,7 +534,17 @@ internal static class Program
         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
         phase + "-zorder"
       );
+      return;
     }
+
+    // If no valid foreground exists, force the target to the bottom as a
+    // deterministic demotion fallback.
+    _ = TrySetWindowPos(
+      target,
+      HWND_BOTTOM,
+      SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+      phase + "-bottom"
+    );
   }
 
   private static void EnforceTopmost(IntPtr target)
@@ -567,13 +592,18 @@ internal static class Program
 
   private static bool IsTargetSelf(IntPtr foregroundHwnd)
   {
+    if (foregroundHwnd == IntPtr.Zero || !IsWindow(foregroundHwnd))
+    {
+      return false;
+    }
+
     IntPtr target;
     lock (Sync)
     {
       target = _targetWindow;
     }
 
-    if (target == IntPtr.Zero)
+    if (target == IntPtr.Zero || !IsWindow(target))
     {
       return false;
     }
@@ -589,10 +619,45 @@ internal static class Program
       return true;
     }
 
-    // Same-process check covers child and popup windows.
+    var rootOwner = GetAncestor(foregroundHwnd, GA_ROOTOWNER);
+    if (rootOwner != IntPtr.Zero && rootOwner == target)
+    {
+      return true;
+    }
+
+    // Same-process check covers child/popups in single-process mode.
     _ = GetWindowThreadProcessId(foregroundHwnd, out var fgPid);
     _ = GetWindowThreadProcessId(target, out var targetPid);
-    return fgPid != 0 && targetPid != 0 && fgPid == targetPid;
+    if (fgPid == 0 || targetPid == 0)
+    {
+      return false;
+    }
+
+    if (fgPid == targetPid)
+    {
+      return true;
+    }
+
+    // Multi-process Electron: renderer/process windows can have different PIDs,
+    // so compare executable path for robust self-detection.
+    try
+    {
+      using var fgProcess = Process.GetProcessById((int)fgPid);
+      using var targetProcess = Process.GetProcessById((int)targetPid);
+
+      var fgPath = fgProcess.MainModule?.FileName;
+      var targetPath = targetProcess.MainModule?.FileName;
+      if (!string.IsNullOrEmpty(fgPath) && !string.IsNullOrEmpty(targetPath))
+      {
+        return string.Equals(fgPath, targetPath, StringComparison.OrdinalIgnoreCase);
+      }
+    }
+    catch
+    {
+      // Ignore process lookup/access errors and fall back to false.
+    }
+
+    return false;
   }
 
   private static WindowRectPayload? TryGetWindowRectPayload(IntPtr hwnd)

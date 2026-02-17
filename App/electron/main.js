@@ -306,7 +306,6 @@ function startExcelWindowMonitor(win) {
   // Electron's internal window management, so we mirror reasserts here.
   let jsReassertToken = 0;
   const JS_REASSERT_DELAYS = [50, 150, 350];
-  const JS_DEMOTE_REASSERT_DELAYS = [40, 120];
   let helperTargetConfirmed = false;
 
   try {
@@ -352,9 +351,10 @@ function startExcelWindowMonitor(win) {
           const excelActive = Boolean(state && state.excelActive);
           const stateProcess = String((state && state.process) || '').toLowerCase();
 
+          const isSelfProcess = ['electron', 'macroflow'].includes(stateProcess);
           const branch = excelActive
             ? 'excel-active'
-            : (stateProcess === 'electron' ? 'electron-transient-ignored' : 'nonexcel-decisive');
+            : (isSelfProcess ? 'electron-transient-ignored' : 'nonexcel-decisive');
 
           if (branch === 'excel-active') {
             logger.debug('[WindowHelper] excel-active', { process: stateProcess, token: currentToken });
@@ -374,16 +374,10 @@ function startExcelWindowMonitor(win) {
           } else if (branch === 'nonexcel-decisive') {
             logger.debug('[WindowHelper] nonexcel-decisive', { process: stateProcess, token: currentToken });
             win.setAlwaysOnTop(false);
-
-            // Non-Excel foregrounds should reliably clear topmost.
-            for (const delay of JS_DEMOTE_REASSERT_DELAYS) {
-              setTimeout(() => {
-                if (currentToken !== jsReassertToken) return;
-                if (!win || win.isDestroyed()) return;
-                win.setAlwaysOnTop(false);
-                logger.debug('[WindowHelper] JS demote reassert applied', { delay, token: currentToken });
-              }, delay);
-            }
+            // No demote reasserts — C# helper owns Z-order placement via
+            // DemoteWindow. Repeated setAlwaysOnTop(false) calls fight with
+            // the helper's SetWindowPos(target, fg) by placing the window
+            // back at the top of all non-topmost windows.
           } else {
             logger.debug('[WindowHelper] electron-transient-ignored', {
               process: stateProcess,

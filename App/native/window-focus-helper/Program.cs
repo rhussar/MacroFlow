@@ -457,8 +457,11 @@ internal static class Program
         {
           ApplyExcelActiveLocked(target);
         }
-        else
+        else if (_excelActive)
         {
+          // Only demote on the transition from active to inactive.
+          // When already inactive, skip redundant DemoteWindow calls
+          // that create unnecessary Win32 SetWindowPos churn.
           ApplyExcelInactiveLocked(target);
         }
       }
@@ -518,7 +521,7 @@ internal static class Program
     _ = TrySetWindowPos(
       target,
       HWND_NOTOPMOST,
-      SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+      SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
       phase
     );
 
@@ -697,7 +700,8 @@ internal static class Program
 
     try
     {
-      return Process.GetProcessById((int)processId).ProcessName;
+      using var process = Process.GetProcessById((int)processId);
+      return process.ProcessName;
     }
     catch
     {

@@ -9,7 +9,7 @@
     "dev": "set NODE_ENV=development&& concurrently \"vite\" \"wait-on http://localhost:5173 && electron-forge start\"",
     "build": "vite build",
     "preview": "vite preview",
-    "test:search-data": "node --experimental-default-type=module --test src/lib/search-data.test.js src/lib/shortcut-audit.test.js",
+    "test:search-data": "node --experimental-default-type=module --test src/lib/search-data.test.js src/lib/shortcut-audit.test.js src/lib/shortcut-keybind.test.js",
     "start": "electron-forge start",
     "package": "npm run build:window-helper && npm run build && electron-forge package",
     "make": "npm run build:window-helper && npm run build && electron-forge make",

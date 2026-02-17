@@ -28,8 +28,13 @@ export function filterMacrosByQuery(macros, query, shortcutByMacroId = {}) {
   const normalizedQuery = toQuery(query);
 
   return source.filter((macro) => {
-    const savedShortcut = shortcutByMacroId[macro.id] || '';
-    const haystack = `${macro?.name || ''} ${macro?.module || ''} ${savedShortcut}`.toLowerCase();
+    const savedShortcut = String(shortcutByMacroId[macro.id] || '');
+    const isUppercaseShortcutLetter = /^[A-Z]$/.test(savedShortcut);
+    const shortcutTokens = savedShortcut
+      ? `ctrl ${isUppercaseShortcutLetter ? 'shift ' : ''}${savedShortcut.toLowerCase()}`
+      : '';
+    const haystack = `${macro?.name || ''} ${macro?.module || ''} ${savedShortcut} ${shortcutTokens}`
+      .toLowerCase();
     return haystack.includes(normalizedQuery);
   });
 }

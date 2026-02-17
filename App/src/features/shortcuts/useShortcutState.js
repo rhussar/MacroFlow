@@ -1,9 +1,12 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import {
-  mapAuditShortcutsToMacroIds,
-  normalizeShortcutKey,
-  toExcelShortcutKey
+  mapAuditShortcutsToMacroIds
 } from '../../lib/shortcut-audit';
+import {
+  normalizeShortcutLetterDraft,
+  parseShortcutLetter,
+  toExcelShortcutKeyFromLetter
+} from '../../lib/shortcut-keybind';
 import { SHORTCUT_REFRESH_TTL_MS } from '../search/search-constants';
 
 export function useShortcutState({ searchData, setActionStatus }) {
@@ -69,7 +72,14 @@ export function useShortcutState({ searchData, setActionStatus }) {
         return;
       }
 
-      const shortcutMap = mapAuditShortcutsToMacroIds(result, macros);
+      const rawShortcutMap = mapAuditShortcutsToMacroIds(result, macros);
+      const shortcutMap = {};
+      Object.entries(rawShortcutMap).forEach(([macroId, value]) => {
+        const parsedLetter = parseShortcutLetter(value);
+        if (parsedLetter) {
+          shortcutMap[macroId] = parsedLetter;
+        }
+      });
       const previousSavedMap = shortcutByMacroIdRef.current;
       const previousDraftMap = shortcutDraftByMacroIdRef.current;
       const nextDraftMap = {};
@@ -140,9 +150,10 @@ export function useShortcutState({ searchData, setActionStatus }) {
   }, [shortcutDraftByMacroId]);
 
   const handleShortcutDraftChange = useCallback((macroId, value) => {
+    const normalizedLetter = normalizeShortcutLetterDraft(value);
     setShortcutDraftByMacroId((previous) => ({
       ...previous,
-      [macroId]: value
+      [macroId]: normalizedLetter
     }));
   }, []);
 
@@ -155,7 +166,7 @@ export function useShortcutState({ searchData, setActionStatus }) {
     const draftShortcut = Object.prototype.hasOwnProperty.call(shortcutDraftByMacroId, macro.id)
       ? shortcutDraftByMacroId[macro.id]
       : savedShortcut;
-    const normalizedShortcut = normalizeShortcutKey(draftShortcut);
+    const normalizedShortcut = normalizeShortcutLetterDraft(draftShortcut);
 
     if (!normalizedShortcut) {
       setShortcutDraftByMacroId((previous) => ({
@@ -191,7 +202,7 @@ export function useShortcutState({ searchData, setActionStatus }) {
     setActionStatus('running', `Saving shortcut for ${macro.name}...`);
 
     try {
-      const excelShortcutKey = toExcelShortcutKey(normalizedShortcut);
+      const excelShortcutKey = toExcelShortcutKeyFromLetter(normalizedShortcut);
       if (!excelShortcutKey) {
         setActionStatus('error', 'Shortcut assign failed: Enter a valid shortcut key.');
         return;

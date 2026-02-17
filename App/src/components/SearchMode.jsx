@@ -5,6 +5,7 @@ import {
   filterModulesByQuery,
   getWorkbookContext
 } from '../features/search/search-selectors';
+import { formatShortcutPrefix } from '../lib/shortcut-keybind';
 
 const defaultSearchData = {
   status: 'idle',
@@ -152,8 +153,9 @@ const SearchMode = ({
         )}
 
         {filteredMacros.map((macro) => {
-          const currentShortcut = shortcutDraftByMacroId[macro.id] ?? shortcutByMacroId[macro.id] ?? '';
+          const currentShortcutLetter = shortcutDraftByMacroId[macro.id] ?? shortcutByMacroId[macro.id] ?? '';
           const isSaving = shortcutSavingMacroId === macro.id;
+          const shortcutPrefix = formatShortcutPrefix(currentShortcutLetter);
 
           return (
             <div
@@ -170,26 +172,37 @@ const SearchMode = ({
                 </span>
                 <span className="shortcut-name">{macro.name}</span>
               </button>
-              <input
-                type="text"
-                className={`shortcut-inline-input ${currentShortcut ? '' : 'is-empty'}`}
-                value={currentShortcut}
-                placeholder="No shortcut"
-                onChange={(event) => onShortcutDraftChange?.(macro.id, event.target.value)}
-                onBlur={() => onShortcutCommit?.(macro, 'blur')}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter') {
-                    event.preventDefault();
-                    event.currentTarget.blur();
-                  } else if (event.key === 'Escape') {
-                    event.preventDefault();
-                    onShortcutDraftChange?.(macro.id, shortcutByMacroId[macro.id] || '');
-                    event.currentTarget.blur();
-                  }
-                }}
-                onClick={(event) => event.stopPropagation()}
-                disabled={isSaving}
-              />
+              <div className="shortcut-binding" onClick={(event) => event.stopPropagation()}>
+                <span className="shortcut-prefix">Ctrl +</span>
+                {shortcutPrefix.includes('Shift') && (
+                  <span className="shortcut-shift">Shift +</span>
+                )}
+                <input
+                  type="text"
+                  className={`shortcut-keycap-input ${currentShortcutLetter ? '' : 'is-empty'}`}
+                  value={currentShortcutLetter}
+                  placeholder=""
+                  maxLength={1}
+                  autoCapitalize="off"
+                  autoComplete="off"
+                  spellCheck={false}
+                  aria-label={`Shortcut letter for ${macro.name}`}
+                  onChange={(event) => onShortcutDraftChange?.(macro.id, event.target.value)}
+                  onBlur={() => onShortcutCommit?.(macro, 'blur')}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') {
+                      event.preventDefault();
+                      event.currentTarget.blur();
+                    } else if (event.key === 'Escape') {
+                      event.preventDefault();
+                      onShortcutDraftChange?.(macro.id, shortcutByMacroId[macro.id] || '');
+                      event.currentTarget.blur();
+                    }
+                  }}
+                  onClick={(event) => event.stopPropagation()}
+                  disabled={isSaving}
+                />
+              </div>
             </div>
           );
         })}

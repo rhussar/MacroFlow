@@ -25,6 +25,8 @@ const VBA_COMPONENT_NAME = {
 class ExcelBridge {
   constructor() {
     this._proceduresCache = null;
+    this._cachedApp = null;
+    this._cachedAppActivate = null;
   }
 
   // ===========================================================================
@@ -33,18 +35,37 @@ class ExcelBridge {
 
   /**
    * Connect to a running Excel instance (never creates a new one).
+   * Caches the COM reference and reuses it until the connection goes stale.
    * @returns {object} Excel.Application COM object
    * @throws {Error} If Excel is not running
    */
   getApp(options = {}) {
     const { activate = true } = options;
+
+    // Try to reuse the cached COM reference if the activate mode matches
+    if (this._cachedApp && this._cachedAppActivate === activate) {
+      try {
+        // Probe the cached reference — if Excel was closed this will throw
+        void this._cachedApp.Version;
+        return this._cachedApp;
+      } catch {
+        // Stale reference — Excel was closed or restarted
+        this._cachedApp = null;
+        this._cachedAppActivate = null;
+      }
+    }
+
     try {
       const excel = new winax.Object('Excel.Application', { activate });
       if (!excel) {
         throw new Error('Excel application not found');
       }
+      this._cachedApp = excel;
+      this._cachedAppActivate = activate;
       return excel;
     } catch (error) {
+      this._cachedApp = null;
+      this._cachedAppActivate = null;
       throw new Error('NO_EXCEL: Excel is not running. Please open Excel first.');
     }
   }
@@ -357,14 +378,6 @@ class ExcelBridge {
       // Ignore window activation issues.
     }
 
-    try {
-      if (excel.ActiveCell) {
-        excel.Goto(excel.ActiveCell, true);
-      }
-    } catch (error) {
-      // Ignore focus issues.
-    }
-
     let ready = true;
     try {
       ready = Boolean(excel.Ready);
@@ -645,11 +658,17 @@ class ExcelBridge {
 
   /**
    * Get info about the active workbook.
-   * @returns {{ success: boolean, name: string, path: string, sheets: string[] }}
+   * @returns {{ success: boolean, name: string, path: string, activeSheet: string, sheets: string[] }}
    */
   getWorkbookInfo() {
     try {
       const workbook = this.getActiveWorkbook();
+      let activeSheet = '';
+      try {
+        activeSheet = workbook.ActiveSheet ? String(workbook.ActiveSheet.Name) : '';
+      } catch (error) {
+        activeSheet = '';
+      }
       const sheets = [];
       for (let i = 1; i <= workbook.Sheets.Count; i++) {
         sheets.push(workbook.Sheets.Item(i).Name);
@@ -658,6 +677,7 @@ class ExcelBridge {
         success: true,
         name: workbook.Name,
         path: workbook.FullName,
+        activeSheet,
         sheets
       };
     } catch (error) {

@@ -5,9 +5,12 @@ function toQuery(value) {
 export function getWorkbookContext(workbook) {
   const workbookName = workbook?.name ? String(workbook.name) : '';
   const workbookPath = workbook?.path ? String(workbook.path) : '';
+  const activeSheetName = workbook?.activeSheet ? String(workbook.activeSheet) : '';
+  const displayWorkbook = workbookName || 'Active Workbook';
+  const displaySheet = activeSheetName || 'No active sheet';
 
   return {
-    label: workbookName ? `Active workbook: ${workbookName}` : 'Active workbook unavailable',
+    label: `🟩 ${displayWorkbook}  •  ${displaySheet}`,
     path: workbookPath
   };
 }

@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { FolderIcon, ReturnIcon, CloseIcon } from './icons';
 import {
   filterMacrosByQuery,
@@ -51,16 +51,20 @@ const SearchMode = ({
   shortcutSavingMacroId = null,
   onShortcutDraftChange,
   onShortcutCommit,
-  actionState = 'idle',
-  actionMessage = '',
   onClose
 }) => {
   const status = searchData.status || 'idle';
   const workbookContext = getWorkbookContext(searchData.workbook);
   const allMacros = Array.isArray(searchData.macros) ? searchData.macros : [];
 
-  const filteredFiles = filterModulesByQuery(searchData.modules, searchQuery);
-  const filteredMacros = filterMacrosByQuery(allMacros, searchQuery, shortcutByMacroId);
+  const filteredFiles = useMemo(
+    () => filterModulesByQuery(searchData.modules, searchQuery),
+    [searchData.modules, searchQuery]
+  );
+  const filteredMacros = useMemo(
+    () => filterMacrosByQuery(allMacros, searchQuery, shortcutByMacroId),
+    [allMacros, searchQuery, shortcutByMacroId]
+  );
 
   const renderNonReadyState = () => {
     const config = statusConfig[status] || statusConfig.error;
@@ -80,28 +84,6 @@ const SearchMode = ({
     );
   };
 
-  const renderActionStatus = () => {
-    if (actionState === 'idle' || !actionMessage) {
-      return null;
-    }
-
-    const statusTitle = actionState === 'running'
-      ? 'Processing'
-      : actionState === 'success'
-        ? 'Success'
-        : 'Action failed';
-
-    return (
-      <div className={`search-run-status search-run-status-${actionState}`}>
-        <div className="search-run-status-header">
-          {actionState === 'running' && <span className="status-spinner" />}
-          <span className="search-run-status-title">{statusTitle}</span>
-        </div>
-        <p className="search-run-status-message">{actionMessage}</p>
-      </div>
-    );
-  };
-
   const renderReadyState = () => (
     <>
       <div className="search-context-bar">
@@ -109,8 +91,6 @@ const SearchMode = ({
           {workbookContext.label}
         </span>
       </div>
-
-      {renderActionStatus()}
 
       <div className="section-header">
         <span className="section-title">All Files</span>

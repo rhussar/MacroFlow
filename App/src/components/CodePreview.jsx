@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 
 /**
  * Syntax highlight VBA code
@@ -100,17 +100,18 @@ const CodePreview = ({
   className = '',
 }) => {
   const containerClass = `code-preview-container ${status} ${className}`.trim();
-  const highlightedCode = highlightVBA(code);
 
-  // If there's an error line, wrap that line specially
-  let finalCode = highlightedCode;
-  if (errorLine !== null && code) {
-    const lines = highlightedCode.split('\n');
-    if (lines[errorLine - 1]) {
-      lines[errorLine - 1] = `<span class="code-line-error">${lines[errorLine - 1]}</span>`;
+  const finalCode = useMemo(() => {
+    const highlighted = highlightVBA(code);
+    if (errorLine !== null && code) {
+      const lines = highlighted.split('\n');
+      if (lines[errorLine - 1]) {
+        lines[errorLine - 1] = `<span class="code-line-error">${lines[errorLine - 1]}</span>`;
+      }
+      return lines.join('\n');
     }
-    finalCode = lines.join('\n');
-  }
+    return highlighted;
+  }, [code, errorLine]);
 
   return (
     <div className={containerClass}>

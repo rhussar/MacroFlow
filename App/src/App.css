@@ -611,6 +611,64 @@ body {
 }
 
 /* ============================================
+   Bottom Action Status
+   ============================================ */
+
+.app-bottom-status {
+  min-height: 34px;
+  padding: 7px 16px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-top: 1px solid var(--border-default);
+  background: var(--bg-secondary);
+  -webkit-app-region: no-drag;
+}
+
+.app-bottom-status .status-spinner {
+  width: 14px;
+  height: 14px;
+  border-width: 2px;
+}
+
+.app-bottom-status-label {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.app-bottom-status-message {
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.app-bottom-status-success {
+  border-top-color: var(--accent-green);
+}
+
+.app-bottom-status-running {
+  border-top-color: var(--accent-blue);
+}
+
+.app-bottom-status-running .app-bottom-status-label {
+  color: var(--accent-blue);
+}
+
+.app-bottom-status-success .app-bottom-status-label {
+  color: var(--accent-green);
+}
+
+.app-bottom-status-error {
+  border-top-color: var(--accent-red);
+}
+
+.app-bottom-status-error .app-bottom-status-label {
+  color: var(--accent-red);
+}
+
+/* ============================================
    Footer
    ============================================ */
 

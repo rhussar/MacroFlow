@@ -100,7 +100,7 @@ contextBridge.exposeInMainWorld('excel', {
   workbook: {
     /**
      * Get info about the active workbook
-     * @returns {Promise<{ success: boolean, name: string, path: string, sheets: string[] }>}
+     * @returns {Promise<{ success: boolean, name: string, path: string, activeSheet: string, sheets: string[] }>}
      */
     info: () => ipcRenderer.invoke('workbook:info'),
 
@@ -188,4 +188,3 @@ contextBridge.exposeInMainWorld('excel', {
     close: () => ipcRenderer.send('app:close'),
   },
 });
-

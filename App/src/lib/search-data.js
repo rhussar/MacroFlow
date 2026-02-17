@@ -29,7 +29,7 @@ function isVbaDocumentObject(module) {
 
 export function normalizeWorkbook(workbookInfo, fallbackWorkbook = null) {
   const source = workbookInfo?.success
-    ? { name: workbookInfo.name, path: workbookInfo.path }
+    ? { name: workbookInfo.name, path: workbookInfo.path, activeSheet: workbookInfo.activeSheet }
     : fallbackWorkbook;
 
   if (!source) {
@@ -38,13 +38,15 @@ export function normalizeWorkbook(workbookInfo, fallbackWorkbook = null) {
 
   const name = toSafeString(source.name);
   const path = toSafeString(source.path);
+  const activeSheet = toSafeString(source.activeSheet);
   if (!name && !path) {
     return null;
   }
 
   return {
     name: name || 'Active Workbook',
-    path
+    path,
+    activeSheet
   };
 }
 

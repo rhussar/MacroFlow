@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { ArrowLeftIcon, CloseIcon, MacroFlowLogo } from './icons';
 import { highlightVBA } from './CodePreview';
 
@@ -29,12 +29,20 @@ const ManualEditMode = ({ onBack, onClose }) => {
   const [editState, setEditState] = useState('saved');
   const [followUp, setFollowUp] = useState('');
 
+  const codeRef = useRef(code);
+  const originalCodeRef = useRef(originalCode);
+  codeRef.current = code;
+  originalCodeRef.current = originalCode;
+
   // Track changes
   useEffect(() => {
     if (code !== originalCode) {
       setEditState('unsaved');
     }
   }, [code, originalCode]);
+
+  // Memoize syntax highlighting — only re-runs when code actually changes
+  const highlightedHtml = useMemo(() => highlightVBA(code), [code]);
 
   // Handle save
   const handleSave = () => {
@@ -49,24 +57,26 @@ const ManualEditMode = ({ onBack, onClose }) => {
     setEditState(isSuccess ? 'success' : 'error');
   };
 
-  // Keyboard shortcuts
+  // Keyboard shortcuts — uses refs so the listener is registered once
   useEffect(() => {
     const handleKeyDown = (e) => {
       // Ctrl+S to save
       if (e.ctrlKey && e.key === 's') {
         e.preventDefault();
-        handleSave();
+        setOriginalCode(codeRef.current);
+        setEditState('saved');
       }
       // Shift+K to run
       if (e.shiftKey && e.key === 'K') {
         e.preventDefault();
-        handleRun();
+        const isSuccess = Math.random() > 0.3;
+        setEditState(isSuccess ? 'success' : 'error');
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [code, originalCode]);
+  }, []);
 
   // Get footer content based on state
   const getFooterContent = () => {
@@ -159,7 +169,7 @@ const ManualEditMode = ({ onBack, onClose }) => {
           contentEditable
           suppressContentEditableWarning
           onInput={(e) => setCode(e.currentTarget.textContent || '')}
-          dangerouslySetInnerHTML={{ __html: highlightVBA(code) }}
+          dangerouslySetInnerHTML={{ __html: highlightedHtml }}
         />
       </div>
 

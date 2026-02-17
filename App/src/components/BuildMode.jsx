@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { ArrowLeftIcon, CloseIcon, CheckIcon, MacroFlowLogo } from './icons';
 import CodePreview from './CodePreview';
 
@@ -30,39 +30,55 @@ const BuildMode = ({ onBack, onClose, onEditMode }) => {
   const [steps, setSteps] = useState([]);
   const [errorInfo, setErrorInfo] = useState(null);
 
+  const timersRef = useRef([]);
+  const buildStateRef = useRef(buildState);
+  const promptRef = useRef(prompt);
+  buildStateRef.current = buildState;
+  promptRef.current = prompt;
+
+  // Clear all pending timers
+  const clearTimers = () => {
+    timersRef.current.forEach(clearTimeout);
+    timersRef.current = [];
+  };
+
+  // Clean up timers on unmount
+  useEffect(() => clearTimers, []);
+
   // Handle prompt submission
   const handleSubmit = () => {
-    if (!prompt.trim()) return;
+    if (!promptRef.current.trim()) return;
 
+    clearTimers();
     setBuildState('processing');
     setSteps([
       { text: 'Scanned Active Workbook', status: 'loading' },
     ]);
 
     // Simulate processing steps
-    setTimeout(() => {
+    timersRef.current.push(setTimeout(() => {
       setSteps([
         { text: 'Scanned Active Workbook', status: 'complete' },
         { text: 'Scanned Active Workbook', status: 'loading' },
       ]);
-    }, 800);
+    }, 800));
 
-    setTimeout(() => {
+    timersRef.current.push(setTimeout(() => {
       setSteps([
         { text: 'Scanned Active Workbook', status: 'complete' },
         { text: 'Detected Range F1:C140', status: 'complete' },
         { text: 'Built custom macro', status: 'loading' },
       ]);
-    }, 1600);
+    }, 1600));
 
-    setTimeout(() => {
+    timersRef.current.push(setTimeout(() => {
       setSteps([
         { text: 'Scanned Active Workbook', status: 'complete' },
         { text: 'Detected Range F1:C140', status: 'complete' },
         { text: 'Built custom macro', status: 'complete' },
       ]);
       setBuildState('complete');
-    }, 2400);
+    }, 2400));
   };
 
   // Handle running macro
@@ -73,6 +89,7 @@ const BuildMode = ({ onBack, onClose, onEditMode }) => {
     if (isSuccess) {
       setBuildState('success');
     } else {
+      clearTimers();
       setBuildState('error');
       setErrorInfo({
         title: 'Run Failed: Runtime Error 1004',
@@ -84,28 +101,27 @@ const BuildMode = ({ onBack, onClose, onEditMode }) => {
       ]);
 
       // Simulate fixing
-      setTimeout(() => {
+      timersRef.current.push(setTimeout(() => {
         setSteps([
           { text: 'Found mistake on line 12', status: 'complete' },
           { text: 'Fixed error', status: 'complete' },
         ]);
         setBuildState('fixed');
         setErrorInfo(null);
-      }, 2000);
+      }, 2000));
     }
   };
 
-  // Keyboard shortcut handler
+  // Keyboard shortcut handler — uses refs so the listener is registered once
   useEffect(() => {
     const handleKeyDown = (e) => {
-      // Tab to switch modes (handled by parent)
       // Enter to submit prompt
-      if (e.key === 'Enter' && buildState === 'empty' && prompt.trim()) {
+      if (e.key === 'Enter' && buildStateRef.current === 'empty' && promptRef.current.trim()) {
         e.preventDefault();
         handleSubmit();
       }
       // Shift+K to run macro
-      if (e.shiftKey && e.key === 'K' && ['complete', 'success', 'fixed'].includes(buildState)) {
+      if (e.shiftKey && e.key === 'K' && ['complete', 'success', 'fixed'].includes(buildStateRef.current)) {
         e.preventDefault();
         handleRunMacro();
       }
@@ -113,7 +129,7 @@ const BuildMode = ({ onBack, onClose, onEditMode }) => {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [buildState, prompt]);
+  }, []);
 
   // Get footer content based on state
   const getFooterContent = () => {

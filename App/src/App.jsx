@@ -39,6 +39,19 @@ function App() {
     setActionMessage(message);
   }, []);
 
+  useEffect(() => {
+    if ((actionState !== 'success' && actionState !== 'error') || !actionMessage) {
+      return undefined;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setActionState('idle');
+      setActionMessage('');
+    }, 4000);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [actionState, actionMessage]);
+
   const {
     selectedMacro,
     setSelectedMacro,
@@ -86,12 +99,16 @@ function App() {
     setActionStatus
   });
 
-  // Handle keyboard shortcuts
+  const modeRef = useRef(mode);
+  const settingsOpenRef = useRef(settingsOpen);
+  modeRef.current = mode;
+  settingsOpenRef.current = settingsOpen;
+
+  // Handle keyboard shortcuts — uses refs so the listener is registered once
   useEffect(() => {
     const handleKeyDown = (e) => {
       // Tab to toggle between Search and Build modes
       if (e.key === 'Tab' && !e.ctrlKey && !e.shiftKey && !e.altKey) {
-        // Only toggle if not in an input field or if in our specific inputs
         const target = e.target;
         const isSearchInput = target.classList?.contains('search-input');
 
@@ -113,11 +130,11 @@ function App() {
 
       // Escape to close or go back
       if (e.key === 'Escape') {
-        if (settingsOpen) {
+        if (settingsOpenRef.current) {
           setSettingsOpen(false);
-        } else if (mode === 'explorer' || mode === 'edit') {
+        } else if (modeRef.current === 'explorer' || modeRef.current === 'edit') {
           setMode('search');
-        } else if (mode === 'build') {
+        } else if (modeRef.current === 'build') {
           setMode('search');
         }
       }
@@ -125,28 +142,33 @@ function App() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [mode, settingsOpen]);
+  }, []);
 
-  // Handle close app
-  const handleClose = () => {
-    // In Electron, this would close the window
+  // Stable callback references for child components
+  const handleClose = useCallback(() => {
     if (window.excel?.app?.close) {
       window.excel.app.close();
     } else {
       console.log('Close app');
     }
-  };
+  }, []);
 
-  // Handle quit from settings
-  const handleQuit = () => {
-    handleClose();
-  };
+  const handleQuit = useCallback(() => {
+    if (window.excel?.app?.close) {
+      window.excel.app.close();
+    }
+  }, []);
 
-  // Handle file click (open explorer)
-  const handleFileClick = (file) => {
+  const handleFileClick = useCallback((file) => {
     console.log('File clicked:', file);
     setMode('explorer');
-  };
+  }, []);
+
+  const goToBuild = useCallback(() => setMode('build'), []);
+  const goToSearch = useCallback(() => setMode('search'), []);
+  const goToEdit = useCallback(() => setMode('edit'), []);
+  const toggleSettings = useCallback(() => setSettingsOpen((prev) => !prev), []);
+  const closeSettings = useCallback(() => setSettingsOpen(false), []);
 
   // Render current mode content
   const renderContent = () => {
@@ -156,7 +178,7 @@ function App() {
           <SearchMode
             searchQuery={searchQuery}
             onSearchChange={setSearchQuery}
-            onBuildModeClick={() => setMode('build')}
+            onBuildModeClick={goToBuild}
             onFileClick={handleFileClick}
             onRunMacro={handleRunMacro}
             searchData={searchData}
@@ -166,8 +188,6 @@ function App() {
             shortcutSavingMacroId={shortcutSavingMacroId}
             onShortcutDraftChange={handleShortcutDraftChange}
             onShortcutCommit={handleShortcutCommit}
-            actionState={actionState}
-            actionMessage={actionMessage}
             onClose={handleClose}
           />
         );
@@ -175,9 +195,9 @@ function App() {
       case 'build':
         return (
           <BuildMode
-            onBack={() => setMode('search')}
+            onBack={goToSearch}
             onClose={handleClose}
-            onEditMode={() => setMode('edit')}
+            onEditMode={goToEdit}
           />
         );
 
@@ -185,7 +205,7 @@ function App() {
         // MF-103 scope: Explorer shortcut management is deferred until Explorer is live-data backed.
         return (
           <FileExplorer
-            onBack={() => setMode('search')}
+            onBack={goToSearch}
             onClose={handleClose}
           />
         );
@@ -193,7 +213,7 @@ function App() {
       case 'edit':
         return (
           <ManualEditMode
-            onBack={() => setMode('build')}
+            onBack={goToBuild}
             onClose={handleClose}
           />
         );
@@ -205,11 +225,31 @@ function App() {
 
   // Check if we should show the default footer
   const showDefaultFooter = mode === 'search' || mode === 'explorer';
+  const showBottomActionBanner = (
+    mode === 'search' &&
+    showDefaultFooter &&
+    (actionState === 'running' || actionState === 'success' || actionState === 'error') &&
+    Boolean(actionMessage)
+  );
 
   return (
     <div className="app-container">
       {/* Main Content */}
       {renderContent()}
+
+      {showBottomActionBanner && (
+        <div className={`app-bottom-status app-bottom-status-${actionState}`}>
+          {actionState === 'running' && <span className="status-spinner" />}
+          <span className="app-bottom-status-label">
+            {actionState === 'running'
+              ? 'Processing'
+              : actionState === 'success'
+                ? 'Success'
+                : 'Action failed'}
+          </span>
+          <span className="app-bottom-status-message">{actionMessage}</span>
+        </div>
+      )}
 
       {/* Default Footer (for search and explorer modes) */}
       {showDefaultFooter && (
@@ -217,7 +257,7 @@ function App() {
           <div className="footer-left">
             <div
               className="logo"
-              onClick={() => setSettingsOpen(!settingsOpen)}
+              onClick={toggleSettings}
             >
               <MacroFlowLogo size={20} />
             </div>
@@ -235,7 +275,7 @@ function App() {
       {/* Settings Menu */}
       <SettingsMenu
         isOpen={settingsOpen}
-        onClose={() => setSettingsOpen(false)}
+        onClose={closeSettings}
         onQuit={handleQuit}
       />
     </div>

@@ -20,6 +20,7 @@ export function useShortcutState({ searchData, setActionStatus }) {
   const shortcutSnapshotTimestampRef = useRef(0);
   const shortcutByMacroIdRef = useRef({});
   const shortcutDraftByMacroIdRef = useRef({});
+  const shortcutSavingMacroIdRef = useRef(null);
   const shortcutLoadErrorRef = useRef('');
 
   const loadMacroShortcuts = useCallback(async ({ force = false } = {}) => {
@@ -158,13 +159,15 @@ export function useShortcutState({ searchData, setActionStatus }) {
   }, []);
 
   const handleShortcutCommit = useCallback(async (macro, _trigger) => {
-    if (!macro || shortcutSavingMacroId) {
+    if (!macro || shortcutSavingMacroIdRef.current) {
       return;
     }
 
-    const savedShortcut = shortcutByMacroId[macro.id] || '';
-    const draftShortcut = Object.prototype.hasOwnProperty.call(shortcutDraftByMacroId, macro.id)
-      ? shortcutDraftByMacroId[macro.id]
+    const savedMap = shortcutByMacroIdRef.current;
+    const draftMap = shortcutDraftByMacroIdRef.current;
+    const savedShortcut = savedMap[macro.id] || '';
+    const draftShortcut = Object.prototype.hasOwnProperty.call(draftMap, macro.id)
+      ? draftMap[macro.id]
       : savedShortcut;
     const normalizedShortcut = normalizeShortcutLetterDraft(draftShortcut);
 
@@ -198,6 +201,7 @@ export function useShortcutState({ searchData, setActionStatus }) {
       return;
     }
 
+    shortcutSavingMacroIdRef.current = macro.id;
     setShortcutSavingMacroId(macro.id);
     setActionStatus('running', `Saving shortcut for ${macro.name}...`);
 
@@ -233,15 +237,10 @@ export function useShortcutState({ searchData, setActionStatus }) {
       const backendMessage = error?.message ? String(error.message) : 'Unexpected error.';
       setActionStatus('error', `Shortcut assign failed: ${backendMessage}`);
     } finally {
+      shortcutSavingMacroIdRef.current = null;
       setShortcutSavingMacroId(null);
     }
-  }, [
-    loadMacroShortcuts,
-    setActionStatus,
-    shortcutByMacroId,
-    shortcutDraftByMacroId,
-    shortcutSavingMacroId
-  ]);
+  }, [loadMacroShortcuts, setActionStatus]);
 
   return {
     shortcutByMacroId,

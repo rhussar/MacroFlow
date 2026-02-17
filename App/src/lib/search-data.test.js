@@ -3,7 +3,8 @@ import test from 'node:test';
 import {
   mapSearchError,
   normalizeMacros,
-  normalizeModules
+  normalizeModules,
+  normalizeWorkbook
 } from './search-data.js';
 
 test('mapSearchError maps NO_EXCEL to no_excel state', () => {
@@ -42,6 +43,19 @@ test('normalizeModules excludes runtime and VBA document objects (sheets/workboo
     modules.map((item) => item.name),
     ['Module1', 'ClassOne']
   );
+});
+
+test('normalizeWorkbook preserves active sheet from workbook info payload', () => {
+  const workbook = normalizeWorkbook({
+    success: true,
+    name: 'Book1.xlsm',
+    path: 'C:/Book1.xlsm',
+    activeSheet: 'Summary'
+  });
+
+  assert.equal(workbook?.name, 'Book1.xlsm');
+  assert.equal(workbook?.path, 'C:/Book1.xlsm');
+  assert.equal(workbook?.activeSheet, 'Summary');
 });
 
 test('normalizeMacros keeps only public or implicit Sub procedures and excludes runtime helper', () => {

@@ -27,6 +27,19 @@ class ExcelBridge {
     this._proceduresCache = null;
     this._cachedApp = null;
     this._cachedAppActivate = null;
+    this._focusHelper = null;
+    this._multiInstanceCacheTimestamp = 0;
+    this._multiInstanceCacheResult = null;
+  }
+
+  setFocusHelper(client) {
+    this._focusHelper = client || null;
+  }
+
+  clearComCache() {
+    this._cachedApp = null;
+    this._cachedAppActivate = null;
+    this._proceduresCache = null;
   }
 
   // ===========================================================================
@@ -79,9 +92,50 @@ class ExcelBridge {
     const excel = this.getApp(options);
     const workbook = excel.ActiveWorkbook;
     if (!workbook) {
+      let workbookCount = 0;
+      try {
+        workbookCount = Number(excel.Workbooks.Count) || 0;
+      } catch {
+        workbookCount = 0;
+      }
+
+      if (workbookCount === 0 && this._hasMultipleExcelProcesses()) {
+        throw new Error(
+          'MULTI_INSTANCE: Multiple Excel processes detected. ' +
+          'Click on your Excel workbook, then return to MacroFlow.'
+        );
+      }
+
       throw new Error('NO_WORKBOOK: No workbook is open. Please open or create a workbook.');
     }
     return workbook;
+  }
+
+  _hasMultipleExcelProcesses() {
+    const now = Date.now();
+    if (this._multiInstanceCacheResult !== null && now - this._multiInstanceCacheTimestamp < 2000) {
+      return this._multiInstanceCacheResult;
+    }
+
+    try {
+      const { execSync } = require('node:child_process');
+      const output = execSync('tasklist /FI "IMAGENAME eq EXCEL.EXE" /NH', {
+        windowsHide: true,
+        timeout: 3000,
+        encoding: 'utf8'
+      });
+      const excelLines = output.split('\n').filter(
+        (line) => line.trim().toUpperCase().startsWith('EXCEL.EXE')
+      );
+      const result = excelLines.length > 1;
+      this._multiInstanceCacheTimestamp = now;
+      this._multiInstanceCacheResult = result;
+      return result;
+    } catch {
+      this._multiInstanceCacheTimestamp = now;
+      this._multiInstanceCacheResult = false;
+      return false;
+    }
   }
 
   /**
@@ -128,8 +182,13 @@ class ExcelBridge {
   }
 
   _findOpenWorkbookByName(excel, workbookName) {
-    const normalizedTarget = String(workbookName || '').trim().toLowerCase();
-    if (!normalizedTarget) {
+    return this._findOpenWorkbook(excel, { workbookName });
+  }
+
+  _findOpenWorkbook(excel, { workbookName, workbookPath } = {}) {
+    const normalizedName = String(workbookName || '').trim().toLowerCase();
+    const normalizedPath = String(workbookPath || '').trim().toLowerCase();
+    if (!normalizedName && !normalizedPath) {
       return null;
     }
 
@@ -139,15 +198,29 @@ class ExcelBridge {
       return null;
     }
 
-    for (let i = 1; i <= count; i++) {
-      const workbook = workbooks.Item(i);
-      if (!workbook) {
-        continue;
+    if (normalizedPath) {
+      for (let i = 1; i <= count; i++) {
+        const workbook = workbooks.Item(i);
+        if (!workbook) {
+          continue;
+        }
+        const candidatePath = String(workbook.FullName || '').trim().toLowerCase();
+        if (candidatePath === normalizedPath) {
+          return workbook;
+        }
       }
+    }
 
-      const candidateName = String(workbook.Name || '').trim().toLowerCase();
-      if (candidateName === normalizedTarget) {
-        return workbook;
+    if (normalizedName) {
+      for (let i = 1; i <= count; i++) {
+        const workbook = workbooks.Item(i);
+        if (!workbook) {
+          continue;
+        }
+        const candidateName = String(workbook.Name || '').trim().toLowerCase();
+        if (candidateName === normalizedName) {
+          return workbook;
+        }
       }
     }
 
@@ -170,7 +243,7 @@ class ExcelBridge {
     if (!safe) {
       return '';
     }
-    if (/\s/.test(safe)) {
+    if (/\s/.test(safe) || safe.includes("'")) {
       return `'${safe.replace(/'/g, "''")}'`;
     }
     return safe;
@@ -1060,28 +1133,33 @@ class ExcelBridge {
    * @returns {{ success: boolean, workbookFound: boolean, workbook?: { name: string, path: string } | null, modules: Array, message?: string }}
    */
   listModulesByWorkbookName(workbookName, options = {}) {
-    const { activate = true } = options;
+    const { activate = true, workbookPath = '' } = options;
     const normalizedName = String(workbookName || '').trim();
-    if (!normalizedName) {
+    const normalizedPath = String(workbookPath || '').trim();
+    if (!normalizedName && !normalizedPath) {
       return {
         success: false,
         workbookFound: false,
         workbook: null,
         modules: [],
-        message: 'Workbook name is required.'
+        message: 'Workbook name or workbook path is required.'
       };
     }
 
     try {
       const excel = this.getApp({ activate });
-      const workbook = this._findOpenWorkbookByName(excel, normalizedName);
+      const workbook = this._findOpenWorkbook(excel, {
+        workbookName: normalizedName,
+        workbookPath: normalizedPath
+      });
       if (!workbook) {
+        const workbookLabel = normalizedPath || normalizedName;
         return {
           success: true,
           workbookFound: false,
           workbook: null,
           modules: [],
-          message: `Workbook "${normalizedName}" is not open.`
+          message: `Workbook "${workbookLabel}" is not open.`
         };
       }
 
@@ -1134,28 +1212,33 @@ class ExcelBridge {
    * @returns {{ success: boolean, workbookFound: boolean, workbook?: { name: string, path: string } | null, procedures: Array, message?: string }}
    */
   listProceduresByWorkbookName(workbookName, options = {}) {
-    const { activate = true } = options;
+    const { activate = true, workbookPath = '' } = options;
     const normalizedName = String(workbookName || '').trim();
-    if (!normalizedName) {
+    const normalizedPath = String(workbookPath || '').trim();
+    if (!normalizedName && !normalizedPath) {
       return {
         success: false,
         workbookFound: false,
         workbook: null,
         procedures: [],
-        message: 'Workbook name is required.'
+        message: 'Workbook name or workbook path is required.'
       };
     }
 
     try {
       const excel = this.getApp({ activate });
-      const workbook = this._findOpenWorkbookByName(excel, normalizedName);
+      const workbook = this._findOpenWorkbook(excel, {
+        workbookName: normalizedName,
+        workbookPath: normalizedPath
+      });
       if (!workbook) {
+        const workbookLabel = normalizedPath || normalizedName;
         return {
           success: true,
           workbookFound: false,
           workbook: null,
           procedures: [],
-          message: `Workbook "${normalizedName}" is not open.`
+          message: `Workbook "${workbookLabel}" is not open.`
         };
       }
 
@@ -1410,26 +1493,31 @@ class ExcelBridge {
    * @returns {{ success: boolean, workbookFound: boolean, workbook?: { name: string, path: string } | null, message: string }}
    */
   setMacroShortcutByWorkbookName(workbookName, macroName, shortcutKey, options = {}) {
-    const { activate = true } = options;
+    const { activate = true, workbookPath = '' } = options;
     const normalizedName = String(workbookName || '').trim();
-    if (!normalizedName) {
+    const normalizedPath = String(workbookPath || '').trim();
+    if (!normalizedName && !normalizedPath) {
       return {
         success: false,
         workbookFound: false,
         workbook: null,
-        message: 'Workbook name is required.'
+        message: 'Workbook name or workbook path is required.'
       };
     }
 
     try {
       const excel = this.getApp({ activate });
-      const workbook = this._findOpenWorkbookByName(excel, normalizedName);
+      const workbook = this._findOpenWorkbook(excel, {
+        workbookName: normalizedName,
+        workbookPath: normalizedPath
+      });
       if (!workbook) {
+        const workbookLabel = normalizedPath || normalizedName;
         return {
           success: true,
           workbookFound: false,
           workbook: null,
-          message: `Workbook "${normalizedName}" is not open.`
+          message: `Workbook "${workbookLabel}" is not open.`
         };
       }
 
@@ -1454,22 +1542,28 @@ class ExcelBridge {
     const registry = this._loadShortcutRegistry(workbook);
     const shortcuts = [];
     const unmapped = [];
+    const workbookName = String(workbook?.Name || '').trim();
+    const qualifiedWorkbookName = this._qualifyWorkbookName(workbookName);
 
     procedures.forEach((proc) => {
       const fullName = `${proc.module}.${proc.name}`;
-      const qualifiedName = `${workbook.Name}!${fullName}`;
+      const qualifiedNameRaw = workbookName ? `${workbookName}!${fullName}` : fullName;
+      const qualifiedNameEscaped = qualifiedWorkbookName
+        ? `${qualifiedWorkbookName}!${fullName}`
+        : qualifiedNameRaw;
       const shortcut =
-        registry[qualifiedName] ||
+        registry[qualifiedNameEscaped] ||
+        registry[qualifiedNameRaw] ||
         registry[fullName] ||
         registry[proc.name] ||
         null;
       if (shortcut) {
         shortcuts.push({
-          macro: qualifiedName,
+          macro: qualifiedNameEscaped,
           shortcut
         });
       } else {
-        unmapped.push(qualifiedName);
+        unmapped.push(qualifiedNameEscaped);
       }
     });
 
@@ -1505,30 +1599,35 @@ class ExcelBridge {
    * @returns {{ success: boolean, workbookFound: boolean, workbook?: { name: string, path: string } | null, shortcuts: Array, unmapped: Array, note?: string, message?: string }}
    */
   auditShortcutsByWorkbookName(workbookName, options = {}) {
-    const { activate = true } = options;
+    const { activate = true, workbookPath = '' } = options;
     const normalizedName = String(workbookName || '').trim();
-    if (!normalizedName) {
+    const normalizedPath = String(workbookPath || '').trim();
+    if (!normalizedName && !normalizedPath) {
       return {
         success: false,
         workbookFound: false,
         workbook: null,
         shortcuts: [],
         unmapped: [],
-        message: 'Workbook name is required.'
+        message: 'Workbook name or workbook path is required.'
       };
     }
 
     try {
       const excel = this.getApp({ activate });
-      const workbook = this._findOpenWorkbookByName(excel, normalizedName);
+      const workbook = this._findOpenWorkbook(excel, {
+        workbookName: normalizedName,
+        workbookPath: normalizedPath
+      });
       if (!workbook) {
+        const workbookLabel = normalizedPath || normalizedName;
         return {
           success: true,
           workbookFound: false,
           workbook: null,
           shortcuts: [],
           unmapped: [],
-          message: `Workbook "${normalizedName}" is not open.`
+          message: `Workbook "${workbookLabel}" is not open.`
         };
       }
 

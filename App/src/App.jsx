@@ -32,6 +32,7 @@ function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [actionState, setActionState] = useState('idle');
   const [actionMessage, setActionMessage] = useState('');
+  const [explorerContext, setExplorerContext] = useState(null);
   const loadSearchDataRef = useRef(null);
   const shortcutSaveInFlightRef = useRef(false);
 
@@ -137,6 +138,7 @@ function App() {
         if (settingsOpenRef.current) {
           setSettingsOpen(false);
         } else if (modeRef.current === 'explorer' || modeRef.current === 'edit') {
+          setExplorerContext(null);
           setMode('search');
         } else if (modeRef.current === 'build') {
           setMode('search');
@@ -152,8 +154,6 @@ function App() {
   const handleClose = useCallback(() => {
     if (window.excel?.app?.close) {
       window.excel.app.close();
-    } else {
-      console.log('Close app');
     }
   }, []);
 
@@ -163,16 +163,39 @@ function App() {
     }
   }, []);
 
-  const handleFileClick = useCallback((file) => {
-    console.log('File clicked:', file);
+  const handleFileClick = useCallback((fileContext) => {
+    const workbook = fileContext?.workbook || null;
+    const workbookName = String(workbook?.name || '').trim();
+    const workbookPath = String(workbook?.path || '').trim();
+    const workbookKey = String(workbook?.key || workbookPath || workbookName).trim();
+    const moduleId = String(fileContext?.moduleId || fileContext?.module?.id || '').trim();
+    const moduleName = String(fileContext?.moduleName || fileContext?.module?.name || '').trim();
+
+    setExplorerContext(
+      workbookKey || moduleId || moduleName
+        ? {
+            workbook: {
+              name: workbookName,
+              path: workbookPath,
+              key: workbookKey
+            },
+            initialModuleId: moduleId,
+            initialModuleName: moduleName
+          }
+        : null
+    );
     setMode('explorer');
   }, []);
 
   const goToBuild = useCallback(() => setMode('build'), []);
-  const goToSearch = useCallback(() => setMode('search'), []);
+  const goToSearch = useCallback(() => {
+    setExplorerContext(null);
+    setMode('search');
+  }, []);
   const goToEdit = useCallback(() => setMode('edit'), []);
   const toggleSettings = useCallback(() => setSettingsOpen((prev) => !prev), []);
   const closeSettings = useCallback(() => setSettingsOpen(false), []);
+  const handleExplorerContextConsumed = useCallback(() => {}, []);
 
   // Render current mode content
   const renderContent = () => {
@@ -215,6 +238,8 @@ function App() {
             onClose={handleClose}
             searchData={searchData}
             shortcutByMacroId={shortcutByMacroId}
+            explorerContext={explorerContext}
+            onExplorerContextConsumed={handleExplorerContextConsumed}
           />
         );
 

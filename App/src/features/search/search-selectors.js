@@ -2,8 +2,50 @@ function toQuery(value) {
   return String(value || '').toLowerCase().trim();
 }
 
+const SEARCH_STATUS_COPY = {
+  idle: {
+    title: 'Loading workbook data',
+    message: 'Connecting to the active Excel workbook.'
+  },
+  loading: {
+    title: 'Loading workbook data',
+    message: 'Refreshing modules and macros from Excel.'
+  },
+  no_excel: {
+    title: 'Excel is not running',
+    message: 'Open Excel. MacroFlow will retry automatically.'
+  },
+  no_workbook: {
+    title: 'No active workbook',
+    message: 'Open or create a workbook. MacroFlow will retry automatically.'
+  },
+  multi_instance: {
+    title: 'Multiple Excel instances detected',
+    message: 'Click on your Excel workbook, then come back. MacroFlow will reconnect automatically.'
+  },
+  error: {
+    title: 'Could not load workbook data',
+    message: 'Something went wrong while reading workbook data. Retrying automatically.'
+  }
+};
+
 function toWorkbookName(value) {
   return String(value || '').trim().toUpperCase();
+}
+
+export function getSearchStatusView(searchData) {
+  const status = String(searchData?.status || 'idle');
+  const config = SEARCH_STATUS_COPY[status] || SEARCH_STATUS_COPY.error;
+  const message = status === 'error' && searchData?.error?.message
+    ? String(searchData.error.message)
+    : config.message;
+
+  return {
+    status,
+    title: config.title,
+    message,
+    isLoading: status === 'idle' || status === 'loading'
+  };
 }
 
 export function filterModulesByQuery(modules, query) {
@@ -15,6 +57,10 @@ export function filterModulesByQuery(modules, query) {
       .toLowerCase();
     return haystack.includes(normalizedQuery);
   });
+}
+
+export function selectAllFilesModules(modules, query) {
+  return filterModulesByQuery(modules, query);
 }
 
 export function filterMacrosByQuery(macros, query, shortcutByMacroId = {}) {
@@ -99,4 +145,3 @@ export function selectPersonalGlobalSectionModel({
     emptyMessage
   };
 }
-

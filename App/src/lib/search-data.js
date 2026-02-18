@@ -135,7 +135,15 @@ export function mapSearchError(message) {
     return {
       status: 'no_excel',
       code: 'NO_EXCEL',
-      message: 'Excel is not running. Open Excel, then select Refresh.'
+      message: 'Excel is not running. Open Excel and MacroFlow will retry automatically.'
+    };
+  }
+
+  if (normalizedMessage.includes('MULTI_INSTANCE')) {
+    return {
+      status: 'multi_instance',
+      code: 'MULTI_INSTANCE',
+      message: 'Multiple Excel processes detected. Click on your workbook, then return here.'
     };
   }
 
@@ -143,7 +151,7 @@ export function mapSearchError(message) {
     return {
       status: 'no_workbook',
       code: 'NO_WORKBOOK',
-      message: 'Excel is open but no workbook is active. Open or create a workbook, then select Refresh.'
+      message: 'Excel is open but no workbook is active. Open or create a workbook and MacroFlow will retry automatically.'
     };
   }
 

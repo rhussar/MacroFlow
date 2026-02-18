@@ -16,7 +16,9 @@ import {
   countTreeItems,
   getDefaultExpandedIds,
 } from '../features/search/explorer-selectors';
+import { getSearchStatusView } from '../features/search/search-selectors';
 import { usePersonalMacros } from '../features/search/usePersonalMacros';
+import { resolveInitialModuleNode, useExplorerWorkbookData } from '../features/search/useExplorerWorkbookData';
 
 const defaultSearchData = {
   status: 'idle',
@@ -26,47 +28,27 @@ const defaultSearchData = {
   error: null,
 };
 
-const statusConfig = {
-  idle: {
-    title: 'Loading workbook data',
-    message: 'Connecting to the active Excel workbook.',
-  },
-  loading: {
-    title: 'Loading workbook data',
-    message: 'Refreshing modules and macros from Excel.',
-  },
-  no_excel: {
-    title: 'Excel is not running',
-    message: 'Open Excel. MacroFlow will retry automatically.',
-  },
-  no_workbook: {
-    title: 'No active workbook',
-    message: 'Open or create a workbook. MacroFlow will retry automatically.',
-  },
-  error: {
-    title: 'Could not load workbook data',
-    message: 'Something went wrong while reading workbook data. Retrying automatically.',
-  },
-};
-
 const FileExplorer = ({
   onBack,
   onClose,
   searchData = defaultSearchData,
   shortcutByMacroId = {},
+  explorerContext = null,
+  onExplorerContextConsumed
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedNode, setSelectedNode] = useState(null);
   const [expandedIds, setExpandedIds] = useState(new Set());
   const hasInitializedRef = useRef(false);
-
-  const status = searchData.status || 'idle';
-  const personalState = usePersonalMacros(searchData);
+  const consumedContextRef = useRef('');
+  const resolvedSearchData = useExplorerWorkbookData(searchData, explorerContext);
+  const status = resolvedSearchData?.status || 'idle';
+  const personalState = usePersonalMacros(resolvedSearchData);
 
   // Build the full tree
   const tree = useMemo(
-    () => buildExplorerTree(searchData, personalState),
-    [searchData, personalState]
+    () => buildExplorerTree(resolvedSearchData, personalState),
+    [resolvedSearchData, personalState]
   );
 
   // Initialize expand state when tree first becomes available
@@ -80,7 +62,51 @@ const FileExplorer = ({
   // Reset init flag when workbook changes
   useEffect(() => {
     hasInitializedRef.current = false;
-  }, [searchData.workbook?.path, searchData.workbook?.name]);
+  }, [resolvedSearchData?.workbook?.path, resolvedSearchData?.workbook?.name]);
+
+  useEffect(() => {
+    const workbookKey = String(explorerContext?.workbook?.key || explorerContext?.workbook?.path || explorerContext?.workbook?.name || '').trim();
+    const moduleId = String(explorerContext?.initialModuleId || '').trim();
+    const moduleName = String(explorerContext?.initialModuleName || '').trim();
+    const contextSignature = `${workbookKey}::${moduleId}::${moduleName}`;
+    if (!workbookKey || consumedContextRef.current === contextSignature || tree.length === 0 || status !== 'ready') {
+      return;
+    }
+
+    const targetNode = resolveInitialModuleNode(tree, {
+      moduleId,
+      moduleName
+    });
+
+    const findFirstNodeByType = (nodes, nodeType) => {
+      for (const node of nodes) {
+        if (node?.nodeType === nodeType) {
+          return node;
+        }
+        if (Array.isArray(node?.children) && node.children.length > 0) {
+          const childMatch = findFirstNodeByType(node.children, nodeType);
+          if (childMatch) {
+            return childMatch;
+          }
+        }
+      }
+      return null;
+    };
+
+    const fallbackNode = findFirstNodeByType(tree, 'module') || findFirstNodeByType(tree, 'macro') || null;
+    setSelectedNode(targetNode || fallbackNode || null);
+    consumedContextRef.current = contextSignature;
+    onExplorerContextConsumed?.();
+  }, [
+    explorerContext?.initialModuleId,
+    explorerContext?.initialModuleName,
+    explorerContext?.workbook?.key,
+    explorerContext?.workbook?.name,
+    explorerContext?.workbook?.path,
+    onExplorerContextConsumed,
+    status,
+    tree
+  ]);
 
   // Filter tree by search query
   const { filteredTree, matchedIds } = useMemo(
@@ -126,19 +152,15 @@ const FileExplorer = ({
   // --- Render helpers ---
 
   const renderNonReadyState = () => {
-    const config = statusConfig[status] || statusConfig.error;
-    const message = status === 'error' && searchData.error?.message
-      ? searchData.error.message
-      : config.message;
-    const isLoadingState = status === 'idle' || status === 'loading';
+    const statusView = getSearchStatusView(resolvedSearchData);
 
     return (
-      <div className={`search-status-panel search-status-${status}`}>
+      <div className={`search-status-panel search-status-${statusView.status}`}>
         <div className="search-status-header">
-          {isLoadingState && <span className="status-spinner" />}
-          <span className="search-status-title">{config.title}</span>
+          {statusView.isLoading && <span className="status-spinner" />}
+          <span className="search-status-title">{statusView.title}</span>
         </div>
-        <p className="search-status-message">{message}</p>
+        <p className="search-status-message">{statusView.message}</p>
       </div>
     );
   };

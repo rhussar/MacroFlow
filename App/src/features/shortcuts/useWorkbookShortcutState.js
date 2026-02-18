@@ -39,6 +39,7 @@ export function useWorkbookShortcutState({
   const shortcutLoadErrorRef = useRef('');
 
   const workbookName = String(workbook?.name || '').trim();
+  const workbookPath = String(workbook?.path || '').trim();
   const macrosList = Array.isArray(macros) ? macros : [];
 
   const resetShortcutState = useCallback(() => {
@@ -59,7 +60,10 @@ export function useWorkbookShortcutState({
       return;
     }
 
-    const snapshotKey = buildWorkbookShortcutSnapshotKey(workbook, macrosList);
+    const snapshotKey = buildWorkbookShortcutSnapshotKey(
+      { name: workbookName, path: workbookPath },
+      macrosList
+    );
     const snapshotUnchanged = snapshotKey === shortcutSnapshotRef.current;
     const snapshotAgeMs = Date.now() - shortcutSnapshotTimestampRef.current;
     const snapshotStillFresh = snapshotAgeMs < SHORTCUT_REFRESH_TTL_MS;
@@ -86,7 +90,7 @@ export function useWorkbookShortcutState({
     const requestId = ++shortcutAuditRequestSequence.current;
 
     try {
-      const result = await auditApi({ workbookName });
+      const result = await auditApi({ workbookName, workbookPath });
       if (requestId !== shortcutAuditRequestSequence.current) {
         return;
       }
@@ -148,7 +152,7 @@ export function useWorkbookShortcutState({
     } finally {
       shortcutAuditInFlight.current = false;
     }
-  }, [enabled, macrosList, resetShortcutState, setActionStatus, workbook, workbookName]);
+  }, [enabled, macrosList, resetShortcutState, setActionStatus, workbookName, workbookPath]);
 
   useEffect(() => {
     if (!enabled || !workbookName) {
@@ -258,11 +262,12 @@ export function useWorkbookShortcutState({
         return;
       }
 
-      const result = await setShortcutApi({
-        workbookName,
-        macroName,
-        shortcutKey: excelShortcutKey
-      });
+        const result = await setShortcutApi({
+          workbookName,
+          workbookPath,
+          macroName,
+          shortcutKey: excelShortcutKey
+        });
 
       if (result?.workbookFound === false) {
         setActionStatus?.('error', result?.message || `Workbook "${workbookName}" is not open.`);
@@ -303,7 +308,7 @@ export function useWorkbookShortcutState({
       }
       setShortcutSavingMacroId(null);
     }
-  }, [enabled, loadMacroShortcuts, setActionStatus, shortcutSaveInFlightRef, workbookName]);
+  }, [enabled, loadMacroShortcuts, setActionStatus, shortcutSaveInFlightRef, workbookName, workbookPath]);
 
   return {
     shortcutByMacroId,

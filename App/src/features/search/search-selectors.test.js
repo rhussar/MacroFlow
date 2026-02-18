@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   buildMacroRowUiModel,
+  getSearchStatusView,
+  selectAllFilesModules,
   selectActiveWorkbookMacros,
   selectPersonalGlobalMacros,
   selectPersonalGlobalSectionModel
@@ -78,3 +80,32 @@ test('selectPersonalGlobalSectionModel hides section when active workbook is PER
   assert.equal(section.isEmpty, false);
 });
 
+test('getSearchStatusView returns loading state metadata', () => {
+  const statusView = getSearchStatusView({ status: 'loading' });
+  assert.equal(statusView.status, 'loading');
+  assert.equal(statusView.title, 'Loading workbook data');
+  assert.equal(statusView.isLoading, true);
+});
+
+test('getSearchStatusView uses backend error override when present', () => {
+  const statusView = getSearchStatusView({
+    status: 'error',
+    error: { message: 'VBA project access denied.' }
+  });
+  assert.equal(statusView.status, 'error');
+  assert.equal(statusView.message, 'VBA project access denied.');
+  assert.equal(statusView.isLoading, false);
+});
+
+test('selectAllFilesModules filters modules by module name and workbook name', () => {
+  const rows = selectAllFilesModules(
+    [
+      { id: 'm1', name: 'ModuleA', workbookName: 'ClientA.xlsm' },
+      { id: 'm2', name: 'ModuleB', workbookName: 'ClientB.xlsm' }
+    ],
+    'clienta'
+  );
+
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].id, 'm1');
+});

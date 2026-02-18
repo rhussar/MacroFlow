@@ -15,10 +15,23 @@ const INITIAL_SELECTED_WORKBOOK_DATA = {
   error: null
 };
 
+const INITIAL_ALL_FILES_DATA = {
+  status: 'idle',
+  modules: [],
+  error: null
+};
+
 export function getWorkbookKey(workbook) {
   const name = String(workbook?.name || '').trim();
   const path = String(workbook?.path || '').trim();
   return path || name || '';
+}
+
+function toWorkbookRequest(workbook) {
+  return {
+    workbookName: String(workbook?.name || '').trim(),
+    workbookPath: String(workbook?.path || '').trim()
+  };
 }
 
 function toWorkbookModel(workbook) {
@@ -120,12 +133,54 @@ export function namespaceMacrosForWorkbook(macros, workbook) {
   });
 }
 
+export function sortAllFilesModules(modules, activeWorkbookKey = '') {
+  const source = Array.isArray(modules) ? modules.filter(Boolean) : [];
+  const activeKey = String(activeWorkbookKey || '').trim();
+  const activeRows = [];
+  const nonActiveRows = [];
+
+  source.forEach((moduleItem) => {
+    const workbookKey = getWorkbookKey({
+      name: moduleItem?.workbookName,
+      path: moduleItem?.workbookPath
+    });
+    if (activeKey && workbookKey === activeKey) {
+      activeRows.push(moduleItem);
+      return;
+    }
+    nonActiveRows.push(moduleItem);
+  });
+
+  const compareByName = (a, b) => {
+    const aName = String(a?.name || '');
+    const bName = String(b?.name || '');
+    return aName.localeCompare(bName, undefined, { sensitivity: 'base' });
+  };
+
+  activeRows.sort(compareByName);
+  nonActiveRows.sort((a, b) => {
+    const workbookCompare = String(a?.workbookName || '').localeCompare(
+      String(b?.workbookName || ''),
+      undefined,
+      { sensitivity: 'base' }
+    );
+    if (workbookCompare !== 0) {
+      return workbookCompare;
+    }
+    return compareByName(a, b);
+  });
+
+  return [...activeRows, ...nonActiveRows];
+}
+
 export function useWorkbookPickerData(searchData) {
   const [pickerState, setPickerState] = useState(INITIAL_PICKER_STATE);
   const [selectedWorkbookKey, setSelectedWorkbookKey] = useState('');
   const [selectedWorkbookData, setSelectedWorkbookData] = useState(INITIAL_SELECTED_WORKBOOK_DATA);
+  const [allFilesData, setAllFilesData] = useState(INITIAL_ALL_FILES_DATA);
   const listRequestSequence = useRef(0);
   const workbookDataRequestSequence = useRef(0);
+  const allFilesRequestSequence = useRef(0);
 
   const activeWorkbook = useMemo(
     () => toWorkbookModel(searchData?.workbook),
@@ -214,9 +269,11 @@ export function useWorkbookPickerData(searchData) {
     if (searchData?.status !== 'ready') {
       listRequestSequence.current += 1;
       workbookDataRequestSequence.current += 1;
+      allFilesRequestSequence.current += 1;
       setPickerState(INITIAL_PICKER_STATE);
       setSelectedWorkbookKey('');
       setSelectedWorkbookData(INITIAL_SELECTED_WORKBOOK_DATA);
+      setAllFilesData(INITIAL_ALL_FILES_DATA);
       return;
     }
 
@@ -256,14 +313,31 @@ export function useWorkbookPickerData(searchData) {
       return;
     }
 
-    if (isSelectedActiveWorkbook) {
-      setSelectedWorkbookData({
-        status: 'ready',
-        workbook: activeWorkbook,
-        modules: Array.isArray(searchData?.modules) ? searchData.modules : [],
-        macros: Array.isArray(searchData?.macros) ? searchData.macros : [],
-        error: null
-      });
+    if (!isSelectedActiveWorkbook) {
+      return;
+    }
+
+    setSelectedWorkbookData({
+      status: 'ready',
+      workbook: activeWorkbook,
+      modules: Array.isArray(searchData?.modules) ? searchData.modules : [],
+      macros: Array.isArray(searchData?.macros) ? searchData.macros : [],
+      error: null
+    });
+  }, [
+    activeWorkbook,
+    isSelectedActiveWorkbook,
+    searchData?.macros,
+    searchData?.modules,
+    searchData?.status,
+    selectedWorkbook
+  ]);
+
+  useEffect(() => {
+    if (searchData?.status !== 'ready') {
+      return;
+    }
+    if (!selectedWorkbook || isSelectedActiveWorkbook) {
       return;
     }
 
@@ -291,9 +365,10 @@ export function useWorkbookPickerData(searchData) {
 
     (async () => {
       try {
+        const workbookRequest = toWorkbookRequest(selectedWorkbook);
         const [modulesResult, proceduresResult] = await Promise.all([
-          modulesByWorkbookApi({ workbookName: selectedWorkbook.name }),
-          proceduresByWorkbookApi({ workbookName: selectedWorkbook.name })
+          modulesByWorkbookApi(workbookRequest),
+          proceduresByWorkbookApi(workbookRequest)
         ]);
         if (cancelled || requestId !== workbookDataRequestSequence.current) {
           return;
@@ -364,13 +439,132 @@ export function useWorkbookPickerData(searchData) {
       cancelled = true;
     };
   }, [
-    activeWorkbook,
     isSelectedActiveWorkbook,
     refreshWorkbooks,
-    searchData?.macros,
-    searchData?.modules,
     searchData?.status,
-    selectedWorkbook
+    selectedWorkbook?.key,
+    selectedWorkbook?.name,
+    selectedWorkbook?.path
+  ]);
+
+  useEffect(() => {
+    if (searchData?.status !== 'ready') {
+      return;
+    }
+
+    const modulesByWorkbookApi = window.excel?.vba?.modulesByWorkbook;
+    if (!modulesByWorkbookApi) {
+      const activeModules = Array.isArray(searchData?.modules) ? searchData.modules : [];
+      setAllFilesData({
+        status: activeModules.length > 0 ? 'ready' : 'error',
+        modules: sortAllFilesModules(activeModules, activeWorkbookKey),
+        error: activeModules.length > 0 ? null : { message: 'Workbook-scoped module API is unavailable.' }
+      });
+      return;
+    }
+
+    const activeModules = Array.isArray(searchData?.modules) ? searchData.modules : [];
+    const workbookRows = Array.isArray(pickerState.workbooks) ? pickerState.workbooks : [];
+    const nonActiveWorkbooks = workbookRows.filter((workbook) => workbook?.key && workbook.key !== activeWorkbookKey);
+
+    let cancelled = false;
+    const requestId = ++allFilesRequestSequence.current;
+    setAllFilesData((previous) => ({
+      status: 'loading',
+      modules: previous.modules,
+      error: null
+    }));
+
+    (async () => {
+      try {
+        const moduleMap = new Map();
+        activeModules.forEach((moduleItem) => {
+          if (moduleItem?.id) {
+            moduleMap.set(moduleItem.id, moduleItem);
+          }
+        });
+
+        let shouldRefreshWorkbooks = false;
+        const failures = [];
+        const results = await Promise.all(
+          nonActiveWorkbooks.map(async (workbook) => {
+            const workbookRequest = toWorkbookRequest(workbook);
+            try {
+              const result = await modulesByWorkbookApi(workbookRequest);
+              return { workbook, result, error: null };
+            } catch (error) {
+              return { workbook, result: null, error };
+            }
+          })
+        );
+
+        if (cancelled || requestId !== allFilesRequestSequence.current) {
+          return;
+        }
+
+        results.forEach(({ workbook, result, error }) => {
+          if (error) {
+            failures.push(error?.message ? String(error.message) : `Unable to load modules for ${workbook?.name || 'workbook'}.`);
+            return;
+          }
+          if (!result?.success) {
+            failures.push(String(result?.message || `Unable to load modules for ${workbook?.name || 'workbook'}.`));
+            return;
+          }
+          if (result?.workbookFound === false) {
+            shouldRefreshWorkbooks = true;
+            return;
+          }
+
+          const workbookInfo = toWorkbookModel(result?.workbook || workbook) || workbook;
+          const normalizedWorkbook = {
+            name: workbookInfo?.name || '',
+            path: workbookInfo?.path || ''
+          };
+          const normalizedModules = normalizeModules(result?.modules, normalizedWorkbook);
+          normalizedModules.forEach((moduleItem) => {
+            if (moduleItem?.id) {
+              moduleMap.set(moduleItem.id, moduleItem);
+            }
+          });
+        });
+
+        const mergedModules = sortAllFilesModules(Array.from(moduleMap.values()), activeWorkbookKey);
+        const isError = mergedModules.length === 0 && failures.length > 0;
+        setAllFilesData({
+          status: isError ? 'error' : 'ready',
+          modules: mergedModules,
+          error: isError
+            ? { message: failures.join(' | ') || 'Unable to load modules from open workbooks.' }
+            : null
+        });
+
+        if (shouldRefreshWorkbooks) {
+          await refreshWorkbooks({ silent: true });
+        }
+      } catch (error) {
+        if (cancelled || requestId !== allFilesRequestSequence.current) {
+          return;
+        }
+        const fallbackModules = sortAllFilesModules(activeModules, activeWorkbookKey);
+        const message = error?.message ? String(error.message) : 'Unable to load modules from open workbooks.';
+        setAllFilesData({
+          status: fallbackModules.length > 0 ? 'ready' : 'error',
+          modules: fallbackModules,
+          error: fallbackModules.length > 0 ? null : { message }
+        });
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    activeWorkbookKey,
+    pickerState.workbooks,
+    refreshWorkbooks,
+    searchData?.modules,
+    searchData?.status
   ]);
 
   const handleSelectedWorkbookChange = useCallback((nextWorkbookKey) => {
@@ -386,6 +580,7 @@ export function useWorkbookPickerData(searchData) {
     setSelectedWorkbookKey: handleSelectedWorkbookChange,
     refreshWorkbooks,
     selectedWorkbookData,
-    isSelectedActiveWorkbook
+    isSelectedActiveWorkbook,
+    allFilesData
   };
 }

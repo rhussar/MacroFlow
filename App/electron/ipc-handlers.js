@@ -213,10 +213,10 @@ function registerHandlers() {
    * Channel: 'vba:modules:by-workbook'
    * Args: { workbookName: string }
    */
-  ipcMain.handle('vba:modules:by-workbook', (_, { workbookName } = {}) => {
-    logIpc('vba:modules:by-workbook', 'start', { workbookName });
+  ipcMain.handle('vba:modules:by-workbook', (_, { workbookName, workbookPath } = {}) => {
+    logIpc('vba:modules:by-workbook', 'start', { workbookName, workbookPath });
 
-    const result = excel.listModulesByWorkbookName(workbookName);
+    const result = excel.listModulesByWorkbookName(workbookName, { workbookPath });
 
     logIpc('vba:modules:by-workbook', 'end', {
       success: result.success,
@@ -245,10 +245,10 @@ function registerHandlers() {
    * Channel: 'vba:procedures:by-workbook'
    * Args: { workbookName: string }
    */
-  ipcMain.handle('vba:procedures:by-workbook', (_, { workbookName } = {}) => {
-    logIpc('vba:procedures:by-workbook', 'start', { workbookName });
+  ipcMain.handle('vba:procedures:by-workbook', (_, { workbookName, workbookPath } = {}) => {
+    logIpc('vba:procedures:by-workbook', 'start', { workbookName, workbookPath });
 
-    const result = excel.listProceduresByWorkbookName(workbookName);
+    const result = excel.listProceduresByWorkbookName(workbookName, { workbookPath });
 
     logIpc('vba:procedures:by-workbook', 'end', {
       success: result.success,
@@ -277,10 +277,12 @@ function registerHandlers() {
    * Channel: 'vba:shortcut:set:by-workbook'
    * Args: { workbookName: string, macroName: string, shortcutKey: string }
    */
-  ipcMain.handle('vba:shortcut:set:by-workbook', async (_, { workbookName, macroName, shortcutKey } = {}) => {
-    logIpc('vba:shortcut:set:by-workbook', 'start', { workbookName, macroName, shortcutKey });
+  ipcMain.handle('vba:shortcut:set:by-workbook', async (_, { workbookName, workbookPath, macroName, shortcutKey } = {}) => {
+    logIpc('vba:shortcut:set:by-workbook', 'start', { workbookName, workbookPath, macroName, shortcutKey });
 
-    const result = await withExcelFocus(() => excel.setMacroShortcutByWorkbookName(workbookName, macroName, shortcutKey));
+    const result = await withExcelFocus(
+      () => excel.setMacroShortcutByWorkbookName(workbookName, macroName, shortcutKey, { workbookPath })
+    );
 
     logIpc('vba:shortcut:set:by-workbook', 'end', {
       success: result.success,
@@ -308,10 +310,10 @@ function registerHandlers() {
    * Channel: 'vba:shortcut:audit:by-workbook'
    * Args: { workbookName: string }
    */
-  ipcMain.handle('vba:shortcut:audit:by-workbook', (_, { workbookName } = {}) => {
-    logIpc('vba:shortcut:audit:by-workbook', 'start', { workbookName });
+  ipcMain.handle('vba:shortcut:audit:by-workbook', (_, { workbookName, workbookPath } = {}) => {
+    logIpc('vba:shortcut:audit:by-workbook', 'start', { workbookName, workbookPath });
 
-    const result = excel.auditShortcutsByWorkbookName(workbookName);
+    const result = excel.auditShortcutsByWorkbookName(workbookName, { workbookPath });
 
     logIpc('vba:shortcut:audit:by-workbook', 'end', {
       success: result.success,
@@ -430,6 +432,100 @@ function registerHandlers() {
     logIpc('workbook:metadata:closed', 'start', { path: args?.path });
     const result = excel.getClosedWorkbookMetadata(args);
     logIpc('workbook:metadata:closed', 'end', { success: result.success });
+    return result;
+  });
+
+  // ==========================================================================
+  // MULTI-INSTANCE RESOLUTION
+  // ==========================================================================
+
+  /**
+   * Attempt to silently resolve the correct Excel instance.
+   * Uses the C# helper's AccessibleObjectFromWindow to find the instance
+   * with user workbooks and SetForegroundWindow it so the next COM call connects correctly.
+   * Falls through gracefully if the helper is unavailable.
+   * Channel: 'excel:resolveInstance'
+   */
+  ipcMain.handle('excel:resolveInstance', async () => {
+    logIpc('excel:resolveInstance', 'start');
+
+    // Step 1: Check if we're already connected to the right instance
+    const currentInfo = excel.getWorkbookInfo();
+    if (currentInfo.success) {
+      logIpc('excel:resolveInstance', 'end', { resolved: true, reason: 'already-connected' });
+      return { resolved: true, reason: 'already-connected' };
+    }
+
+    // If the error isn't a workbook-not-found type, there's a different problem
+    const msg = String(currentInfo.message || '').toUpperCase();
+    if (!msg.includes('NO_WORKBOOK') && !msg.includes('MULTI_INSTANCE')) {
+      logIpc('excel:resolveInstance', 'end', { resolved: false, reason: 'different-error', message: currentInfo.message });
+      return { resolved: false, reason: 'different-error', message: currentInfo.message };
+    }
+
+    // Step 2: Ask the C# helper to find and activate the correct Excel instance
+    const helper = excel._focusHelper;
+    if (!helper || typeof helper.findExcelWithWorkbooks !== 'function') {
+      logIpc('excel:resolveInstance', 'end', { resolved: false, reason: 'helper-unavailable' });
+      return { resolved: false, reason: 'helper-unavailable' };
+    }
+
+    let helperResult;
+    try {
+      helperResult = await helper.findExcelWithWorkbooks(3000);
+    } catch (error) {
+      logIpc('excel:resolveInstance', 'end', { resolved: false, reason: 'helper-error', error: error.message });
+      return { resolved: false, reason: 'helper-error' };
+    }
+
+    if (!helperResult || !helperResult.found) {
+      logIpc('excel:resolveInstance', 'end', { resolved: false, reason: 'no-qualifying-instance' });
+      return { resolved: false, reason: 'no-qualifying-instance' };
+    }
+
+    // If SetForegroundWindow failed, the ROT won't update — skip poll-retry
+    if (!helperResult.activated) {
+      logIpc('excel:resolveInstance', 'end', {
+        resolved: false,
+        reason: 'activation-failed',
+        pid: helperResult.pid
+      });
+      return { resolved: false, reason: 'activation-failed' };
+    }
+
+    // Step 3: Poll-retry — the ROT update from SetForegroundWindow can take variable time
+    const MAX_RETRIES = 3;
+    const RETRY_DELAY_MS = 150;
+
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS));
+      excel.clearComCache();
+      const retryInfo = excel.getWorkbookInfo();
+      if (retryInfo.success) {
+        logIpc('excel:resolveInstance', 'end', {
+          resolved: true,
+          reason: 'helper-resolved',
+          attempt,
+          pid: helperResult.pid
+        });
+        return { resolved: true, reason: 'helper-resolved', attempt };
+      }
+    }
+
+    logIpc('excel:resolveInstance', 'end', { resolved: false, reason: 'poll-exhausted' });
+    return { resolved: false, reason: 'poll-exhausted' };
+  });
+
+  /**
+   * Clear COM cache and retry connection.
+   * Used for manual/auto reconnect after user focuses the correct Excel window.
+   * Channel: 'excel:reconnect'
+   */
+  ipcMain.handle('excel:reconnect', () => {
+    logIpc('excel:reconnect', 'start');
+    excel.clearComCache();
+    const result = excel.getWorkbookInfo();
+    logIpc('excel:reconnect', 'end', { success: result.success });
     return result;
   });
 

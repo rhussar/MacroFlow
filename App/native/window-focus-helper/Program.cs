@@ -18,6 +18,8 @@ internal static class Program
   private const int OBJID_WINDOW = 0;
   private const uint GA_ROOT = 2;
   private const uint GA_ROOTOWNER = 3;
+  private const uint OBJID_NATIVEOM = 0xFFFFFFF0;
+  private static readonly Guid IID_IDispatch = new("00020400-0000-0000-C000-000000000046");
 
   private const int FOREGROUND_DEBOUNCE_MS = 40;
   private const int EXCEL_INACTIVE_DEBOUNCE_MS = 140;
@@ -151,6 +153,9 @@ internal static class Program
           case "ping":
             Emit(new { type = "pong" });
             break;
+          case "findExcelWithWorkbooks":
+            HandleFindExcelWithWorkbooks();
+            break;
         }
       }
     }
@@ -232,6 +237,152 @@ internal static class Program
     }
 
     return IntPtr.Zero;
+  }
+
+  // -----------------------------------------------------------------------
+  // Multi-instance Excel resolution
+  // -----------------------------------------------------------------------
+
+  private static IntPtr FindExcel7Child(IntPtr parentHwnd)
+  {
+    IntPtr found = IntPtr.Zero;
+    var className = new System.Text.StringBuilder(256);
+
+    EnumChildProc callback = (childHwnd, _) =>
+    {
+      className.Clear();
+      if (GetClassName(childHwnd, className, className.Capacity) > 0)
+      {
+        if (string.Equals(className.ToString(), "EXCEL7", StringComparison.OrdinalIgnoreCase))
+        {
+          found = childHwnd;
+          return false; // stop enumeration
+        }
+      }
+      return true; // continue
+    };
+
+    EnumChildWindows(parentHwnd, callback, IntPtr.Zero);
+    return found;
+  }
+
+  private static void HandleFindExcelWithWorkbooks()
+  {
+    try
+    {
+      var processes = Process.GetProcessesByName("EXCEL");
+      IntPtr bestHwnd = IntPtr.Zero;
+      int bestPid = 0;
+      int bestWorkbookCount = 0;
+
+      try
+      {
+        foreach (var proc in processes)
+        {
+          try
+          {
+            var mainHwnd = proc.MainWindowHandle;
+            if (mainHwnd == IntPtr.Zero || !IsWindow(mainHwnd))
+              continue;
+
+            var excel7Hwnd = FindExcel7Child(mainHwnd);
+            if (excel7Hwnd == IntPtr.Zero)
+              continue;
+
+            var iid = IID_IDispatch;
+            int hr = AccessibleObjectFromWindow(excel7Hwnd, OBJID_NATIVEOM, ref iid, out object? window);
+            if (hr != 0 || window == null)
+              continue;
+
+            object? appObj = null;
+            object? workbooksObj = null;
+            try
+            {
+              dynamic excelWindow = window;
+              appObj = excelWindow.Application;
+              dynamic app = appObj;
+              workbooksObj = app.Workbooks;
+              dynamic workbooks = workbooksObj;
+              int totalCount = (int)workbooks.Count;
+              int userCount = 0;
+
+              for (int i = 1; i <= totalCount; i++)
+              {
+                object? wbObj = null;
+                try
+                {
+                  wbObj = workbooks[i];
+                  dynamic wb = wbObj;
+                  bool isAddin = false;
+                  bool isReadOnly = false;
+                  bool hasVBProject = false;
+
+                  try { isAddin = (bool)wb.IsAddin; } catch { }
+                  try { isReadOnly = (bool)wb.ReadOnly; } catch { }
+                  try { hasVBProject = wb.VBProject != null; } catch { }
+
+                  // Qualifies if not an add-in AND (not read-only OR has VBA project)
+                  if (!isAddin && (!isReadOnly || hasVBProject))
+                    userCount++;
+                }
+                catch
+                {
+                  // Skip workbooks that fail to query.
+                }
+                finally
+                {
+                  if (wbObj != null) try { Marshal.ReleaseComObject(wbObj); } catch { }
+                }
+              }
+
+              if (userCount > bestWorkbookCount)
+              {
+                bestWorkbookCount = userCount;
+                bestHwnd = mainHwnd;
+                bestPid = proc.Id;
+              }
+            }
+            finally
+            {
+              if (workbooksObj != null) try { Marshal.ReleaseComObject(workbooksObj); } catch { }
+              if (appObj != null) try { Marshal.ReleaseComObject(appObj); } catch { }
+              Marshal.ReleaseComObject(window);
+            }
+          }
+          catch
+          {
+            // Skip processes that fail; continue to next.
+          }
+        }
+      }
+      finally
+      {
+        foreach (var proc in processes)
+          proc.Dispose();
+      }
+
+      if (bestWorkbookCount > 0 && bestHwnd != IntPtr.Zero)
+      {
+        bool activated = SetForegroundWindow(bestHwnd);
+        Emit(new
+        {
+          type = "excelResolved",
+          found = true,
+          pid = bestPid,
+          hwnd = bestHwnd.ToInt64().ToString(),
+          workbookCount = bestWorkbookCount,
+          activated
+        });
+      }
+      else
+      {
+        Emit(new { type = "excelResolved", found = false });
+      }
+    }
+    catch (Exception ex)
+    {
+      Emit(new { type = "excelResolved", found = false, error = ex.Message });
+    }
   }
 
   // -----------------------------------------------------------------------
@@ -869,6 +1020,8 @@ internal static class Program
   // Win32 interop
   // -----------------------------------------------------------------------
 
+  private delegate bool EnumChildProc(IntPtr hwnd, IntPtr lParam);
+
   private delegate void WinEventDelegate(
     IntPtr hWinEventHook,
     uint eventType,
@@ -922,4 +1075,23 @@ internal static class Program
     int cy,
     uint uFlags
   );
+
+  [DllImport("oleacc.dll")]
+  private static extern int AccessibleObjectFromWindow(
+    IntPtr hwnd,
+    uint dwId,
+    ref Guid riid,
+    [MarshalAs(UnmanagedType.IDispatch)] out object? ppvObject
+  );
+
+  [DllImport("user32.dll")]
+  [return: MarshalAs(UnmanagedType.Bool)]
+  private static extern bool SetForegroundWindow(IntPtr hWnd);
+
+  [DllImport("user32.dll")]
+  [return: MarshalAs(UnmanagedType.Bool)]
+  private static extern bool EnumChildWindows(IntPtr hWndParent, EnumChildProc lpEnumFunc, IntPtr lParam);
+
+  [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
+  private static extern int GetClassName(IntPtr hWnd, System.Text.StringBuilder lpClassName, int nMaxCount);
 }

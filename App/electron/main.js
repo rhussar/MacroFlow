@@ -6,6 +6,7 @@ const { promisify } = require('node:util');
 const iconPath = path.join(__dirname, '../assets', process.platform === 'win32' ? 'app-icon.ico' : 'app-icon.png');
 const { registerHandlers } = require('./ipc-handlers');
 const { installExcelAddin } = require('./excel-addin-installer');
+const excel = require('./excel-bridge');
 const logger = require('./logger');
 
 const execFileAsync = promisify(execFile);
@@ -432,6 +433,7 @@ function startExcelWindowMonitor(win) {
     windowFocusHelper.start(targetHwnd);
     if (windowFocusHelper) {
       win.__macroflowHelperManagedTopmost = true;
+      excel.setFocusHelper(windowFocusHelper);
       logger.info('[WindowMonitor] helper monitor started', { hwnd: targetHwnd });
     }
   } catch (error) {
@@ -443,6 +445,8 @@ function startExcelWindowMonitor(win) {
 }
 
 function stopExcelWindowMonitor() {
+  excel.setFocusHelper(null);
+
   if (windowFocusHelper) {
     try {
       windowFocusHelper.stop();

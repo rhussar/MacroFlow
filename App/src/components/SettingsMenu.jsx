@@ -9,12 +9,13 @@ import {
 
 const SettingsMenu = ({ isOpen, onClose, onQuit }) => {
   if (!isOpen) return null;
+  const noAction = () => {};
 
   const menuItems = [
-    { icon: <MailIcon />, label: 'Send Feedback', action: () => console.log('Feedback') },
-    { icon: <DocumentIcon />, label: 'Documentation', action: () => console.log('Docs') },
-    { icon: <MacroFlowLogo size={16} />, label: 'About MacroFlow', action: () => console.log('About') },
-    { icon: <SettingsIcon />, label: 'Settings', action: () => console.log('Settings') },
+    { icon: <MailIcon />, label: 'Send Feedback', action: noAction },
+    { icon: <DocumentIcon />, label: 'Documentation', action: noAction },
+    { icon: <MacroFlowLogo size={16} />, label: 'About MacroFlow', action: noAction },
+    { icon: <SettingsIcon />, label: 'Settings', action: noAction },
     { icon: <ExitIcon />, label: 'Quit MacroFlow', action: onQuit, danger: true },
   ];
 

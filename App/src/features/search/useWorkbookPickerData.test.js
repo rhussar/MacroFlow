@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   getWorkbookKey,
+  sortAllFilesModules,
   sortWorkbooksForPicker,
   resolveSelectedWorkbookKey,
   qualifyMacroFullName,
@@ -70,6 +71,10 @@ test('qualifyMacroFullName adds workbook prefix and quotes workbook names with s
     qualifyMacroFullName('My Model.xlsm', 'Module1.RunReport'),
     '\'My Model.xlsm\'!Module1.RunReport'
   );
+  assert.equal(
+    qualifyMacroFullName("Client'sModel.xlsm", 'Module1.RunReport'),
+    '\'Client\'\'sModel.xlsm\'!Module1.RunReport'
+  );
 });
 
 test('namespaceMacrosForWorkbook namescopes IDs and sets workbook-qualified fullName', () => {
@@ -91,3 +96,16 @@ test('namespaceMacrosForWorkbook namescopes IDs and sets workbook-qualified full
   assert.equal(rows[0].fullName, '\'Workbook One.xlsm\'!Module1.RunA');
 });
 
+test('sortAllFilesModules puts active workbook modules first and sorts remaining by workbook then module', () => {
+  const rows = sortAllFilesModules(
+    [
+      { id: 'z', name: 'Zulu', workbookName: 'ClientB.xlsm', workbookPath: 'C:/ClientB.xlsm' },
+      { id: 'a2', name: 'AlphaTwo', workbookName: 'Active.xlsm', workbookPath: 'C:/Active.xlsm' },
+      { id: 'a1', name: 'AlphaOne', workbookName: 'Active.xlsm', workbookPath: 'C:/Active.xlsm' },
+      { id: 'b1', name: 'Bravo', workbookName: 'ClientA.xlsm', workbookPath: 'C:/ClientA.xlsm' }
+    ],
+    'C:/Active.xlsm'
+  );
+
+  assert.deepEqual(rows.map((row) => row.id), ['a1', 'a2', 'b1', 'z']);
+});

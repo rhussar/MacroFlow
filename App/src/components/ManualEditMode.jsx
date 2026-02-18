@@ -28,6 +28,7 @@ const ManualEditMode = ({ onBack, onClose }) => {
   const [originalCode, setOriginalCode] = useState(mockCode);
   const [editState, setEditState] = useState('saved');
   const [followUp, setFollowUp] = useState('');
+  const handleOpenChat = () => {};
 
   const codeRef = useRef(code);
   const originalCodeRef = useRef(originalCode);
@@ -159,7 +160,7 @@ const ManualEditMode = ({ onBack, onClose }) => {
         <div className="code-preview-header">
           <span className="code-preview-title"></span>
           <div className="code-preview-actions">
-            <button className="code-action-btn" onClick={() => console.log('Open Chat')}>
+            <button className="code-action-btn" onClick={handleOpenChat}>
               ○ Open Chat
             </button>
           </div>

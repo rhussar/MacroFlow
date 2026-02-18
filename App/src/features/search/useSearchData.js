@@ -20,6 +20,7 @@ export function useSearchData({ mode, runState, macroRunInFlightRef, shortcutSav
   const lastFocusRefreshAttemptAt = useRef(0);
   const lastFullSearchRefreshAt = useRef(0);
   const lastWorkbookSignature = useRef('');
+  const resolveInstanceAttempted = useRef(false);
 
   const loadSearchData = useCallback(async ({ silent = false } = {}) => {
     if (searchLoadInFlight.current) {
@@ -61,13 +62,11 @@ export function useSearchData({ mode, runState, macroRunInFlightRef, shortcutSav
         return;
       }
 
-      const fetchStart = performance.now();
       const [workbookResult, modulesResult, proceduresResult] = await Promise.all([
         workbookApi(),
         modulesApi(),
         proceduresApi()
       ]);
-      console.log('[SearchData] fetch completed in %dms', Math.round(performance.now() - fetchStart));
 
       if (requestId !== searchRequestSequence.current) {
         return;
@@ -83,6 +82,24 @@ export function useSearchData({ mode, runState, macroRunInFlightRef, shortcutSav
           .filter(Boolean)
           .join(' | ');
         const mappedError = mapSearchError(failureMessage);
+
+        // One-shot: when multi_instance is first detected, try Solution 1
+        // (C# helper enumerates instances and activates the correct one)
+        if (mappedError.status === 'multi_instance' && !resolveInstanceAttempted.current) {
+          resolveInstanceAttempted.current = true;
+          try {
+            const resolved = await window.excel?.resolveInstance();
+            if (resolved?.resolved) {
+              // Helper found and activated the correct instance — retry immediately
+              searchLoadInFlight.current = false;
+              await loadSearchData({ silent: true });
+              return;
+            }
+          } catch {
+            // Resolution failed — fall through to show multi_instance UI
+          }
+        }
+
         lastWorkbookSignature.current = '';
         setSearchData({
           status: mappedError.status,
@@ -103,6 +120,7 @@ export function useSearchData({ mode, runState, macroRunInFlightRef, shortcutSav
       const macros = normalizeMacros(proceduresResult?.procedures);
       lastWorkbookSignature.current = `${workbook?.path || ''}::${workbook?.name || ''}`;
       lastFullSearchRefreshAt.current = Date.now();
+      resolveInstanceAttempted.current = false;
 
       setSearchData({
         status: 'ready',
@@ -142,6 +160,19 @@ export function useSearchData({ mode, runState, macroRunInFlightRef, shortcutSav
       return;
     }
     lastFocusRefreshAttemptAt.current = now;
+
+    // When in multi_instance state, try Solution 1 (helper resolution) first,
+    // then fall back to reconnect (cache clear) for Solution 2
+    if (searchData.status === 'multi_instance') {
+      try {
+        const resolved = await window.excel?.resolveInstance();
+        if (!resolved?.resolved) {
+          await window.excel?.reconnect();
+        }
+      } catch {
+        try { await window.excel?.reconnect(); } catch { /* non-fatal */ }
+      }
+    }
 
     const workbookApi = window.excel?.workbook?.info;
     if (!workbookApi || workbookPingInFlight.current) {

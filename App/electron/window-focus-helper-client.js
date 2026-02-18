@@ -58,6 +58,8 @@ class WindowFocusHelperClient {
     this.lastPongAt = 0;
     this.unexpectedExitHandled = false;
     this.helperHealthy = false;
+
+    this._pendingExcelResolve = null;
   }
 
   start(targetHwnd) {
@@ -111,6 +113,28 @@ class WindowFocusHelperClient {
         }
       }
     }, STOP_KILL_TIMEOUT_MS);
+  }
+
+  findExcelWithWorkbooks(timeoutMs = 5000) {
+    return new Promise((resolve, reject) => {
+      if (!this.process || this.stopping) {
+        resolve({ found: false, reason: 'helper-not-running' });
+        return;
+      }
+
+      const timer = setTimeout(() => {
+        this._pendingExcelResolve = null;
+        resolve({ found: false, reason: 'timeout' });
+      }, timeoutMs);
+
+      this._pendingExcelResolve = (payload) => {
+        clearTimeout(timer);
+        this._pendingExcelResolve = null;
+        resolve(payload);
+      };
+
+      this.send({ type: 'findExcelWithWorkbooks' });
+    });
   }
 
   launchHelper(reason) {
@@ -351,6 +375,13 @@ class WindowFocusHelperClient {
       if (this.pongTimeout) {
         clearTimeout(this.pongTimeout);
         this.pongTimeout = null;
+      }
+      return;
+    }
+
+    if (payload.type === 'excelResolved') {
+      if (this._pendingExcelResolve) {
+        this._pendingExcelResolve(payload);
       }
       return;
     }

@@ -1,7 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { FolderIcon, ReturnIcon, CloseIcon, ChevronDownIcon, WorkbookIcon } from './icons';
 import {
-  filterModulesByQuery,
+  getSearchStatusView,
+  selectAllFilesModules,
   selectActiveWorkbookMacros,
   selectPersonalGlobalMacros,
   selectPersonalGlobalSectionModel
@@ -17,29 +18,6 @@ const defaultSearchData = {
   modules: [],
   macros: [],
   error: null
-};
-
-const statusConfig = {
-  idle: {
-    title: 'Loading workbook data',
-    message: 'Connecting to the active Excel workbook.'
-  },
-  loading: {
-    title: 'Loading workbook data',
-    message: 'Refreshing modules and macros from Excel.'
-  },
-  no_excel: {
-    title: 'Excel is not running',
-    message: 'Open Excel. MacroFlow will retry automatically.'
-  },
-  no_workbook: {
-    title: 'No active workbook',
-    message: 'Open or create a workbook. MacroFlow will retry automatically.'
-  },
-  error: {
-    title: 'Could not load workbook data',
-    message: 'Something went wrong while reading workbook data. Retrying automatically.'
-  }
 };
 
 const SearchMode = ({
@@ -69,7 +47,6 @@ const SearchMode = ({
   const selectedWorkbookLabel = selectedWorkbook?.name || 'Active Workbook';
 
   const selectedWorkbookData = workbookPickerState.selectedWorkbookData;
-  const selectedWorkbookStatus = selectedWorkbookData.status;
   const selectedWorkbookErrorMessage = selectedWorkbookData.error?.message
     ? String(selectedWorkbookData.error.message)
     : 'Unable to load workbook data.';
@@ -128,8 +105,8 @@ const SearchMode = ({
     : workbookShortcutState.handleShortcutCommit;
 
   const filteredFiles = useMemo(
-    () => filterModulesByQuery(displayedWorkbookData.modules, searchQuery),
-    [displayedWorkbookData.modules, searchQuery]
+    () => selectAllFilesModules(workbookPickerState.allFilesData.modules, searchQuery),
+    [workbookPickerState.allFilesData.modules, searchQuery]
   );
   const activeMacroRows = useMemo(
     () => selectActiveWorkbookMacros(displayedWorkbookData.macros, searchQuery, effectiveShortcutByMacroId),
@@ -199,19 +176,15 @@ const SearchMode = ({
   };
 
   const renderNonReadyState = () => {
-    const config = statusConfig[status] || statusConfig.error;
-    const message = status === 'error' && searchData.error?.message
-      ? searchData.error.message
-      : config.message;
-    const isLoadingState = status === 'idle' || status === 'loading';
+    const statusView = getSearchStatusView(searchData);
 
     return (
-      <div className={`search-status-panel search-status-${status}`}>
+      <div className={`search-status-panel search-status-${statusView.status}`}>
         <div className="search-status-header">
-          {isLoadingState && <span className="status-spinner" />}
-          <span className="search-status-title">{config.title}</span>
+          {statusView.isLoading && <span className="status-spinner" />}
+          <span className="search-status-title">{statusView.title}</span>
         </div>
-        <p className="search-status-message">{message}</p>
+        <p className="search-status-message">{statusView.message}</p>
       </div>
     );
   };
@@ -226,10 +199,13 @@ const SearchMode = ({
       ? selectedWorkbookErrorMessage
       : 'No macros match this search.';
 
-  const modulesEmptyMessage = workbookDataIsLoading
-    ? `Loading modules from ${selectedWorkbookLabel}...`
-    : workbookDataHasError
-      ? selectedWorkbookErrorMessage
+  const allFilesDataIsLoading = workbookPickerState.allFilesData.status === 'loading';
+  const allFilesDataHasError = workbookPickerState.allFilesData.status === 'error';
+  const hasAnyAllFilesModules = workbookPickerState.allFilesData.modules.length > 0;
+  const modulesEmptyMessage = allFilesDataIsLoading && !hasAnyAllFilesModules
+    ? 'Loading modules from open workbooks...'
+    : allFilesDataHasError && !hasAnyAllFilesModules
+      ? (workbookPickerState.allFilesData.error?.message || 'Unable to load modules from open workbooks.')
       : 'No modules match this search.';
 
   const selectedMacroForRowHighlight = usingActiveWorkbookShortcuts ? selectedMacroId : null;
@@ -356,15 +332,25 @@ const SearchMode = ({
         </div>
 
         <div className="file-list">
-          {(workbookDataIsLoading || workbookDataHasError || filteredFiles.length === 0) && (
+          {filteredFiles.length === 0 && (
             <div className="search-empty-state">{modulesEmptyMessage}</div>
           )}
 
-          {workbookDataIsReady && filteredFiles.map((file) => (
+          {status === 'ready' && filteredFiles.map((file) => (
             <div
               key={file.id}
               className="file-item"
-              onClick={() => onFileClick(file)}
+              onClick={() => onFileClick?.({
+                module: file,
+                workbook: {
+                  name: String(file?.workbookName || selectedWorkbook?.name || '').trim(),
+                  path: String(file?.workbookPath || selectedWorkbook?.path || '').trim(),
+                  key: String(file?.workbookPath || file?.workbookName || selectedWorkbook?.key || '').trim()
+                },
+                moduleId: String(file?.id || '').trim(),
+                moduleName: String(file?.name || '').trim(),
+                source: 'all-open-workbooks'
+              })}
             >
               <div className="file-icon">
                 <FolderIcon size={24} />
@@ -375,7 +361,7 @@ const SearchMode = ({
                   {file.workbookName && <span className="file-tag">{file.workbookName}</span>}
                 </span>
               </div>
-              <span className="file-type">{`${file.type} - ${file.lineCount} lines`}</span>
+              <span className="file-type">Macro Folder</span>
             </div>
           ))}
         </div>

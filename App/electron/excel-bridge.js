@@ -91,6 +91,10 @@ class ExcelBridge {
    */
   getVBProject(options = {}) {
     const workbook = this.getActiveWorkbook(options);
+    return this._getVBProjectForWorkbook(workbook);
+  }
+
+  _getVBProjectForWorkbook(workbook) {
     try {
       const vbProject = workbook.VBProject;
       if (!vbProject) {
@@ -123,6 +127,33 @@ class ExcelBridge {
     };
   }
 
+  _findOpenWorkbookByName(excel, workbookName) {
+    const normalizedTarget = String(workbookName || '').trim().toLowerCase();
+    if (!normalizedTarget) {
+      return null;
+    }
+
+    const workbooks = excel?.Workbooks;
+    const count = workbooks ? Number(workbooks.Count) : 0;
+    if (!Number.isFinite(count) || count < 1) {
+      return null;
+    }
+
+    for (let i = 1; i <= count; i++) {
+      const workbook = workbooks.Item(i);
+      if (!workbook) {
+        continue;
+      }
+
+      const candidateName = String(workbook.Name || '').trim().toLowerCase();
+      if (candidateName === normalizedTarget) {
+        return workbook;
+      }
+    }
+
+    return null;
+  }
+
   _findComponentByName(vbProject, name) {
     const components = vbProject.VBComponents;
     for (let i = 1; i <= components.Count; i++) {
@@ -145,31 +176,123 @@ class ExcelBridge {
     return safe;
   }
 
-  _normalizeMacroName(macroName, workbook) {
+  _normalizeMacroNameForWorkbook(macroName, workbook, procedures = []) {
     if (!macroName) {
       return '';
     }
+
     const trimmed = String(macroName).trim();
     if (!trimmed) {
       return '';
     }
+
     if (trimmed.includes('!')) {
       return trimmed;
     }
-    const workbookName = this._qualifyWorkbookName(workbook.Name);
+
+    const workbookName = this._qualifyWorkbookName(workbook?.Name);
+    if (!workbookName) {
+      return trimmed;
+    }
+
     if (trimmed.includes('.')) {
       return `${workbookName}!${trimmed}`;
     }
-    const { procedures } = this._listMacroProcedures();
-    const matches = procedures.filter((proc) => proc.name.toLowerCase() === trimmed.toLowerCase());
+
+    const sourceProcedures = Array.isArray(procedures) ? procedures : [];
+    const matches = sourceProcedures.filter(
+      (proc) => String(proc?.name || '').toLowerCase() === trimmed.toLowerCase()
+    );
     if (matches.length === 1) {
       return `${workbookName}!${matches[0].module}.${matches[0].name}`;
     }
+
     return trimmed;
+  }
+
+  _normalizeMacroName(macroName, workbook) {
+    const { procedures } = this._listMacroProcedures();
+    return this._normalizeMacroNameForWorkbook(macroName, workbook, procedures);
   }
 
   _componentTypeName(typeId) {
     return VBA_COMPONENT_NAME[typeId] || `Unknown (${typeId})`;
+  }
+
+  _listModulesForWorkbook(workbook, vbProject) {
+    const components = vbProject.VBComponents;
+    const modules = [];
+
+    for (let i = 1; i <= components.Count; i++) {
+      const component = components.Item(i);
+      const codeModule = component.CodeModule;
+      const lineCount = codeModule ? codeModule.CountOfLines : 0;
+      modules.push({
+        name: component.Name,
+        typeId: component.Type,
+        type: this._componentTypeName(component.Type),
+        lineCount
+      });
+    }
+
+    return modules;
+  }
+
+  _listProceduresForWorkbook(workbook, vbProject) {
+    const components = vbProject.VBComponents;
+    const workbookKey = this._getWorkbookCacheKey(workbook);
+    const previousModuleEntries =
+      this._proceduresCache && this._proceduresCache.workbookKey === workbookKey
+        ? this._proceduresCache.moduleEntries
+        : {};
+    const nextModuleEntries = {};
+    const procedures = [];
+
+    for (let i = 1; i <= components.Count; i++) {
+      const component = components.Item(i);
+      const moduleName = String(component.Name);
+      const codeModule = component.CodeModule;
+      if (!codeModule) {
+        continue;
+      }
+
+      const lineCount = Number(codeModule.CountOfLines) || 0;
+      if (lineCount < 1) {
+        continue;
+      }
+
+      const cachedModule = previousModuleEntries[moduleName];
+      if (cachedModule && cachedModule.lineCount === lineCount) {
+        nextModuleEntries[moduleName] = cachedModule;
+        cachedModule.procedures.forEach((proc) => {
+          procedures.push({ ...proc });
+        });
+        continue;
+      }
+
+      const codeText = codeModule.Lines(1, lineCount);
+      const parsed = this._parseProcedures(codeText);
+      const moduleProcedures = parsed.map((proc) => ({
+        module: moduleName,
+        ...proc
+      }));
+
+      nextModuleEntries[moduleName] = {
+        lineCount,
+        procedures: moduleProcedures
+      };
+
+      moduleProcedures.forEach((proc) => {
+        procedures.push({ ...proc });
+      });
+    }
+
+    this._proceduresCache = {
+      workbookKey,
+      moduleEntries: nextModuleEntries
+    };
+
+    return procedures;
   }
 
   _parseProcedures(codeText) {
@@ -917,21 +1040,8 @@ class ExcelBridge {
     const { activate = true } = options;
     try {
       const workbook = this.getActiveWorkbook({ activate });
-      const vbProject = this.getVBProject({ activate });
-      const components = vbProject.VBComponents;
-      const modules = [];
-
-      for (let i = 1; i <= components.Count; i++) {
-        const component = components.Item(i);
-        const codeModule = component.CodeModule;
-        const lineCount = codeModule ? codeModule.CountOfLines : 0;
-        modules.push({
-          name: component.Name,
-          typeId: component.Type,
-          type: this._componentTypeName(component.Type),
-          lineCount
-        });
-      }
+      const vbProject = this._getVBProjectForWorkbook(workbook);
+      const modules = this._listModulesForWorkbook(workbook, vbProject);
 
       return {
         success: true,
@@ -944,6 +1054,58 @@ class ExcelBridge {
   }
 
   /**
+   * List modules in a specific open workbook's VBA project.
+   * @param {string} workbookName
+   * @param {{ activate?: boolean }} options
+   * @returns {{ success: boolean, workbookFound: boolean, workbook?: { name: string, path: string } | null, modules: Array, message?: string }}
+   */
+  listModulesByWorkbookName(workbookName, options = {}) {
+    const { activate = true } = options;
+    const normalizedName = String(workbookName || '').trim();
+    if (!normalizedName) {
+      return {
+        success: false,
+        workbookFound: false,
+        workbook: null,
+        modules: [],
+        message: 'Workbook name is required.'
+      };
+    }
+
+    try {
+      const excel = this.getApp({ activate });
+      const workbook = this._findOpenWorkbookByName(excel, normalizedName);
+      if (!workbook) {
+        return {
+          success: true,
+          workbookFound: false,
+          workbook: null,
+          modules: [],
+          message: `Workbook "${normalizedName}" is not open.`
+        };
+      }
+
+      const vbProject = this._getVBProjectForWorkbook(workbook);
+      const modules = this._listModulesForWorkbook(workbook, vbProject);
+
+      return {
+        success: true,
+        workbookFound: true,
+        workbook: this._describeWorkbook(workbook),
+        modules
+      };
+    } catch (error) {
+      return {
+        success: false,
+        workbookFound: false,
+        workbook: null,
+        modules: [],
+        message: error.message
+      };
+    }
+  }
+
+  /**
    * List procedures (Subs/Functions/Properties) in the active workbook.
    * @returns {{ success: boolean, workbook?: { name: string, path: string }, procedures: Array }}
    */
@@ -951,61 +1113,8 @@ class ExcelBridge {
     const { activate = true } = options;
     try {
       const workbook = this.getActiveWorkbook({ activate });
-      const vbProject = this.getVBProject({ activate });
-      const components = vbProject.VBComponents;
-      const workbookKey = this._getWorkbookCacheKey(workbook);
-      // Cache parsed procedures by workbook + module line count to avoid
-      // repeatedly reading full module text on frequent UI refreshes.
-      const previousModuleEntries =
-        this._proceduresCache && this._proceduresCache.workbookKey === workbookKey
-          ? this._proceduresCache.moduleEntries
-          : {};
-      const nextModuleEntries = {};
-      const procedures = [];
-
-      for (let i = 1; i <= components.Count; i++) {
-        const component = components.Item(i);
-        const moduleName = String(component.Name);
-        const codeModule = component.CodeModule;
-        if (!codeModule) {
-          continue;
-        }
-
-        const lineCount = Number(codeModule.CountOfLines) || 0;
-        if (lineCount < 1) {
-          continue;
-        }
-
-        const cachedModule = previousModuleEntries[moduleName];
-        if (cachedModule && cachedModule.lineCount === lineCount) {
-          nextModuleEntries[moduleName] = cachedModule;
-          cachedModule.procedures.forEach((proc) => {
-            procedures.push({ ...proc });
-          });
-          continue;
-        }
-
-        const codeText = codeModule.Lines(1, lineCount);
-        const parsed = this._parseProcedures(codeText);
-        const moduleProcedures = parsed.map((proc) => ({
-          module: moduleName,
-          ...proc
-        }));
-
-        nextModuleEntries[moduleName] = {
-          lineCount,
-          procedures: moduleProcedures
-        };
-
-        moduleProcedures.forEach((proc) => {
-          procedures.push({ ...proc });
-        });
-      }
-
-      this._proceduresCache = {
-        workbookKey,
-        moduleEntries: nextModuleEntries
-      };
+      const vbProject = this._getVBProjectForWorkbook(workbook);
+      const procedures = this._listProceduresForWorkbook(workbook, vbProject);
 
       return {
         success: true,
@@ -1015,6 +1124,59 @@ class ExcelBridge {
     } catch (error) {
       this._proceduresCache = null;
       return { success: false, procedures: [], message: error.message };
+    }
+  }
+
+  /**
+   * List procedures (Subs/Functions/Properties) for a specific open workbook name.
+   * @param {string} workbookName
+   * @param {{ activate?: boolean }} options
+   * @returns {{ success: boolean, workbookFound: boolean, workbook?: { name: string, path: string } | null, procedures: Array, message?: string }}
+   */
+  listProceduresByWorkbookName(workbookName, options = {}) {
+    const { activate = true } = options;
+    const normalizedName = String(workbookName || '').trim();
+    if (!normalizedName) {
+      return {
+        success: false,
+        workbookFound: false,
+        workbook: null,
+        procedures: [],
+        message: 'Workbook name is required.'
+      };
+    }
+
+    try {
+      const excel = this.getApp({ activate });
+      const workbook = this._findOpenWorkbookByName(excel, normalizedName);
+      if (!workbook) {
+        return {
+          success: true,
+          workbookFound: false,
+          workbook: null,
+          procedures: [],
+          message: `Workbook "${normalizedName}" is not open.`
+        };
+      }
+
+      const vbProject = this._getVBProjectForWorkbook(workbook);
+      const procedures = this._listProceduresForWorkbook(workbook, vbProject);
+
+      return {
+        success: true,
+        workbookFound: true,
+        workbook: this._describeWorkbook(workbook),
+        procedures
+      };
+    } catch (error) {
+      this._proceduresCache = null;
+      return {
+        success: false,
+        workbookFound: false,
+        workbook: null,
+        procedures: [],
+        message: error.message
+      };
     }
   }
 
@@ -1178,78 +1340,50 @@ class ExcelBridge {
     prop.Value = JSON.stringify(registry);
   }
 
+  _listMacroProceduresForWorkbook(workbook) {
+    try {
+      const vbProject = this._getVBProjectForWorkbook(workbook);
+      const procedures = this._listProceduresForWorkbook(workbook, vbProject);
+      return procedures
+        .filter((proc) => String(proc?.kind || '').startsWith('Sub'))
+        .map((proc) => ({
+          name: proc.name,
+          module: proc.module
+        }));
+    } catch (error) {
+      this._proceduresCache = null;
+      return [];
+    }
+  }
+
   _listMacroProcedures(options = {}) {
     const { activate = true } = options;
     try {
       const workbook = this.getActiveWorkbook({ activate });
-      const vbProject = this.getVBProject({ activate });
-      const components = vbProject.VBComponents;
-      const workbookKey = this._getWorkbookCacheKey(workbook);
-      const previousModuleEntries =
-        this._proceduresCache && this._proceduresCache.workbookKey === workbookKey
-          ? this._proceduresCache.moduleEntries
-          : {};
-      const nextModuleEntries = {};
-      const procedures = [];
-
-      for (let i = 1; i <= components.Count; i++) {
-        const component = components.Item(i);
-        const moduleName = String(component.Name);
-        const codeModule = component.CodeModule;
-        if (!codeModule) {
-          continue;
-        }
-
-        const lineCount = Number(codeModule.CountOfLines) || 0;
-        if (lineCount < 1) {
-          continue;
-        }
-
-        const cachedModule = previousModuleEntries[moduleName];
-        if (cachedModule && cachedModule.lineCount === lineCount) {
-          nextModuleEntries[moduleName] = cachedModule;
-          cachedModule.procedures.forEach((proc) => {
-            if (proc.kind.startsWith('Sub')) {
-              procedures.push({
-                name: proc.name,
-                module: moduleName
-              });
-            }
-          });
-          continue;
-        }
-
-        const codeText = codeModule.Lines(1, lineCount);
-        const parsed = this._parseProcedures(codeText);
-        const moduleProcedures = parsed.map((proc) => ({
-          module: moduleName,
-          ...proc
-        }));
-        nextModuleEntries[moduleName] = {
-          lineCount,
-          procedures: moduleProcedures
-        };
-
-        moduleProcedures.forEach((proc) => {
-          if (proc.kind.startsWith('Sub')) {
-            procedures.push({
-              name: proc.name,
-              module: moduleName
-            });
-          }
-        });
-      }
-
-      this._proceduresCache = {
-        workbookKey,
-        moduleEntries: nextModuleEntries
-      };
-
+      const procedures = this._listMacroProceduresForWorkbook(workbook);
       return { workbook, procedures };
     } catch (error) {
       this._proceduresCache = null;
       return { workbook: null, procedures: [] };
     }
+  }
+
+  _setMacroShortcutForWorkbook(workbook, macroName, shortcutKey) {
+    const excel = this.getApp();
+    const procedures = this._listMacroProceduresForWorkbook(workbook);
+    const resolvedName = this._normalizeMacroNameForWorkbook(macroName, workbook, procedures);
+    excel.MacroOptions(resolvedName || macroName, null, null, null, null, shortcutKey, null, null, null, null);
+
+    const registry = this._loadShortcutRegistry(workbook);
+    if (macroName) {
+      registry[macroName] = shortcutKey;
+    }
+    if (resolvedName) {
+      registry[resolvedName] = shortcutKey;
+    }
+    this._saveShortcutRegistry(workbook, registry);
+
+    return { success: true, message: `Shortcut set for ${macroName}` };
   }
 
   /**
@@ -1261,23 +1395,90 @@ class ExcelBridge {
   setMacroShortcut(macroName, shortcutKey) {
     try {
       const workbook = this.getActiveWorkbook();
-      const excel = this.getApp();
-      const resolvedName = this._normalizeMacroName(macroName, workbook);
-      excel.MacroOptions(resolvedName || macroName, null, null, null, null, shortcutKey, null, null, null, null);
-
-      const registry = this._loadShortcutRegistry(workbook);
-      if (macroName) {
-        registry[macroName] = shortcutKey;
-      }
-      if (resolvedName) {
-        registry[resolvedName] = shortcutKey;
-      }
-      this._saveShortcutRegistry(workbook, registry);
-
-      return { success: true, message: `Shortcut set for ${macroName}` };
+      return this._setMacroShortcutForWorkbook(workbook, macroName, shortcutKey);
     } catch (error) {
       return { success: false, message: `Failed to set shortcut: ${error.message}` };
     }
+  }
+
+  /**
+   * Set a macro shortcut in a specific open workbook and track it in that workbook registry.
+   * @param {string} workbookName
+   * @param {string} macroName
+   * @param {string} shortcutKey
+   * @param {{ activate?: boolean }} options
+   * @returns {{ success: boolean, workbookFound: boolean, workbook?: { name: string, path: string } | null, message: string }}
+   */
+  setMacroShortcutByWorkbookName(workbookName, macroName, shortcutKey, options = {}) {
+    const { activate = true } = options;
+    const normalizedName = String(workbookName || '').trim();
+    if (!normalizedName) {
+      return {
+        success: false,
+        workbookFound: false,
+        workbook: null,
+        message: 'Workbook name is required.'
+      };
+    }
+
+    try {
+      const excel = this.getApp({ activate });
+      const workbook = this._findOpenWorkbookByName(excel, normalizedName);
+      if (!workbook) {
+        return {
+          success: true,
+          workbookFound: false,
+          workbook: null,
+          message: `Workbook "${normalizedName}" is not open.`
+        };
+      }
+
+      const result = this._setMacroShortcutForWorkbook(workbook, macroName, shortcutKey);
+      return {
+        ...result,
+        workbookFound: true,
+        workbook: this._describeWorkbook(workbook)
+      };
+    } catch (error) {
+      return {
+        success: false,
+        workbookFound: false,
+        workbook: null,
+        message: `Failed to set shortcut: ${error.message}`
+      };
+    }
+  }
+
+  _auditShortcutsForWorkbook(workbook) {
+    const procedures = this._listMacroProceduresForWorkbook(workbook);
+    const registry = this._loadShortcutRegistry(workbook);
+    const shortcuts = [];
+    const unmapped = [];
+
+    procedures.forEach((proc) => {
+      const fullName = `${proc.module}.${proc.name}`;
+      const qualifiedName = `${workbook.Name}!${fullName}`;
+      const shortcut =
+        registry[qualifiedName] ||
+        registry[fullName] ||
+        registry[proc.name] ||
+        null;
+      if (shortcut) {
+        shortcuts.push({
+          macro: qualifiedName,
+          shortcut
+        });
+      } else {
+        unmapped.push(qualifiedName);
+      }
+    });
+
+    return {
+      success: true,
+      shortcuts,
+      unmapped,
+      note: 'Excel does not expose global shortcut listings. Only MacroFlow-tracked shortcuts are available.'
+    };
   }
 
   /**
@@ -1287,41 +1488,65 @@ class ExcelBridge {
    */
   auditShortcuts() {
     try {
-      const { workbook, procedures } = this._listMacroProcedures();
+      const workbook = this.getActiveWorkbook();
       if (!workbook) {
         return { success: false, shortcuts: [], unmapped: [], message: 'Workbook not available.' };
       }
-
-      const registry = this._loadShortcutRegistry(workbook);
-      const shortcuts = [];
-      const unmapped = [];
-
-      procedures.forEach((proc) => {
-        const fullName = `${proc.module}.${proc.name}`;
-        const qualifiedName = `${workbook.Name}!${fullName}`;
-        const shortcut =
-          registry[qualifiedName] ||
-          registry[fullName] ||
-          registry[proc.name] ||
-          null;
-        if (shortcut) {
-          shortcuts.push({
-            macro: qualifiedName,
-            shortcut
-          });
-        } else {
-          unmapped.push(qualifiedName);
-        }
-      });
-
-      return {
-        success: true,
-        shortcuts,
-        unmapped,
-        note: 'Excel does not expose global shortcut listings. Only MacroFlow-tracked shortcuts are available.'
-      };
+      return this._auditShortcutsForWorkbook(workbook);
     } catch (error) {
       return { success: false, shortcuts: [], unmapped: [], message: error.message };
+    }
+  }
+
+  /**
+   * Audit known shortcuts for macros in a specific open workbook.
+   * @param {string} workbookName
+   * @param {{ activate?: boolean }} options
+   * @returns {{ success: boolean, workbookFound: boolean, workbook?: { name: string, path: string } | null, shortcuts: Array, unmapped: Array, note?: string, message?: string }}
+   */
+  auditShortcutsByWorkbookName(workbookName, options = {}) {
+    const { activate = true } = options;
+    const normalizedName = String(workbookName || '').trim();
+    if (!normalizedName) {
+      return {
+        success: false,
+        workbookFound: false,
+        workbook: null,
+        shortcuts: [],
+        unmapped: [],
+        message: 'Workbook name is required.'
+      };
+    }
+
+    try {
+      const excel = this.getApp({ activate });
+      const workbook = this._findOpenWorkbookByName(excel, normalizedName);
+      if (!workbook) {
+        return {
+          success: true,
+          workbookFound: false,
+          workbook: null,
+          shortcuts: [],
+          unmapped: [],
+          message: `Workbook "${normalizedName}" is not open.`
+        };
+      }
+
+      const result = this._auditShortcutsForWorkbook(workbook);
+      return {
+        ...result,
+        workbookFound: true,
+        workbook: this._describeWorkbook(workbook)
+      };
+    } catch (error) {
+      return {
+        success: false,
+        workbookFound: false,
+        workbook: null,
+        shortcuts: [],
+        unmapped: [],
+        message: error.message
+      };
     }
   }
 }

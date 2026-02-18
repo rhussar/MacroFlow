@@ -296,21 +296,12 @@ body {
   color: var(--text-muted);
 }
 
-.search-context-bar {
-  display: flex;
-  align-items: center;
-  justify-content: flex-start;
-  padding: 10px 16px 6px;
+.search-ready-section + .search-ready-section {
+  margin-top: 8px;
 }
 
-.search-context-text {
-  flex: 1;
-  min-width: 0;
-  font-size: 11px;
-  color: var(--text-muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+.search-ready-section-first {
+  margin-top: 8px;
 }
 
 .search-status-panel {
@@ -412,6 +403,134 @@ body {
   padding-top: 8px;
 }
 
+.macro-workbook-picker-wrap {
+  padding: 4px 16px 10px;
+  position: relative;
+  width: 320px;
+  max-width: calc(100% - 32px);
+  z-index: 20;
+}
+
+.macro-workbook-picker {
+  max-width: 100%;
+  width: 100%;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.9);
+  color: #1f1f1f;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.macro-workbook-picker:hover {
+  background: rgba(255, 255, 255, 0.95);
+}
+
+.macro-workbook-picker.open {
+  border-color: rgba(255, 255, 255, 0.35);
+}
+
+.macro-workbook-picker.open .macro-workbook-picker-icon {
+  transform: rotate(180deg);
+}
+
+.macro-workbook-picker-label {
+  min-width: 0;
+  flex: 1;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.macro-workbook-picker-icon {
+  color: rgba(31, 31, 31, 0.78);
+  transition: transform 0.15s ease;
+}
+
+.macro-workbook-menu {
+  position: absolute;
+  left: 16px;
+  top: calc(100% - 2px);
+  min-width: 190px;
+  max-width: 320px;
+  background: rgba(65, 65, 65, 0.97);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 6px;
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.45);
+  overflow: hidden;
+  z-index: 30;
+}
+
+.macro-workbook-menu-title {
+  padding: 10px 10px 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.macro-workbook-menu-state {
+  padding: 8px 10px 10px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.macro-workbook-menu-state.error {
+  color: var(--accent-red);
+}
+
+.macro-workbook-option {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 10px;
+  border: none;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.macro-workbook-option:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.macro-workbook-option.selected {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.macro-workbook-option-icon {
+  width: 14px;
+  height: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-secondary);
+}
+
+.macro-workbook-option-label {
+  min-width: 0;
+  flex: 1;
+  font-size: 13px;
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.global-macros-empty {
+  padding-left: 16px;
+  padding-right: 16px;
+}
+
 /* ============================================
    File List Items
    ============================================ */
@@ -444,7 +563,6 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--accent-yellow);
 }
 
 .file-icon.macro {
@@ -501,6 +619,18 @@ body {
   background: var(--bg-hover);
 }
 
+.shortcut-item.readonly {
+  cursor: default;
+}
+
+.shortcut-item.readonly:hover {
+  background: transparent;
+}
+
+.shortcut-item.readonly .readonly-target {
+  cursor: default;
+}
+
 .shortcut-item.selected {
   background: var(--bg-selected);
 }
@@ -542,10 +672,19 @@ body {
   font-size: 11px;
 }
 
+.shortcut-item.readonly .shortcut-binding {
+  pointer-events: none;
+}
+
 .shortcut-prefix,
 .shortcut-shift {
   color: var(--text-secondary);
   white-space: nowrap;
+}
+
+.global-shortcut-placeholder {
+  color: var(--text-muted);
+  font-size: 11px;
 }
 
 .shortcut-keycap-input {
@@ -818,6 +957,102 @@ body {
 }
 
 /* ============================================
+   Tree Explorer
+   ============================================ */
+
+.tree-list {
+  padding: 0 4px;
+  overflow-y: auto;
+}
+
+.tree-node {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-radius: var(--border-radius-xs);
+  cursor: pointer;
+  transition: background 0.12s;
+  user-select: none;
+}
+
+.tree-node:hover {
+  background: var(--bg-hover);
+}
+
+.tree-node--selected {
+  background: var(--bg-selected);
+}
+
+.tree-node__chevron {
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  cursor: pointer;
+  border-radius: var(--border-radius-xs);
+}
+
+.tree-node__chevron:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.tree-node__chevron--hidden {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.tree-chevron-icon {
+  transition: transform 0.15s ease;
+  color: var(--text-muted);
+}
+
+.tree-chevron-icon--collapsed {
+  transform: rotate(-90deg);
+}
+
+.tree-node__icon {
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.tree-node__icon--workbook {
+  /* Uses Excel logo PNG — color inherited from image */
+}
+
+.tree-node__icon--module {
+  /* Uses folder-logo PNG — color inherited from image */
+}
+
+.tree-node__icon--macro {
+  color: var(--text-muted);
+}
+
+.tree-node__label {
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.tree-node--workbook .tree-node__label {
+  font-weight: 500;
+}
+
+.workbook-icon-large {
+  /* Uses Excel logo PNG — no color override needed */
+}
+
+/* ============================================
    Split View (File Explorer / Build Mode)
    ============================================ */
 
@@ -829,7 +1064,7 @@ body {
 }
 
 .split-left {
-  width: 240px;
+  width: 60%;
   border-right: 1px solid var(--border-default);
   overflow-y: auto;
   flex-shrink: 0;
@@ -855,16 +1090,17 @@ body {
 }
 
 .folder-icon-large {
-  width: 80px;
-  height: 80px;
-  margin: 20px auto;
-  color: var(--accent-yellow);
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .metadata-section {
   background: var(--bg-secondary);
   border-radius: var(--border-radius-sm);
   overflow: hidden;
+  margin-top: auto;
 }
 
 .metadata-title {

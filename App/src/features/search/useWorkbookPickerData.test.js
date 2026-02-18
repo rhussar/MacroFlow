@@ -1,0 +1,93 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import {
+  getWorkbookKey,
+  sortWorkbooksForPicker,
+  resolveSelectedWorkbookKey,
+  qualifyMacroFullName,
+  namespaceMacrosForWorkbook
+} from './useWorkbookPickerData.js';
+
+test('getWorkbookKey prefers workbook path and falls back to workbook name', () => {
+  assert.equal(getWorkbookKey({ name: 'Book1.xlsm', path: 'C:/Book1.xlsm' }), 'C:/Book1.xlsm');
+  assert.equal(getWorkbookKey({ name: 'Book2.xlsm', path: '' }), 'Book2.xlsm');
+  assert.equal(getWorkbookKey({ name: '', path: '' }), '');
+});
+
+test('sortWorkbooksForPicker keeps active workbook first and sorts remaining names', () => {
+  const rows = sortWorkbooksForPicker(
+    [
+      { key: 'c', name: 'Charlie.xlsm', path: 'C:/Charlie.xlsm' },
+      { key: 'a', name: 'Alpha.xlsm', path: 'C:/Alpha.xlsm' },
+      { key: 'b', name: 'Bravo.xlsm', path: 'C:/Bravo.xlsm' }
+    ],
+    'b'
+  );
+
+  assert.deepEqual(rows.map((row) => row.key), ['b', 'a', 'c']);
+});
+
+test('resolveSelectedWorkbookKey keeps selection when still present and falls back safely', () => {
+  const workbooks = [
+    { key: 'active', name: 'Active.xlsm' },
+    { key: 'second', name: 'Second.xlsm' }
+  ];
+
+  assert.equal(
+    resolveSelectedWorkbookKey({
+      requestedKey: 'second',
+      workbooks,
+      activeWorkbookKey: 'active'
+    }),
+    'second'
+  );
+
+  assert.equal(
+    resolveSelectedWorkbookKey({
+      requestedKey: 'missing',
+      workbooks,
+      activeWorkbookKey: 'active'
+    }),
+    'active'
+  );
+
+  assert.equal(
+    resolveSelectedWorkbookKey({
+      requestedKey: 'missing',
+      workbooks: [{ key: 'fallback', name: 'Fallback.xlsm' }],
+      activeWorkbookKey: ''
+    }),
+    'fallback'
+  );
+});
+
+test('qualifyMacroFullName adds workbook prefix and quotes workbook names with spaces', () => {
+  assert.equal(
+    qualifyMacroFullName('Model.xlsm', 'Module1.RunReport'),
+    'Model.xlsm!Module1.RunReport'
+  );
+  assert.equal(
+    qualifyMacroFullName('My Model.xlsm', 'Module1.RunReport'),
+    '\'My Model.xlsm\'!Module1.RunReport'
+  );
+});
+
+test('namespaceMacrosForWorkbook namescopes IDs and sets workbook-qualified fullName', () => {
+  const rows = namespaceMacrosForWorkbook(
+    [
+      {
+        id: 'Module1::RunA::Sub::Public',
+        module: 'Module1',
+        name: 'RunA',
+        runTarget: 'Module1.RunA',
+        fullName: 'Module1.RunA'
+      }
+    ],
+    { name: 'Workbook One.xlsm', path: 'C:/Workbook One.xlsm' }
+  );
+
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].id, 'C:/Workbook One.xlsm::macro::Module1::RunA::Sub::Public');
+  assert.equal(rows[0].fullName, '\'Workbook One.xlsm\'!Module1.RunA');
+});
+

@@ -1,5 +1,7 @@
 import React from 'react';
 import appIcon from '../../assets/app-icon.png';
+import excelLogo from '../../assets/excel-logo.png';
+import folderLogo from '../../assets/folder-logo.png';
 
 // MacroFlow Logo (app icon)
 export const MacroFlowLogo = ({ className = '', size = 20 }) => (
@@ -12,30 +14,26 @@ export const MacroFlowLogo = ({ className = '', size = 20 }) => (
   />
 );
 
-// Folder Icon (yellow)
+// Folder Icon (uses folder-logo asset)
 export const FolderIcon = ({ className = '', size = 24 }) => (
-  <svg
+  <img
+    src={folderLogo}
+    alt="Folder"
     width={size}
     height={size}
-    viewBox="0 0 24 24"
-    fill="currentColor"
     className={className}
-  >
-    <path d="M10 4H4C2.9 4 2 4.9 2 6V18C2 19.1 2.9 20 4 20H20C21.1 20 22 19.1 22 18V8C22 6.9 21.1 6 20 6H12L10 4Z" />
-  </svg>
+  />
 );
 
-// Large Folder Icon
+// Large Folder Icon (same asset, larger default)
 export const FolderIconLarge = ({ className = '', size = 80 }) => (
-  <svg
+  <img
+    src={folderLogo}
+    alt="Folder"
     width={size}
     height={size}
-    viewBox="0 0 24 24"
-    fill="currentColor"
     className={className}
-  >
-    <path d="M10 4H4C2.9 4 2 4.9 2 6V18C2 19.1 2.9 20 4 20H20C21.1 20 22 19.1 22 18V8C22 6.9 21.1 6 20 6H12L10 4Z" />
-  </svg>
+  />
 );
 
 // Arrow Left (back button / macro icon)
@@ -253,6 +251,17 @@ export const MessageIcon = ({ className = '', size = 16 }) => (
   >
     <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z" />
   </svg>
+);
+
+// Workbook/Excel Icon (uses Excel logo asset)
+export const WorkbookIcon = ({ className = '', size = 16 }) => (
+  <img
+    src={excelLogo}
+    alt="Workbook"
+    width={size}
+    height={size}
+    className={className}
+  />
 );
 
 // Return/Enter Arrow (for macros)

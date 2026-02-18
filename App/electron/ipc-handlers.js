@@ -209,6 +209,24 @@ function registerHandlers() {
   });
 
   /**
+   * List VBA modules in a specific open workbook.
+   * Channel: 'vba:modules:by-workbook'
+   * Args: { workbookName: string }
+   */
+  ipcMain.handle('vba:modules:by-workbook', (_, { workbookName } = {}) => {
+    logIpc('vba:modules:by-workbook', 'start', { workbookName });
+
+    const result = excel.listModulesByWorkbookName(workbookName);
+
+    logIpc('vba:modules:by-workbook', 'end', {
+      success: result.success,
+      workbookFound: result.workbookFound,
+      count: result.modules?.length
+    });
+    return result;
+  });
+
+  /**
    * List procedures (Subs/Functions/Properties) in the active workbook
    * Channel: 'vba:procedures'
    */
@@ -219,6 +237,24 @@ function registerHandlers() {
     const result = excel.listProcedures();
 
     logIpc('vba:procedures', 'end', { success: result.success, count: result.procedures?.length });
+    return result;
+  });
+
+  /**
+   * List procedures (Subs/Functions/Properties) in a specific open workbook.
+   * Channel: 'vba:procedures:by-workbook'
+   * Args: { workbookName: string }
+   */
+  ipcMain.handle('vba:procedures:by-workbook', (_, { workbookName } = {}) => {
+    logIpc('vba:procedures:by-workbook', 'start', { workbookName });
+
+    const result = excel.listProceduresByWorkbookName(workbookName);
+
+    logIpc('vba:procedures:by-workbook', 'end', {
+      success: result.success,
+      workbookFound: result.workbookFound,
+      count: result.procedures?.length
+    });
     return result;
   });
 
@@ -237,6 +273,23 @@ function registerHandlers() {
   });
 
   /**
+   * Set a macro shortcut and track it in a specific open workbook.
+   * Channel: 'vba:shortcut:set:by-workbook'
+   * Args: { workbookName: string, macroName: string, shortcutKey: string }
+   */
+  ipcMain.handle('vba:shortcut:set:by-workbook', async (_, { workbookName, macroName, shortcutKey } = {}) => {
+    logIpc('vba:shortcut:set:by-workbook', 'start', { workbookName, macroName, shortcutKey });
+
+    const result = await withExcelFocus(() => excel.setMacroShortcutByWorkbookName(workbookName, macroName, shortcutKey));
+
+    logIpc('vba:shortcut:set:by-workbook', 'end', {
+      success: result.success,
+      workbookFound: result.workbookFound
+    });
+    return result;
+  });
+
+  /**
    * Audit tracked shortcuts
    * Channel: 'vba:shortcut:audit'
    */
@@ -247,6 +300,23 @@ function registerHandlers() {
     const result = excel.auditShortcuts();
 
     logIpc('vba:shortcut:audit', 'end', { success: result.success });
+    return result;
+  });
+
+  /**
+   * Audit tracked shortcuts in a specific open workbook.
+   * Channel: 'vba:shortcut:audit:by-workbook'
+   * Args: { workbookName: string }
+   */
+  ipcMain.handle('vba:shortcut:audit:by-workbook', (_, { workbookName } = {}) => {
+    logIpc('vba:shortcut:audit:by-workbook', 'start', { workbookName });
+
+    const result = excel.auditShortcutsByWorkbookName(workbookName);
+
+    logIpc('vba:shortcut:audit:by-workbook', 'end', {
+      success: result.success,
+      workbookFound: result.workbookFound
+    });
     return result;
   });
 

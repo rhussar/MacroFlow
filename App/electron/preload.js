@@ -43,10 +43,24 @@ contextBridge.exposeInMainWorld('excel', {
     modules: () => ipcRenderer.invoke('vba:modules'),
 
     /**
+     * List VBA modules in a specific open workbook
+     * @param {{ workbookName: string }} args
+     * @returns {Promise<{ success: boolean, workbookFound: boolean, workbook?: object, modules: Array, message?: string }>}
+     */
+    modulesByWorkbook: (args) => ipcRenderer.invoke('vba:modules:by-workbook', args),
+
+    /**
      * List procedures (Subs/Functions/Properties) in the active workbook
      * @returns {Promise<{ success: boolean, workbook?: object, procedures: Array }>}
      */
     procedures: () => ipcRenderer.invoke('vba:procedures'),
+
+    /**
+     * List procedures (Subs/Functions/Properties) in a specific open workbook
+     * @param {{ workbookName: string }} args
+     * @returns {Promise<{ success: boolean, workbookFound: boolean, workbook?: object, procedures: Array, message?: string }>}
+     */
+    proceduresByWorkbook: (args) => ipcRenderer.invoke('vba:procedures:by-workbook', args),
 
     /**
      * Set a macro shortcut and track it
@@ -56,10 +70,24 @@ contextBridge.exposeInMainWorld('excel', {
     setShortcut: (args) => ipcRenderer.invoke('vba:shortcut:set', args),
 
     /**
+     * Set a macro shortcut and track it in a specific open workbook
+     * @param {{ workbookName: string, macroName: string, shortcutKey: string }} args
+     * @returns {Promise<{ success: boolean, workbookFound: boolean, workbook?: object, message: string }>}
+     */
+    setShortcutByWorkbook: (args) => ipcRenderer.invoke('vba:shortcut:set:by-workbook', args),
+
+    /**
      * Audit tracked shortcuts
      * @returns {Promise<{ success: boolean, shortcuts: Array, unmapped: Array }>}
      */
     auditShortcuts: () => ipcRenderer.invoke('vba:shortcut:audit'),
+
+    /**
+     * Audit tracked shortcuts in a specific open workbook
+     * @param {{ workbookName: string }} args
+     * @returns {Promise<{ success: boolean, workbookFound: boolean, workbook?: object, shortcuts: Array, unmapped: Array, note?: string, message?: string }>}
+     */
+    auditShortcutsByWorkbook: (args) => ipcRenderer.invoke('vba:shortcut:audit:by-workbook', args),
   },
 
   // ==========================================================================

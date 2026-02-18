@@ -193,6 +193,8 @@ function App() {
             shortcutSavingMacroId={shortcutSavingMacroId}
             onShortcutDraftChange={handleShortcutDraftChange}
             onShortcutCommit={handleShortcutCommit}
+            onActionStatus={setActionStatus}
+            shortcutSaveInFlightRef={shortcutSaveInFlightRef}
             onClose={handleClose}
           />
         );

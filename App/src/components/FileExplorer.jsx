@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import {
   FolderIcon,
   FolderIconLarge,
@@ -7,11 +7,16 @@ import {
   CloseIcon,
   ListIcon,
   ChevronDownIcon,
+  WorkbookIcon,
 } from './icons';
 import {
-  filterExplorerItems,
-  buildItemMetadata,
+  buildExplorerTree,
+  filterExplorerTree,
+  buildNodeMetadata,
+  countTreeItems,
+  getDefaultExpandedIds,
 } from '../features/search/explorer-selectors';
+import { usePersonalMacros } from '../features/search/usePersonalMacros';
 
 const defaultSearchData = {
   status: 'idle',
@@ -51,29 +56,74 @@ const FileExplorer = ({
   shortcutByMacroId = {},
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
-  const [selectedItem, setSelectedItem] = useState(null);
+  const [selectedNode, setSelectedNode] = useState(null);
+  const [expandedIds, setExpandedIds] = useState(new Set());
+  const hasInitializedRef = useRef(false);
 
   const status = searchData.status || 'idle';
+  const personalState = usePersonalMacros(searchData);
 
-  const filteredItems = useMemo(
-    () => filterExplorerItems(searchData.modules, searchData.macros, searchQuery, shortcutByMacroId),
-    [searchData.modules, searchData.macros, searchQuery, shortcutByMacroId]
+  // Build the full tree
+  const tree = useMemo(
+    () => buildExplorerTree(searchData, personalState),
+    [searchData, personalState]
   );
+
+  // Initialize expand state when tree first becomes available
+  useEffect(() => {
+    if (tree.length > 0 && !hasInitializedRef.current) {
+      hasInitializedRef.current = true;
+      setExpandedIds(getDefaultExpandedIds(tree));
+    }
+  }, [tree]);
+
+  // Reset init flag when workbook changes
+  useEffect(() => {
+    hasInitializedRef.current = false;
+  }, [searchData.workbook?.path, searchData.workbook?.name]);
+
+  // Filter tree by search query
+  const { filteredTree, matchedIds } = useMemo(
+    () => filterExplorerTree(tree, searchQuery, shortcutByMacroId),
+    [tree, searchQuery, shortcutByMacroId]
+  );
+
+  // During search, auto-expand all matched branches; otherwise use manual state
+  const effectiveExpandedIds = useMemo(() => {
+    if (searchQuery.trim()) return matchedIds;
+    return expandedIds;
+  }, [searchQuery, matchedIds, expandedIds]);
+
+  const itemCount = useMemo(() => countTreeItems(filteredTree), [filteredTree]);
 
   const metadata = useMemo(
-    () => buildItemMetadata(selectedItem),
-    [selectedItem]
+    () => buildNodeMetadata(selectedNode),
+    [selectedNode]
   );
 
-  // Clear selection when the selected item no longer exists in the data
+  // Clear stale selection when tree changes
   useEffect(() => {
-    if (!selectedItem) return;
-    const allItems = [...(searchData.modules || []), ...(searchData.macros || [])];
-    const stillExists = allItems.some((item) => item.id === selectedItem.id);
-    if (!stillExists) setSelectedItem(null);
-  }, [searchData.modules, searchData.macros, selectedItem]);
+    if (!selectedNode) return;
+    function findNode(nodes, targetId) {
+      for (const node of nodes) {
+        if (node.id === targetId) return true;
+        if (node.children.length > 0 && findNode(node.children, targetId)) return true;
+      }
+      return false;
+    }
+    if (!findNode(tree, selectedNode.id)) setSelectedNode(null);
+  }, [tree, selectedNode]);
 
-  const isModule = selectedItem?.itemType === 'module';
+  const toggleExpand = useCallback((nodeId) => {
+    setExpandedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(nodeId)) next.delete(nodeId);
+      else next.add(nodeId);
+      return next;
+    });
+  }, []);
+
+  // --- Render helpers ---
 
   const renderNonReadyState = () => {
     const config = statusConfig[status] || statusConfig.error;
@@ -90,6 +140,48 @@ const FileExplorer = ({
         </div>
         <p className="search-status-message">{message}</p>
       </div>
+    );
+  };
+
+  const renderTreeNode = (node, depth = 0) => {
+    const isExpanded = effectiveExpandedIds.has(node.id);
+    const isSelected = selectedNode?.id === node.id;
+    const hasChildren = node.children.length > 0;
+    const paddingLeft = 8 + depth * 16;
+
+    return (
+      <React.Fragment key={node.id}>
+        <div
+          className={`tree-node tree-node--${node.nodeType} ${isSelected ? 'tree-node--selected' : ''}`}
+          style={{ paddingLeft }}
+          onClick={() => setSelectedNode(node)}
+        >
+          <span
+            className={`tree-node__chevron ${hasChildren ? '' : 'tree-node__chevron--hidden'}`}
+            onClick={(e) => {
+              e.stopPropagation();
+              if (hasChildren) toggleExpand(node.id);
+            }}
+          >
+            {hasChildren && (
+              <ChevronDownIcon
+                size={14}
+                className={`tree-chevron-icon ${isExpanded ? '' : 'tree-chevron-icon--collapsed'}`}
+              />
+            )}
+          </span>
+
+          <span className={`tree-node__icon tree-node__icon--${node.nodeType}`}>
+            {node.nodeType === 'workbook' && <WorkbookIcon size={16} />}
+            {node.nodeType === 'module' && <FolderIcon size={16} />}
+            {node.nodeType === 'macro' && <ReturnIcon size={14} />}
+          </span>
+
+          <span className="tree-node__label">{node.label}</span>
+        </div>
+
+        {hasChildren && isExpanded && node.children.map((child) => renderTreeNode(child, depth + 1))}
+      </React.Fragment>
     );
   };
 
@@ -130,45 +222,30 @@ const FileExplorer = ({
         </main>
       ) : (
         <div className="split-view">
-          {/* Left Panel - File List */}
+          {/* Left Panel - Tree */}
           <div className="split-left">
             <div className="section-header">
-              <span className="section-title">All Files</span>
-              <span className="section-count">{filteredItems.length} items</span>
+              <span className="section-title">Explorer</span>
+              <span className="section-count">{itemCount} items</span>
             </div>
 
-            <div className="file-list">
-              {filteredItems.length === 0 && (
+            <div className="tree-list">
+              {filteredTree.length === 0 && (
                 <div className="search-empty-state">No items match this search.</div>
               )}
-              {filteredItems.map((item) => (
-                <div
-                  key={item.id}
-                  className={`file-item ${selectedItem?.id === item.id ? 'selected' : ''}`}
-                  onClick={() => setSelectedItem(item)}
-                >
-                  <div className={`file-icon ${item.itemType === 'macro' ? 'macro' : ''}`}>
-                    {item.itemType === 'module' ? (
-                      <FolderIcon size={20} />
-                    ) : (
-                      <ReturnIcon size={16} />
-                    )}
-                  </div>
-                  <span className="file-name">{item.name}</span>
-                </div>
-              ))}
+              {filteredTree.map((rootNode) => renderTreeNode(rootNode, 0))}
             </div>
           </div>
 
           {/* Right Panel - Details */}
           <div className="split-right">
-            {selectedItem ? (
+            {selectedNode ? (
               <div className="details-panel">
-                {isModule && (
-                  <div className="folder-icon-large">
-                    <FolderIconLarge size={80} />
-                  </div>
-                )}
+                <div className="folder-icon-large">
+                  {selectedNode.nodeType === 'workbook' && <WorkbookIcon size={80} />}
+                  {selectedNode.nodeType === 'module' && <FolderIconLarge size={80} />}
+                  {selectedNode.nodeType === 'macro' && <ReturnIcon size={60} />}
+                </div>
                 <div className="metadata-section">
                   <div className="metadata-title">Metadata</div>
                   {metadata.rows.map((row) => (

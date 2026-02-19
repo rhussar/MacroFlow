@@ -4,19 +4,46 @@ import {
   normalizeMacros,
   normalizeModules,
   normalizeWorkbook
-} from '../../lib/search-data';
+} from '../../lib/search-data.js';
 import {
   INITIAL_SEARCH_DATA,
   SEARCH_FOCUS_REFRESH_COOLDOWN_MS,
   SEARCH_FULL_REFRESH_STALE_MS,
   SEARCH_PERIODIC_REFRESH_MS
-} from './search-constants';
+} from './search-constants.js';
+
+export function isTerminalConnectionStatus(status) {
+  return status === 'no_excel' || status === 'no_workbook';
+}
+
+export function shouldAttemptPausedReconnect({
+  isPaused,
+  trigger,
+  now,
+  lastResumeAttemptAt,
+  inFlight,
+  cooldownMs = SEARCH_FOCUS_REFRESH_COOLDOWN_MS
+}) {
+  if (!isPaused || inFlight) {
+    return false;
+  }
+
+  if (trigger !== 'focus' && trigger !== 'visibility') {
+    return false;
+  }
+
+  return now - lastResumeAttemptAt >= cooldownMs;
+}
 
 export function useSearchData({ mode, runState, macroRunInFlightRef, shortcutSaveInFlightRef }) {
   const [searchData, setSearchData] = useState(INITIAL_SEARCH_DATA);
   const searchRequestSequence = useRef(0);
   const searchLoadInFlight = useRef(false);
   const workbookPingInFlight = useRef(false);
+  const pollingPausedRef = useRef(false);
+  const pollingPausedReasonRef = useRef('');
+  const resumeAttemptInFlightRef = useRef(false);
+  const lastResumeAttemptAtRef = useRef(0);
   const lastFocusRefreshAttemptAt = useRef(0);
   const lastFullSearchRefreshAt = useRef(0);
   const lastWorkbookSignature = useRef('');
@@ -48,6 +75,11 @@ export function useSearchData({ mode, runState, macroRunInFlightRef, shortcutSav
         if (requestId !== searchRequestSequence.current) {
           return;
         }
+        if (isTerminalConnectionStatus(mappedError.status) && !pollingPausedRef.current) {
+          pollingPausedRef.current = true;
+          pollingPausedReasonRef.current = String(mappedError.code || '').toUpperCase() || 'NO_EXCEL';
+        }
+
         lastWorkbookSignature.current = '';
         setSearchData({
           status: mappedError.status,
@@ -100,6 +132,11 @@ export function useSearchData({ mode, runState, macroRunInFlightRef, shortcutSav
           }
         }
 
+        if (isTerminalConnectionStatus(mappedError.status) && !pollingPausedRef.current) {
+          pollingPausedRef.current = true;
+          pollingPausedReasonRef.current = String(mappedError.code || '').toUpperCase() || 'NO_EXCEL';
+        }
+
         lastWorkbookSignature.current = '';
         setSearchData({
           status: mappedError.status,
@@ -121,6 +158,8 @@ export function useSearchData({ mode, runState, macroRunInFlightRef, shortcutSav
       lastWorkbookSignature.current = `${workbook?.path || ''}::${workbook?.name || ''}`;
       lastFullSearchRefreshAt.current = Date.now();
       resolveInstanceAttempted.current = false;
+      pollingPausedRef.current = false;
+      pollingPausedReasonRef.current = '';
 
       setSearchData({
         status: 'ready',
@@ -134,6 +173,10 @@ export function useSearchData({ mode, runState, macroRunInFlightRef, shortcutSav
         return;
       }
       const mappedError = mapSearchError(error?.message);
+      if (isTerminalConnectionStatus(mappedError.status) && !pollingPausedRef.current) {
+        pollingPausedRef.current = true;
+        pollingPausedReasonRef.current = String(mappedError.code || '').toUpperCase() || 'NO_EXCEL';
+      }
       lastWorkbookSignature.current = '';
       setSearchData({
         status: mappedError.status,
@@ -150,7 +193,7 @@ export function useSearchData({ mode, runState, macroRunInFlightRef, shortcutSav
     }
   }, []);
 
-  const refreshSearchOnForeground = useCallback(async () => {
+  const refreshSearchOnForeground = useCallback(async ({ trigger = 'interval' } = {}) => {
     if ((mode !== 'search' && mode !== 'explorer') || runState === 'running' || Boolean(macroRunInFlightRef?.current) || Boolean(shortcutSaveInFlightRef?.current)) {
       return;
     }
@@ -160,6 +203,32 @@ export function useSearchData({ mode, runState, macroRunInFlightRef, shortcutSav
       return;
     }
     lastFocusRefreshAttemptAt.current = now;
+
+    if (pollingPausedRef.current) {
+      if (!shouldAttemptPausedReconnect({
+        isPaused: pollingPausedRef.current,
+        trigger,
+        now,
+        lastResumeAttemptAt: lastResumeAttemptAtRef.current,
+        inFlight: resumeAttemptInFlightRef.current
+      })) {
+        return;
+      }
+
+      resumeAttemptInFlightRef.current = true;
+      lastResumeAttemptAtRef.current = now;
+      try {
+        const reconnect = await window.excel?.reconnect?.();
+        if (reconnect?.success) {
+          pollingPausedRef.current = false;
+          pollingPausedReasonRef.current = '';
+          await loadSearchData({ silent: true });
+        }
+      } finally {
+        resumeAttemptInFlightRef.current = false;
+      }
+      return;
+    }
 
     // When in multi_instance state, try Solution 1 (helper resolution) first,
     // then fall back to reconnect (cache clear) for Solution 2
@@ -212,11 +281,11 @@ export function useSearchData({ mode, runState, macroRunInFlightRef, shortcutSav
     loadSearchData({ silent: true });
 
     const handleFocus = () => {
-      refreshSearchOnForeground();
+      refreshSearchOnForeground({ trigger: 'focus' });
     };
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
-        refreshSearchOnForeground();
+        refreshSearchOnForeground({ trigger: 'visibility' });
       }
     };
 
@@ -224,7 +293,7 @@ export function useSearchData({ mode, runState, macroRunInFlightRef, shortcutSav
     document.addEventListener('visibilitychange', handleVisibilityChange);
 
     const periodicId = setInterval(() => {
-      refreshSearchOnForeground();
+      refreshSearchOnForeground({ trigger: 'interval' });
     }, SEARCH_PERIODIC_REFRESH_MS);
 
     return () => {

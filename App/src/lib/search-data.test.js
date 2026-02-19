@@ -19,6 +19,12 @@ test('mapSearchError maps NO_WORKBOOK to no_workbook state', () => {
   assert.equal(result.code, 'NO_WORKBOOK');
 });
 
+test('mapSearchError maps MULTI_INSTANCE to multi_instance state', () => {
+  const result = mapSearchError('MULTI_INSTANCE: Multiple Excel processes detected');
+  assert.equal(result.status, 'multi_instance');
+  assert.equal(result.code, 'MULTI_INSTANCE');
+});
+
 test('mapSearchError maps unknown errors to error and preserves message', () => {
   const result = mapSearchError('Some unexpected failure');
   assert.equal(result.status, 'error');

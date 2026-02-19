@@ -146,6 +146,126 @@ async function withExcelFocus(fn, options = {}) {
 }
 
 function registerHandlers() {
+  const withComRelease = async (operation) => {
+    try {
+      return await Promise.resolve(operation());
+    } finally {
+      try {
+        excel.clearComCache();
+      } catch {
+        // Ignore cache clear failures.
+      }
+    }
+  };
+
+  const POLLING_PAUSE_PROTECTED_CHANNELS = new Set([
+    'workbook:info',
+    'workbook:list',
+    'vba:modules',
+    'vba:procedures',
+    'vba:shortcut:audit',
+    'vba:shortcut:audit:by-workbook'
+  ]);
+
+  let pollingPaused = false;
+  let pollingPauseReason = '';
+  let pollingPausedAt = 0;
+
+  const extractMessage = (result) => {
+    if (!result || typeof result !== 'object') {
+      return '';
+    }
+
+    const message = String(result.message || result.error || '').trim();
+    return message;
+  };
+
+  const extractPauseReason = (result) => {
+    const message = extractMessage(result).toUpperCase();
+    if (message.includes('NO_WORKBOOK')) {
+      return 'NO_WORKBOOK';
+    }
+    if (message.includes('NO_EXCEL')) {
+      return 'NO_EXCEL';
+    }
+    return '';
+  };
+
+  const isPauseTrigger = (result) => {
+    const reason = extractPauseReason(result);
+    return reason === 'NO_EXCEL' || reason === 'NO_WORKBOOK';
+  };
+
+  const setPollingPaused = (reason) => {
+    pollingPaused = true;
+    pollingPauseReason = reason || 'NO_EXCEL';
+    pollingPausedAt = Date.now();
+  };
+
+  const clearPollingPaused = () => {
+    pollingPaused = false;
+    pollingPauseReason = '';
+    pollingPausedAt = 0;
+  };
+
+  const buildPausedResult = (channel) => {
+    const code = pollingPauseReason === 'NO_WORKBOOK' ? 'NO_WORKBOOK' : 'NO_EXCEL';
+    const message = `${code}: Search polling is paused until reconnect succeeds.`;
+    const base = {
+      success: false,
+      message,
+      paused: true,
+      reason: 'polling_paused',
+      pausedAt: pollingPausedAt
+    };
+
+    if (channel === 'vba:modules') {
+      return { ...base, modules: [] };
+    }
+
+    if (channel === 'vba:procedures') {
+      return { ...base, procedures: [] };
+    }
+
+    if (channel === 'workbook:list') {
+      return { ...base, workbooks: [] };
+    }
+
+    if (channel === 'vba:shortcut:audit' || channel === 'vba:shortcut:audit:by-workbook') {
+      return { ...base, shortcuts: [], unmapped: [] };
+    }
+
+    if (channel === 'workbook:info') {
+      return {
+        ...base,
+        name: '',
+        path: '',
+        activeSheet: '',
+        sheets: []
+      };
+    }
+
+    return base;
+  };
+
+  const withPollingPause = async (channel, operation) => {
+    const isProtected = POLLING_PAUSE_PROTECTED_CHANNELS.has(channel);
+    if (isProtected && pollingPaused) {
+      return buildPausedResult(channel);
+    }
+
+    const result = await withComRelease(operation);
+
+    if (isProtected) {
+      if (result?.success) {
+        clearPollingPaused();
+      } else if (isPauseTrigger(result)) {
+        setPollingPaused(extractPauseReason(result));
+      }
+    }
+
+    return result;
+  };
 
   // ==========================================================================
   // APP CONTROLS
@@ -169,7 +289,9 @@ function registerHandlers() {
     logIpc('vba:inject', 'start', { moduleName, codeLength: code?.length });
 
     // Use withExcelFocus to prevent hiding Excel dialogs during injection
-    const result = await withExcelFocus(() => excel.injectModule(moduleName, code));
+    const result = await withComRelease(
+      () => withExcelFocus(() => excel.injectModule(moduleName, code))
+    );
 
     logIpc('vba:inject', 'end', { success: result.success });
     return result;
@@ -187,7 +309,9 @@ function registerHandlers() {
     logIpc('vba:run', 'start', { macroName });
 
     // Use withExcelFocus - CRITICAL for MsgBox/dialog visibility
-    const result = await withExcelFocus(() => excel.runMacro(macroName));
+    const result = await withComRelease(
+      () => withExcelFocus(() => excel.runMacro(macroName))
+    );
 
     logIpc('vba:run', 'end', { success: result.success, message: result.message });
     return result;
@@ -198,11 +322,11 @@ function registerHandlers() {
    * List VBA modules in the active workbook
    * Channel: 'vba:modules'
    */
-  ipcMain.handle('vba:modules', () => {
+  ipcMain.handle('vba:modules', async () => {
     logIpc('vba:modules', 'start');
 
     // Read-only listing path: avoid withExcelFocus to reduce z-order/focus churn.
-    const result = excel.listModules();
+    const result = await withPollingPause('vba:modules', () => excel.listModules());
 
     logIpc('vba:modules', 'end', { success: result.success, count: result.modules?.length });
     return result;
@@ -213,10 +337,12 @@ function registerHandlers() {
    * Channel: 'vba:modules:by-workbook'
    * Args: { workbookName: string }
    */
-  ipcMain.handle('vba:modules:by-workbook', (_, { workbookName, workbookPath } = {}) => {
+  ipcMain.handle('vba:modules:by-workbook', async (_, { workbookName, workbookPath } = {}) => {
     logIpc('vba:modules:by-workbook', 'start', { workbookName, workbookPath });
 
-    const result = excel.listModulesByWorkbookName(workbookName, { workbookPath });
+    const result = await withComRelease(
+      () => excel.listModulesByWorkbookName(workbookName, { workbookPath })
+    );
 
     logIpc('vba:modules:by-workbook', 'end', {
       success: result.success,
@@ -230,11 +356,11 @@ function registerHandlers() {
    * List procedures (Subs/Functions/Properties) in the active workbook
    * Channel: 'vba:procedures'
    */
-  ipcMain.handle('vba:procedures', () => {
+  ipcMain.handle('vba:procedures', async () => {
     logIpc('vba:procedures', 'start');
 
     // Read-only listing path: avoid withExcelFocus to reduce z-order/focus churn.
-    const result = excel.listProcedures();
+    const result = await withPollingPause('vba:procedures', () => excel.listProcedures());
 
     logIpc('vba:procedures', 'end', { success: result.success, count: result.procedures?.length });
     return result;
@@ -245,10 +371,12 @@ function registerHandlers() {
    * Channel: 'vba:procedures:by-workbook'
    * Args: { workbookName: string }
    */
-  ipcMain.handle('vba:procedures:by-workbook', (_, { workbookName, workbookPath } = {}) => {
+  ipcMain.handle('vba:procedures:by-workbook', async (_, { workbookName, workbookPath } = {}) => {
     logIpc('vba:procedures:by-workbook', 'start', { workbookName, workbookPath });
 
-    const result = excel.listProceduresByWorkbookName(workbookName, { workbookPath });
+    const result = await withComRelease(
+      () => excel.listProceduresByWorkbookName(workbookName, { workbookPath })
+    );
 
     logIpc('vba:procedures:by-workbook', 'end', {
       success: result.success,
@@ -266,7 +394,9 @@ function registerHandlers() {
   ipcMain.handle('vba:shortcut:set', async (_, { macroName, shortcutKey }) => {
     logIpc('vba:shortcut:set', 'start', { macroName, shortcutKey });
 
-    const result = await withExcelFocus(() => excel.setMacroShortcut(macroName, shortcutKey));
+    const result = await withComRelease(
+      () => withExcelFocus(() => excel.setMacroShortcut(macroName, shortcutKey))
+    );
 
     logIpc('vba:shortcut:set', 'end', { success: result.success });
     return result;
@@ -280,8 +410,10 @@ function registerHandlers() {
   ipcMain.handle('vba:shortcut:set:by-workbook', async (_, { workbookName, workbookPath, macroName, shortcutKey } = {}) => {
     logIpc('vba:shortcut:set:by-workbook', 'start', { workbookName, workbookPath, macroName, shortcutKey });
 
-    const result = await withExcelFocus(
-      () => excel.setMacroShortcutByWorkbookName(workbookName, macroName, shortcutKey, { workbookPath })
+    const result = await withComRelease(
+      () => withExcelFocus(
+        () => excel.setMacroShortcutByWorkbookName(workbookName, macroName, shortcutKey, { workbookPath })
+      )
     );
 
     logIpc('vba:shortcut:set:by-workbook', 'end', {
@@ -295,11 +427,11 @@ function registerHandlers() {
    * Audit tracked shortcuts
    * Channel: 'vba:shortcut:audit'
    */
-  ipcMain.handle('vba:shortcut:audit', () => {
+  ipcMain.handle('vba:shortcut:audit', async () => {
     logIpc('vba:shortcut:audit', 'start');
 
     // Read-only audit path: avoid withExcelFocus to reduce z-order/focus churn.
-    const result = excel.auditShortcuts();
+    const result = await withPollingPause('vba:shortcut:audit', () => excel.auditShortcuts());
 
     logIpc('vba:shortcut:audit', 'end', { success: result.success });
     return result;
@@ -310,10 +442,13 @@ function registerHandlers() {
    * Channel: 'vba:shortcut:audit:by-workbook'
    * Args: { workbookName: string }
    */
-  ipcMain.handle('vba:shortcut:audit:by-workbook', (_, { workbookName, workbookPath } = {}) => {
+  ipcMain.handle('vba:shortcut:audit:by-workbook', async (_, { workbookName, workbookPath } = {}) => {
     logIpc('vba:shortcut:audit:by-workbook', 'start', { workbookName, workbookPath });
 
-    const result = excel.auditShortcutsByWorkbookName(workbookName, { workbookPath });
+    const result = await withPollingPause(
+      'vba:shortcut:audit:by-workbook',
+      () => excel.auditShortcutsByWorkbookName(workbookName, { workbookPath })
+    );
 
     logIpc('vba:shortcut:audit:by-workbook', 'end', {
       success: result.success,
@@ -331,9 +466,9 @@ function registerHandlers() {
    * Channel: 'cell:read'
    * Args: { address: string }
    */
-  ipcMain.handle('cell:read', (_, { address }) => {
+  ipcMain.handle('cell:read', async (_, { address }) => {
     logIpc('cell:read', 'start', { address });
-    const result = excel.readCell(address);
+    const result = await withComRelease(() => excel.readCell(address));
     logIpc('cell:read', 'end', { success: result.success });
     return result;
   });
@@ -343,9 +478,9 @@ function registerHandlers() {
    * Channel: 'cell:write'
    * Args: { address: string, value: any }
    */
-  ipcMain.handle('cell:write', (_, { address, value }) => {
+  ipcMain.handle('cell:write', async (_, { address, value }) => {
     logIpc('cell:write', 'start', { address });
-    const result = excel.writeCell(address, value);
+    const result = await withComRelease(() => excel.writeCell(address, value));
     logIpc('cell:write', 'end', { success: result.success });
     return result;
   });
@@ -354,9 +489,9 @@ function registerHandlers() {
    * Get current selection
    * Channel: 'cell:selection'
    */
-  ipcMain.handle('cell:selection', () => {
+  ipcMain.handle('cell:selection', async () => {
     logIpc('cell:selection', 'start');
-    const result = excel.getSelection();
+    const result = await withComRelease(() => excel.getSelection());
     logIpc('cell:selection', 'end', { success: result.success });
     return result;
   });
@@ -366,9 +501,9 @@ function registerHandlers() {
    * Channel: 'cell:highlight'
    * Args: { color: string }
    */
-  ipcMain.handle('cell:highlight', (_, { color }) => {
+  ipcMain.handle('cell:highlight', async (_, { color }) => {
     logIpc('cell:highlight', 'start', { color });
-    const result = excel.highlightSelection(color);
+    const result = await withComRelease(() => excel.highlightSelection(color));
     logIpc('cell:highlight', 'end', { success: result.success });
     return result;
   });
@@ -381,9 +516,9 @@ function registerHandlers() {
    * Get workbook info
    * Channel: 'workbook:info'
    */
-  ipcMain.handle('workbook:info', () => {
+  ipcMain.handle('workbook:info', async () => {
     logIpc('workbook:info', 'start');
-    const result = excel.getWorkbookInfo();
+    const result = await withPollingPause('workbook:info', () => excel.getWorkbookInfo());
     logIpc('workbook:info', 'end', { success: result.success, name: result.name });
     return result;
   });
@@ -393,9 +528,9 @@ function registerHandlers() {
    * Channel: 'workbook:list'
    * Returns: { success: boolean, workbooks: Array<{ name: string, path: string }> }
    */
-  ipcMain.handle('workbook:list', () => {
+  ipcMain.handle('workbook:list', async () => {
     logIpc('workbook:list', 'start');
-    const result = excel.getOpenWorkbooks();
+    const result = await withPollingPause('workbook:list', () => excel.getOpenWorkbooks());
     logIpc('workbook:list', 'end', { success: result.success, count: result.workbooks?.length });
     return result;
   });
@@ -404,9 +539,9 @@ function registerHandlers() {
    * List worksheets with UsedRange stats
    * Channel: 'workbook:sheets'
    */
-  ipcMain.handle('workbook:sheets', () => {
+  ipcMain.handle('workbook:sheets', async () => {
     logIpc('workbook:sheets', 'start');
-    const result = excel.listWorksheets();
+    const result = await withComRelease(() => excel.listWorksheets());
     logIpc('workbook:sheets', 'end', { success: result.success, count: result.sheets?.length });
     return result;
   });
@@ -416,9 +551,9 @@ function registerHandlers() {
    * Channel: 'workbook:metadata'
    * Args: { sheetName?: string }
    */
-  ipcMain.handle('workbook:metadata', (_, args) => {
+  ipcMain.handle('workbook:metadata', async (_, args) => {
     logIpc('workbook:metadata', 'start', { sheetName: args?.sheetName });
-    const result = excel.getWorksheetMetadata(args);
+    const result = await withComRelease(() => excel.getWorksheetMetadata(args));
     logIpc('workbook:metadata', 'end', { success: result.success });
     return result;
   });
@@ -428,9 +563,9 @@ function registerHandlers() {
    * Channel: 'workbook:metadata:closed'
    * Args: { path: string, sheetName?: string }
    */
-  ipcMain.handle('workbook:metadata:closed', (_, args) => {
+  ipcMain.handle('workbook:metadata:closed', async (_, args) => {
     logIpc('workbook:metadata:closed', 'start', { path: args?.path });
-    const result = excel.getClosedWorkbookMetadata(args);
+    const result = await withComRelease(() => excel.getClosedWorkbookMetadata(args));
     logIpc('workbook:metadata:closed', 'end', { success: result.success });
     return result;
   });
@@ -448,72 +583,79 @@ function registerHandlers() {
    */
   ipcMain.handle('excel:resolveInstance', async () => {
     logIpc('excel:resolveInstance', 'start');
+    const result = await withComRelease(async () => {
+      // Step 1: Check if we're already connected to the right instance
+      const currentInfo = excel.getWorkbookInfo();
+      if (currentInfo.success) {
+        logIpc('excel:resolveInstance', 'end', { resolved: true, reason: 'already-connected' });
+        return { resolved: true, reason: 'already-connected' };
+      }
 
-    // Step 1: Check if we're already connected to the right instance
-    const currentInfo = excel.getWorkbookInfo();
-    if (currentInfo.success) {
-      logIpc('excel:resolveInstance', 'end', { resolved: true, reason: 'already-connected' });
-      return { resolved: true, reason: 'already-connected' };
-    }
+      // If the error isn't a workbook-not-found type, there's a different problem
+      const msg = String(currentInfo.message || '').toUpperCase();
+      if (!msg.includes('NO_WORKBOOK') && !msg.includes('MULTI_INSTANCE')) {
+        logIpc('excel:resolveInstance', 'end', { resolved: false, reason: 'different-error', message: currentInfo.message });
+        return { resolved: false, reason: 'different-error', message: currentInfo.message };
+      }
 
-    // If the error isn't a workbook-not-found type, there's a different problem
-    const msg = String(currentInfo.message || '').toUpperCase();
-    if (!msg.includes('NO_WORKBOOK') && !msg.includes('MULTI_INSTANCE')) {
-      logIpc('excel:resolveInstance', 'end', { resolved: false, reason: 'different-error', message: currentInfo.message });
-      return { resolved: false, reason: 'different-error', message: currentInfo.message };
-    }
+      // Step 2: Ask the C# helper to find and activate the correct Excel instance
+      const helper = excel._focusHelper;
+      if (!helper || typeof helper.findExcelWithWorkbooks !== 'function') {
+        logIpc('excel:resolveInstance', 'end', { resolved: false, reason: 'helper-unavailable' });
+        return { resolved: false, reason: 'helper-unavailable' };
+      }
 
-    // Step 2: Ask the C# helper to find and activate the correct Excel instance
-    const helper = excel._focusHelper;
-    if (!helper || typeof helper.findExcelWithWorkbooks !== 'function') {
-      logIpc('excel:resolveInstance', 'end', { resolved: false, reason: 'helper-unavailable' });
-      return { resolved: false, reason: 'helper-unavailable' };
-    }
+      let helperResult;
+      try {
+        helperResult = await helper.findExcelWithWorkbooks(3000);
+      } catch (error) {
+        logIpc('excel:resolveInstance', 'end', { resolved: false, reason: 'helper-error', error: error.message });
+        return { resolved: false, reason: 'helper-error' };
+      }
 
-    let helperResult;
-    try {
-      helperResult = await helper.findExcelWithWorkbooks(3000);
-    } catch (error) {
-      logIpc('excel:resolveInstance', 'end', { resolved: false, reason: 'helper-error', error: error.message });
-      return { resolved: false, reason: 'helper-error' };
-    }
+      if (!helperResult || !helperResult.found) {
+        logIpc('excel:resolveInstance', 'end', { resolved: false, reason: 'no-qualifying-instance' });
+        return { resolved: false, reason: 'no-qualifying-instance' };
+      }
 
-    if (!helperResult || !helperResult.found) {
-      logIpc('excel:resolveInstance', 'end', { resolved: false, reason: 'no-qualifying-instance' });
-      return { resolved: false, reason: 'no-qualifying-instance' };
-    }
-
-    // If SetForegroundWindow failed, the ROT won't update — skip poll-retry
-    if (!helperResult.activated) {
-      logIpc('excel:resolveInstance', 'end', {
-        resolved: false,
-        reason: 'activation-failed',
-        pid: helperResult.pid
-      });
-      return { resolved: false, reason: 'activation-failed' };
-    }
-
-    // Step 3: Poll-retry — the ROT update from SetForegroundWindow can take variable time
-    const MAX_RETRIES = 3;
-    const RETRY_DELAY_MS = 150;
-
-    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-      await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS));
-      excel.clearComCache();
-      const retryInfo = excel.getWorkbookInfo();
-      if (retryInfo.success) {
+      // If SetForegroundWindow failed, the ROT won't update — skip poll-retry
+      if (!helperResult.activated) {
         logIpc('excel:resolveInstance', 'end', {
-          resolved: true,
-          reason: 'helper-resolved',
-          attempt,
+          resolved: false,
+          reason: 'activation-failed',
           pid: helperResult.pid
         });
-        return { resolved: true, reason: 'helper-resolved', attempt };
+        return { resolved: false, reason: 'activation-failed' };
       }
+
+      // Step 3: Poll-retry — the ROT update from SetForegroundWindow can take variable time
+      const MAX_RETRIES = 3;
+      const RETRY_DELAY_MS = 150;
+
+      for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS));
+        excel.clearComCache();
+        const retryInfo = excel.getWorkbookInfo();
+        if (retryInfo.success) {
+          logIpc('excel:resolveInstance', 'end', {
+            resolved: true,
+            reason: 'helper-resolved',
+            attempt,
+            pid: helperResult.pid
+          });
+          return { resolved: true, reason: 'helper-resolved', attempt };
+        }
+      }
+
+      logIpc('excel:resolveInstance', 'end', { resolved: false, reason: 'poll-exhausted' });
+      return { resolved: false, reason: 'poll-exhausted' };
+    });
+
+    if (result?.resolved) {
+      clearPollingPaused();
     }
 
-    logIpc('excel:resolveInstance', 'end', { resolved: false, reason: 'poll-exhausted' });
-    return { resolved: false, reason: 'poll-exhausted' };
+    return result;
   });
 
   /**
@@ -521,10 +663,15 @@ function registerHandlers() {
    * Used for manual/auto reconnect after user focuses the correct Excel window.
    * Channel: 'excel:reconnect'
    */
-  ipcMain.handle('excel:reconnect', () => {
+  ipcMain.handle('excel:reconnect', async () => {
     logIpc('excel:reconnect', 'start');
-    excel.clearComCache();
-    const result = excel.getWorkbookInfo();
+    const result = await withComRelease(() => {
+      excel.clearComCache();
+      return excel.getWorkbookInfo();
+    });
+    if (result?.success) {
+      clearPollingPaused();
+    }
     logIpc('excel:reconnect', 'end', { success: result.success });
     return result;
   });

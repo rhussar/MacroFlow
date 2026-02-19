@@ -1,11 +1,19 @@
-/**
+﻿/**
  * ExcelBridge - COM bridge for Excel automation.
  *
  * This is the only file that should touch Excel via COM.
  * All UI/IPC layers call into this class.
  */
 
+const { execSync } = require('node:child_process');
 const winax = require('winax');
+
+function parseTasklistRows(output) {
+  return String(output || '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !line.toUpperCase().startsWith('INFO:'));
+}
 
 // VBA Component Types (vbext_ComponentType)
 const VBA_COMPONENT_TYPE = {
@@ -25,8 +33,6 @@ const VBA_COMPONENT_NAME = {
 class ExcelBridge {
   constructor() {
     this._proceduresCache = null;
-    this._cachedApp = null;
-    this._cachedAppActivate = null;
     this._focusHelper = null;
     this._multiInstanceCacheTimestamp = 0;
     this._multiInstanceCacheResult = null;
@@ -37,9 +43,40 @@ class ExcelBridge {
   }
 
   clearComCache() {
-    this._cachedApp = null;
-    this._cachedAppActivate = null;
     this._proceduresCache = null;
+    this._multiInstanceCacheTimestamp = 0;
+    this._multiInstanceCacheResult = null;
+  }
+
+  _safeRelease(...objects) {
+    const releasable = objects.filter(Boolean);
+    if (releasable.length < 1) {
+      return;
+    }
+    try {
+      winax.release(...releasable);
+    } catch {
+      // Ignore release failures.
+    }
+  }
+
+  _listExcelProcessIds() {
+    try {
+      const output = execSync('tasklist /FI "IMAGENAME eq EXCEL.EXE" /FO CSV /NH', {
+        windowsHide: true,
+        timeout: 3000,
+        encoding: 'utf8'
+      });
+      const rows = parseTasklistRows(output);
+      return rows
+        .map((line) => {
+          const match = line.match(/^"EXCEL\.EXE","(\d+)"/i);
+          return match ? Number(match[1]) : NaN;
+        })
+        .filter((value) => Number.isFinite(value));
+    } catch {
+      return [];
+    }
   }
 
   // ===========================================================================
@@ -48,24 +85,16 @@ class ExcelBridge {
 
   /**
    * Connect to a running Excel instance (never creates a new one).
-   * Caches the COM reference and reuses it until the connection goes stale.
+   * Returns a fresh COM reference for each call.
    * @returns {object} Excel.Application COM object
    * @throws {Error} If Excel is not running
    */
   getApp(options = {}) {
     const { activate = true } = options;
 
-    // Try to reuse the cached COM reference if the activate mode matches
-    if (this._cachedApp && this._cachedAppActivate === activate) {
-      try {
-        // Probe the cached reference — if Excel was closed this will throw
-        void this._cachedApp.Version;
-        return this._cachedApp;
-      } catch {
-        // Stale reference — Excel was closed or restarted
-        this._cachedApp = null;
-        this._cachedAppActivate = null;
-      }
+    const processIds = this._listExcelProcessIds();
+    if (processIds.length === 0) {
+      throw new Error('NO_EXCEL: Excel is not running. Please open Excel first.');
     }
 
     try {
@@ -73,14 +102,57 @@ class ExcelBridge {
       if (!excel) {
         throw new Error('Excel application not found');
       }
-      this._cachedApp = excel;
-      this._cachedAppActivate = activate;
       return excel;
     } catch (error) {
-      this._cachedApp = null;
-      this._cachedAppActivate = null;
-      throw new Error('NO_EXCEL: Excel is not running. Please open Excel first.');
+      const remainingProcessIds = this._listExcelProcessIds();
+      if (remainingProcessIds.length === 0) {
+        throw new Error('NO_EXCEL: Excel is not running. Please open Excel first.');
+      }
+      if (remainingProcessIds.length > 1) {
+        throw new Error(
+          'MULTI_INSTANCE: Multiple Excel processes detected. ' +
+          'Click on your Excel workbook, then return to MacroFlow.'
+        );
+      }
+      throw new Error(
+        `NO_WORKBOOK: Unable to connect to the active workbook in Excel. ${error.message || ''}`.trim()
+      );
     }
+  }
+
+  _withExcelApp(operation, options = {}) {
+    let excel = null;
+    try {
+      excel = this.getApp(options);
+      return operation(excel);
+    } finally {
+      this._safeRelease(excel);
+    }
+  }
+
+  _getActiveWorkbookFromApp(excel) {
+    const workbook = excel?.ActiveWorkbook;
+    if (!workbook) {
+      if (this._hasMultipleExcelProcesses()) {
+        throw new Error(
+          'MULTI_INSTANCE: Multiple Excel processes detected. ' +
+          'Click on your Excel workbook, then return to MacroFlow.'
+        );
+      }
+      throw new Error('NO_WORKBOOK: No workbook is open. Please open or create a workbook.');
+    }
+    return workbook;
+  }
+
+  _withActiveWorkbook(operation, options = {}) {
+    return this._withExcelApp((excel) => {
+      const workbook = this._getActiveWorkbookFromApp(excel);
+      try {
+        return operation({ excel, workbook });
+      } finally {
+        this._safeRelease(workbook);
+      }
+    }, options);
   }
 
   /**
@@ -89,26 +161,8 @@ class ExcelBridge {
    * @throws {Error} If no workbook is open
    */
   getActiveWorkbook(options = {}) {
-    const excel = this.getApp(options);
-    const workbook = excel.ActiveWorkbook;
-    if (!workbook) {
-      let workbookCount = 0;
-      try {
-        workbookCount = Number(excel.Workbooks.Count) || 0;
-      } catch {
-        workbookCount = 0;
-      }
-
-      if (workbookCount === 0 && this._hasMultipleExcelProcesses()) {
-        throw new Error(
-          'MULTI_INSTANCE: Multiple Excel processes detected. ' +
-          'Click on your Excel workbook, then return to MacroFlow.'
-        );
-      }
-
-      throw new Error('NO_WORKBOOK: No workbook is open. Please open or create a workbook.');
-    }
-    return workbook;
+    const excel = options.excel || this.getApp(options);
+    return this._getActiveWorkbookFromApp(excel);
   }
 
   _hasMultipleExcelProcesses() {
@@ -117,25 +171,14 @@ class ExcelBridge {
       return this._multiInstanceCacheResult;
     }
 
-    try {
-      const { execSync } = require('node:child_process');
-      const output = execSync('tasklist /FI "IMAGENAME eq EXCEL.EXE" /NH', {
-        windowsHide: true,
-        timeout: 3000,
-        encoding: 'utf8'
-      });
-      const excelLines = output.split('\n').filter(
-        (line) => line.trim().toUpperCase().startsWith('EXCEL.EXE')
-      );
-      const result = excelLines.length > 1;
-      this._multiInstanceCacheTimestamp = now;
-      this._multiInstanceCacheResult = result;
-      return result;
-    } catch {
-      this._multiInstanceCacheTimestamp = now;
-      this._multiInstanceCacheResult = false;
-      return false;
-    }
+    const result = this._listExcelProcessIds().length > 1;
+    this._multiInstanceCacheTimestamp = now;
+    this._multiInstanceCacheResult = result;
+    return result;
+  }
+
+  hasMultipleExcelProcesses() {
+    return this._hasMultipleExcelProcesses();
   }
 
   /**
@@ -144,7 +187,7 @@ class ExcelBridge {
    * @throws {Error} If VBA access is not trusted
    */
   getVBProject(options = {}) {
-    const workbook = this.getActiveWorkbook(options);
+    const workbook = options.workbook || this.getActiveWorkbook(options);
     return this._getVBProjectForWorkbook(workbook);
   }
 
@@ -198,44 +241,63 @@ class ExcelBridge {
       return null;
     }
 
-    if (normalizedPath) {
-      for (let i = 1; i <= count; i++) {
-        const workbook = workbooks.Item(i);
-        if (!workbook) {
-          continue;
-        }
-        const candidatePath = String(workbook.FullName || '').trim().toLowerCase();
-        if (candidatePath === normalizedPath) {
-          return workbook;
+    const nonMatchingRefs = [];
+    let matchedWorkbook = null;
+
+    try {
+      if (normalizedPath) {
+        for (let i = 1; i <= count; i++) {
+          const workbook = workbooks.Item(i);
+          if (!workbook) {
+            continue;
+          }
+          const candidatePath = String(workbook.FullName || '').trim().toLowerCase();
+          if (candidatePath === normalizedPath) {
+            matchedWorkbook = workbook;
+            break;
+          }
+          nonMatchingRefs.push(workbook);
         }
       }
-    }
 
-    if (normalizedName) {
-      for (let i = 1; i <= count; i++) {
-        const workbook = workbooks.Item(i);
-        if (!workbook) {
-          continue;
-        }
-        const candidateName = String(workbook.Name || '').trim().toLowerCase();
-        if (candidateName === normalizedName) {
-          return workbook;
+      if (!matchedWorkbook && normalizedName) {
+        for (let i = 1; i <= count; i++) {
+          const workbook = workbooks.Item(i);
+          if (!workbook) {
+            continue;
+          }
+          const candidateName = String(workbook.Name || '').trim().toLowerCase();
+          if (candidateName === normalizedName) {
+            matchedWorkbook = workbook;
+            break;
+          }
+          nonMatchingRefs.push(workbook);
         }
       }
-    }
 
-    return null;
+      return matchedWorkbook;
+    } finally {
+      this._safeRelease(...nonMatchingRefs, workbooks);
+    }
   }
 
   _findComponentByName(vbProject, name) {
-    const components = vbProject.VBComponents;
-    for (let i = 1; i <= components.Count; i++) {
-      const component = components.Item(i);
-      if (component.Name === name) {
-        return component;
+    let components = null;
+    let found = null;
+    try {
+      components = vbProject.VBComponents;
+      for (let i = 1; i <= components.Count; i++) {
+        const component = components.Item(i);
+        if (component.Name === name) {
+          found = component;
+          break;
+        }
+        this._safeRelease(component);
       }
+      return found;
+    } finally {
+      this._safeRelease(components);
     }
-    return null;
   }
 
   _qualifyWorkbookName(name) {
@@ -284,7 +346,9 @@ class ExcelBridge {
   }
 
   _normalizeMacroName(macroName, workbook) {
-    const { procedures } = this._listMacroProcedures();
+    const procedures = workbook
+      ? this._listMacroProceduresForWorkbook(workbook)
+      : this._listMacroProcedures().procedures;
     return this._normalizeMacroNameForWorkbook(macroName, workbook, procedures);
   }
 
@@ -295,20 +359,30 @@ class ExcelBridge {
   _listModulesForWorkbook(workbook, vbProject) {
     const components = vbProject.VBComponents;
     const modules = [];
+    const componentRefs = [];
+    const codeModuleRefs = [];
 
-    for (let i = 1; i <= components.Count; i++) {
-      const component = components.Item(i);
-      const codeModule = component.CodeModule;
-      const lineCount = codeModule ? codeModule.CountOfLines : 0;
-      modules.push({
-        name: component.Name,
-        typeId: component.Type,
-        type: this._componentTypeName(component.Type),
-        lineCount
-      });
+    try {
+      for (let i = 1; i <= components.Count; i++) {
+        const component = components.Item(i);
+        componentRefs.push(component);
+        const codeModule = component.CodeModule;
+        if (codeModule) {
+          codeModuleRefs.push(codeModule);
+        }
+        const lineCount = codeModule ? codeModule.CountOfLines : 0;
+        modules.push({
+          name: component.Name,
+          typeId: component.Type,
+          type: this._componentTypeName(component.Type),
+          lineCount
+        });
+      }
+
+      return modules;
+    } finally {
+      this._safeRelease(...codeModuleRefs, ...componentRefs, components);
     }
-
-    return modules;
   }
 
   _listProceduresForWorkbook(workbook, vbProject) {
@@ -320,52 +394,60 @@ class ExcelBridge {
         : {};
     const nextModuleEntries = {};
     const procedures = [];
+    const componentRefs = [];
+    const codeModuleRefs = [];
 
-    for (let i = 1; i <= components.Count; i++) {
-      const component = components.Item(i);
-      const moduleName = String(component.Name);
-      const codeModule = component.CodeModule;
-      if (!codeModule) {
-        continue;
-      }
+    try {
+      for (let i = 1; i <= components.Count; i++) {
+        const component = components.Item(i);
+        componentRefs.push(component);
+        const moduleName = String(component.Name);
+        const codeModule = component.CodeModule;
+        if (!codeModule) {
+          continue;
+        }
+        codeModuleRefs.push(codeModule);
 
-      const lineCount = Number(codeModule.CountOfLines) || 0;
-      if (lineCount < 1) {
-        continue;
-      }
+        const lineCount = Number(codeModule.CountOfLines) || 0;
+        if (lineCount < 1) {
+          continue;
+        }
 
-      const cachedModule = previousModuleEntries[moduleName];
-      if (cachedModule && cachedModule.lineCount === lineCount) {
-        nextModuleEntries[moduleName] = cachedModule;
-        cachedModule.procedures.forEach((proc) => {
+        const cachedModule = previousModuleEntries[moduleName];
+        if (cachedModule && cachedModule.lineCount === lineCount) {
+          nextModuleEntries[moduleName] = cachedModule;
+          cachedModule.procedures.forEach((proc) => {
+            procedures.push({ ...proc });
+          });
+          continue;
+        }
+
+        const codeText = codeModule.Lines(1, lineCount);
+        const parsed = this._parseProcedures(codeText);
+        const moduleProcedures = parsed.map((proc) => ({
+          module: moduleName,
+          ...proc
+        }));
+
+        nextModuleEntries[moduleName] = {
+          lineCount,
+          procedures: moduleProcedures
+        };
+
+        moduleProcedures.forEach((proc) => {
           procedures.push({ ...proc });
         });
-        continue;
       }
 
-      const codeText = codeModule.Lines(1, lineCount);
-      const parsed = this._parseProcedures(codeText);
-      const moduleProcedures = parsed.map((proc) => ({
-        module: moduleName,
-        ...proc
-      }));
-
-      nextModuleEntries[moduleName] = {
-        lineCount,
-        procedures: moduleProcedures
+      this._proceduresCache = {
+        workbookKey,
+        moduleEntries: nextModuleEntries
       };
 
-      moduleProcedures.forEach((proc) => {
-        procedures.push({ ...proc });
-      });
+      return procedures;
+    } finally {
+      this._safeRelease(...codeModuleRefs, ...componentRefs, components);
     }
-
-    this._proceduresCache = {
-      workbookKey,
-      moduleEntries: nextModuleEntries
-    };
-
-    return procedures;
   }
 
   _parseProcedures(codeText) {
@@ -486,77 +568,90 @@ class ExcelBridge {
     ].join('\n');
   }
 
-  _ensureRuntimeModule() {
-    const vbProject = this.getVBProject();
+  _ensureRuntimeModule(workbook) {
+    const vbProject = this._getVBProjectForWorkbook(workbook);
     const moduleName = 'MacroFlow_Runtime';
     const code = this._getRuntimeModuleCode();
-    const existing = this._findComponentByName(vbProject, moduleName);
+    let existing = null;
+    let newModule = null;
+    let codeModule = null;
 
-    if (existing) {
-      const codeModule = existing.CodeModule;
-      if (codeModule.CountOfLines > 0) {
-        const existingCode = codeModule.Lines(1, codeModule.CountOfLines);
-        if (existingCode.includes('MacroFlow_RunMacro')) {
-          return;
+    try {
+      existing = this._findComponentByName(vbProject, moduleName);
+
+      if (existing) {
+        codeModule = existing.CodeModule;
+        if (codeModule.CountOfLines > 0) {
+          const existingCode = codeModule.Lines(1, codeModule.CountOfLines);
+          if (existingCode.includes('MacroFlow_RunMacro')) {
+            return;
+          }
+          codeModule.DeleteLines(1, codeModule.CountOfLines);
         }
-        codeModule.DeleteLines(1, codeModule.CountOfLines);
+        codeModule.AddFromString(code);
+        return;
       }
-      codeModule.AddFromString(code);
-      return;
-    }
 
-    const newModule = vbProject.VBComponents.Add(VBA_COMPONENT_TYPE.STANDARD_MODULE);
-    newModule.Name = moduleName;
-    newModule.CodeModule.AddFromString(code);
+      newModule = vbProject.VBComponents.Add(VBA_COMPONENT_TYPE.STANDARD_MODULE);
+      newModule.Name = moduleName;
+      codeModule = newModule.CodeModule;
+      codeModule.AddFromString(code);
+    } finally {
+      this._safeRelease(codeModule, existing, newModule, vbProject);
+    }
   }
 
   _withWorkbookAtPath(path, callback) {
-    const excel = this.getApp();
-    const state = {
-      screenUpdating: excel.ScreenUpdating,
-      displayAlerts: excel.DisplayAlerts,
-      enableEvents: excel.EnableEvents
-    };
-    let workbook = null;
-    let previousWorkbook = null;
+    return this._withExcelApp((excel) => {
+      const state = {
+        screenUpdating: excel.ScreenUpdating,
+        displayAlerts: excel.DisplayAlerts,
+        enableEvents: excel.EnableEvents
+      };
+      let workbook = null;
+      let previousWorkbook = null;
+      let workbookWindow = null;
 
-    try {
-      previousWorkbook = excel.ActiveWorkbook;
-      excel.ScreenUpdating = false;
-      excel.DisplayAlerts = false;
-      excel.EnableEvents = false;
-
-      workbook = excel.Workbooks.Open(path, 0, true);
       try {
-        workbook.Windows.Item(1).Visible = false;
-      } catch (error) {
-        // Ignore if window visibility cannot be changed.
-      }
+        previousWorkbook = excel.ActiveWorkbook;
+        excel.ScreenUpdating = false;
+        excel.DisplayAlerts = false;
+        excel.EnableEvents = false;
 
-      return callback(workbook, excel);
-    } finally {
-      if (workbook) {
+        workbook = excel.Workbooks.Open(path, 0, true);
         try {
-          workbook.Close(false);
+          workbookWindow = workbook.Windows.Item(1);
+          workbookWindow.Visible = false;
         } catch (error) {
-          // Ignore close errors.
+          // Ignore if window visibility cannot be changed.
         }
-      }
-      try {
-        excel.ScreenUpdating = state.screenUpdating;
-        excel.DisplayAlerts = state.displayAlerts;
-        excel.EnableEvents = state.enableEvents;
-      } catch (error) {
-        // Ignore restore errors.
-      }
-      if (previousWorkbook) {
+
+        return callback(workbook, excel);
+      } finally {
+        if (workbook) {
+          try {
+            workbook.Close(false);
+          } catch (error) {
+            // Ignore close errors.
+          }
+        }
         try {
-          previousWorkbook.Activate();
+          excel.ScreenUpdating = state.screenUpdating;
+          excel.DisplayAlerts = state.displayAlerts;
+          excel.EnableEvents = state.enableEvents;
         } catch (error) {
-          // Ignore activation errors.
+          // Ignore restore errors.
         }
+        if (previousWorkbook) {
+          try {
+            previousWorkbook.Activate();
+          } catch (error) {
+            // Ignore activation errors.
+          }
+        }
+        this._safeRelease(workbookWindow, workbook, previousWorkbook);
       }
-    }
+    });
   }
 
   _prepareMacroRun(excel, workbook) {
@@ -567,8 +662,13 @@ class ExcelBridge {
     }
 
     try {
-      if (excel.ActiveWindow) {
-        excel.ActiveWindow.Activate();
+      const activeWindow = excel.ActiveWindow;
+      try {
+        if (activeWindow) {
+          activeWindow.Activate();
+        }
+      } finally {
+        this._safeRelease(activeWindow);
       }
     } catch (error) {
       // Ignore window activation issues.
@@ -594,17 +694,22 @@ class ExcelBridge {
     let selectionInTable = false;
     let tableInfo = null;
 
+    let selection = null;
+    let selectionListObject = null;
+    let selectionListRange = null;
+
     try {
-      const selection = excel.Selection;
+      selection = excel.Selection;
       if (selection) {
         selectionAddress = String(selection.Address).replace(/\$/g, '');
         try {
-          const listObject = selection.ListObject;
-          if (listObject) {
+          selectionListObject = selection.ListObject;
+          if (selectionListObject) {
+            selectionListRange = selectionListObject.Range;
             selectionInTable = true;
             tableInfo = {
-              name: String(listObject.Name),
-              range: String(listObject.Range.Address).replace(/\$/g, '')
+              name: String(selectionListObject.Name),
+              range: String(selectionListRange.Address).replace(/\$/g, '')
             };
           }
         } catch (error) {
@@ -613,21 +718,28 @@ class ExcelBridge {
       }
     } catch (error) {
       // Ignore selection errors.
+    } finally {
+      this._safeRelease(selectionListRange, selectionListObject, selection);
     }
 
+    let activeCell = null;
+    let activeCellListObject = null;
+    let activeCellListRange = null;
+
     try {
-      const activeCell = excel.ActiveCell;
+      activeCell = excel.ActiveCell;
       if (activeCell) {
         activeCellAddress = String(activeCell.Address).replace(/\$/g, '');
         activeCellValue = this._normalizeValue(activeCell.Value2);
         if (!selectionInTable) {
           try {
-            const listObject = activeCell.ListObject;
-            if (listObject) {
+            activeCellListObject = activeCell.ListObject;
+            if (activeCellListObject) {
+              activeCellListRange = activeCellListObject.Range;
               selectionInTable = true;
               tableInfo = {
-                name: String(listObject.Name),
-                range: String(listObject.Range.Address).replace(/\$/g, '')
+                name: String(activeCellListObject.Name),
+                range: String(activeCellListRange.Address).replace(/\$/g, '')
               };
             }
           } catch (error) {
@@ -637,6 +749,8 @@ class ExcelBridge {
       }
     } catch (error) {
       // Ignore active cell errors.
+    } finally {
+      this._safeRelease(activeCellListRange, activeCellListObject, activeCell);
     }
 
     return {
@@ -651,201 +765,255 @@ class ExcelBridge {
   }
 
   _collectWorksheetMetadata({ excel, workbook, sheet, includeSelection }) {
-    const usedRange = sheet.UsedRange;
-    const startRow = usedRange.Row;
-    const startColumn = usedRange.Column;
-    const totalRows = Number(usedRange.Rows.Count);
-    const totalColumns = Number(usedRange.Columns.Count);
-
-    const SAMPLE_ROWS = 50;
-    const SAMPLE_COLS = 25;
-
-    const previewRows = Math.min(totalRows, SAMPLE_ROWS);
-    const previewCols = Math.min(totalColumns, SAMPLE_COLS);
-
-    const previewRange = sheet.Range(
-      sheet.Cells(startRow, startColumn),
-      sheet.Cells(startRow + previewRows - 1, startColumn + previewCols - 1)
-    );
-    const previewValues = previewRange.Value2;
-    const preview = this._normalizeRangeValues(previewValues);
-
-    const headerRange = sheet.Range(
-      sheet.Cells(startRow, startColumn),
-      sheet.Cells(startRow, startColumn + previewCols - 1)
-    );
-    const headerValues = this._normalizeRangeValues(headerRange.Value2);
-    const headers = headerValues[0] || [];
-
-    const headerAddressMap = {};
-    for (let colIndex = 0; colIndex < previewCols; colIndex++) {
-      const columnNumber = startColumn + colIndex;
-      const address = `${this._columnLetter(columnNumber)}${startRow}`;
-      headerAddressMap[address] = headers[colIndex] ?? null;
-    }
-
-    let formulaGrid = [];
-    try {
-      formulaGrid = this._normalizeRangeValues(previewRange.Formula);
-    } catch (error) {
-      formulaGrid = [];
-    }
-
-    const sampleRowCount = Math.max(0, Math.min(4, totalRows - 1));
-    let sampleRows = [];
-    let sampleRowStart = startRow + 1;
-    if (sampleRowCount > 0) {
-      const sampleRange = sheet.Range(
-        sheet.Cells(sampleRowStart, startColumn),
-        sheet.Cells(sampleRowStart + sampleRowCount - 1, startColumn + previewCols - 1)
-      );
-      sampleRows = this._normalizeRangeValues(sampleRange.Value2);
-    }
-
-    const columns = [];
-    for (let colIndex = 0; colIndex < previewCols; colIndex++) {
-      const columnNumber = startColumn + colIndex;
-      const columnLetter = this._columnLetter(columnNumber);
-      const header = headers[colIndex] !== undefined ? headers[colIndex] : '';
-
-      const typeCounts = {
-        empty: 0,
-        number: 0,
-        boolean: 0,
-        text: 0,
-        'number-text': 0,
-        'date-text': 0,
-        other: 0
-      };
-      const examples = [];
-      const exampleSet = new Set();
-      let nonEmpty = 0;
-      let numericMin = null;
-      let numericMax = null;
-      let formulaCells = 0;
-
-      const analysisRows = sampleRows.length ? sampleRows : preview.slice(1);
-      for (let rowIndex = 0; rowIndex < analysisRows.length; rowIndex++) {
-        const value = analysisRows[rowIndex]?.[colIndex];
-        const type = this._classifyValue(value);
-        typeCounts[type] += 1;
-        if (type !== 'empty') {
-          nonEmpty += 1;
-          const example = value === null || value === undefined ? '' : String(value);
-          if (example && !exampleSet.has(example) && examples.length < 6) {
-            examples.push(example);
-            exampleSet.add(example);
-          }
-        }
-        if (type === 'number') {
-          if (numericMin === null || value < numericMin) numericMin = value;
-          if (numericMax === null || value > numericMax) numericMax = value;
-        }
-
-        const formulaCell = formulaGrid[rowIndex + 1]?.[colIndex];
-        if (typeof formulaCell === 'string' && formulaCell.startsWith('=')) {
-          formulaCells += 1;
-        }
+    const buildRangeFromCells = (startRow, startColumn, endRow, endColumn) => {
+      let startCell = null;
+      let endCell = null;
+      try {
+        startCell = sheet.Cells(startRow, startColumn);
+        endCell = sheet.Cells(endRow, endColumn);
+        return sheet.Range(startCell, endCell);
+      } finally {
+        this._safeRelease(startCell, endCell);
       }
-
-      const typeSummaryParts = Object.entries(typeCounts)
-        .filter(([key, count]) => key !== 'empty' && count > 0)
-        .sort((a, b) => b[1] - a[1])
-        .map(([key, count]) => `${key} ${count}`);
-      if (formulaCells > 0) {
-        typeSummaryParts.push(`formulas ${formulaCells}`);
-      }
-      const typeSummary = typeSummaryParts.length ? typeSummaryParts.join(' | ') : 'empty';
-
-      columns.push({
-        index: columnNumber,
-        column: columnLetter,
-        header,
-        nonEmpty,
-        empty: typeCounts.empty,
-        typeSummary,
-        examples,
-        numericMin,
-        numericMax,
-        formulaCells
-      });
-    }
-
-    const sheetNames = [];
-    let activeSheetName = '';
-    for (let i = 1; i <= workbook.Sheets.Count; i++) {
-      const sheetItem = workbook.Sheets.Item(i);
-      sheetNames.push(String(sheetItem.Name));
-    }
-    if (workbook.ActiveSheet) {
-      activeSheetName = String(workbook.ActiveSheet.Name);
-    }
-
-    const selectionContext = includeSelection ? this._buildSelectionContext(excel) : null;
-
-    const structuralContext = {
-      workbook: this._describeWorkbook(workbook),
-      sheets: sheetNames,
-      activeSheet: activeSheetName
     };
 
-    const dataContext = {
-      usedRange: {
-        address: String(usedRange.Address),
+    let usedRange = null;
+    let usedRows = null;
+    let usedColumns = null;
+    let previewRange = null;
+    let headerRange = null;
+    let sampleRange = null;
+    let workbookSheets = null;
+    const sheetRefs = [];
+    let activeSheetRef = null;
+
+    try {
+      usedRange = sheet.UsedRange;
+      usedRows = usedRange ? usedRange.Rows : null;
+      usedColumns = usedRange ? usedRange.Columns : null;
+
+      const startRow = usedRange.Row;
+      const startColumn = usedRange.Column;
+      const totalRows = Number(usedRows.Count);
+      const totalColumns = Number(usedColumns.Count);
+
+      const SAMPLE_ROWS = 50;
+      const SAMPLE_COLS = 25;
+
+      const previewRows = Math.min(totalRows, SAMPLE_ROWS);
+      const previewCols = Math.min(totalColumns, SAMPLE_COLS);
+
+      previewRange = buildRangeFromCells(
         startRow,
         startColumn,
-        rows: totalRows,
-        columns: totalColumns
-      },
-      headers,
-      headersByAddress: headerAddressMap,
-      sampleRows: {
-        startRow: sampleRowCount ? sampleRowStart : null,
-        endRow: sampleRowCount ? sampleRowStart + sampleRowCount - 1 : null,
-        rows: sampleRows
-      },
-      columns
-    };
+        startRow + previewRows - 1,
+        startColumn + previewCols - 1
+      );
+      const previewValues = previewRange.Value2;
+      const preview = this._normalizeRangeValues(previewValues);
 
-    const llmContext = {
-      structural: {
-        workbookName: structuralContext.workbook.name,
-        workbookPath: structuralContext.workbook.path,
-        worksheetNames: structuralContext.sheets,
-        activeSheet: structuralContext.activeSheet
-      },
-      data: {
-        usedRange: dataContext.usedRange,
-        headersByAddress: dataContext.headersByAddress,
-        sampleRows: dataContext.sampleRows,
-        columns: dataContext.columns.map((column) => ({
-          column: column.column,
-          header: column.header,
-          typeSummary: column.typeSummary,
-          nonEmpty: column.nonEmpty,
-          numericMin: column.numericMin,
-          numericMax: column.numericMax,
-          examples: column.examples,
-          formulaCells: column.formulaCells
-        }))
-      },
-      selection: selectionContext
-    };
+      headerRange = buildRangeFromCells(
+        startRow,
+        startColumn,
+        startRow,
+        startColumn + previewCols - 1
+      );
+      const headerValues = this._normalizeRangeValues(headerRange.Value2);
+      const headers = headerValues[0] || [];
 
-    return {
-      sheet: {
-        name: String(sheet.Name),
-        index: Number(sheet.Index)
-      },
-      structuralContext,
-      dataContext,
-      selectionContext,
-      llmContext,
-      preview: {
-        rows: preview,
-        truncated: totalRows > previewRows || totalColumns > previewCols
+      const headerAddressMap = {};
+      for (let colIndex = 0; colIndex < previewCols; colIndex++) {
+        const columnNumber = startColumn + colIndex;
+        const address = `${this._columnLetter(columnNumber)}${startRow}`;
+        headerAddressMap[address] = headers[colIndex] ?? null;
       }
-    };
+
+      let formulaGrid = [];
+      try {
+        formulaGrid = this._normalizeRangeValues(previewRange.Formula);
+      } catch (error) {
+        formulaGrid = [];
+      }
+
+      const sampleRowCount = Math.max(0, Math.min(4, totalRows - 1));
+      let sampleRows = [];
+      const sampleRowStart = startRow + 1;
+      if (sampleRowCount > 0) {
+        sampleRange = buildRangeFromCells(
+          sampleRowStart,
+          startColumn,
+          sampleRowStart + sampleRowCount - 1,
+          startColumn + previewCols - 1
+        );
+        sampleRows = this._normalizeRangeValues(sampleRange.Value2);
+      }
+
+      const columns = [];
+      for (let colIndex = 0; colIndex < previewCols; colIndex++) {
+        const columnNumber = startColumn + colIndex;
+        const columnLetter = this._columnLetter(columnNumber);
+        const header = headers[colIndex] !== undefined ? headers[colIndex] : '';
+
+        const typeCounts = {
+          empty: 0,
+          number: 0,
+          boolean: 0,
+          text: 0,
+          'number-text': 0,
+          'date-text': 0,
+          other: 0
+        };
+        const examples = [];
+        const exampleSet = new Set();
+        let nonEmpty = 0;
+        let numericMin = null;
+        let numericMax = null;
+        let formulaCells = 0;
+
+        const analysisRows = sampleRows.length ? sampleRows : preview.slice(1);
+        for (let rowIndex = 0; rowIndex < analysisRows.length; rowIndex++) {
+          const value = analysisRows[rowIndex]?.[colIndex];
+          const type = this._classifyValue(value);
+          typeCounts[type] += 1;
+          if (type !== 'empty') {
+            nonEmpty += 1;
+            const example = value === null || value === undefined ? '' : String(value);
+            if (example && !exampleSet.has(example) && examples.length < 6) {
+              examples.push(example);
+              exampleSet.add(example);
+            }
+          }
+          if (type === 'number') {
+            if (numericMin === null || value < numericMin) numericMin = value;
+            if (numericMax === null || value > numericMax) numericMax = value;
+          }
+
+          const formulaCell = formulaGrid[rowIndex + 1]?.[colIndex];
+          if (typeof formulaCell === 'string' && formulaCell.startsWith('=')) {
+            formulaCells += 1;
+          }
+        }
+
+        const typeSummaryParts = Object.entries(typeCounts)
+          .filter(([key, count]) => key !== 'empty' && count > 0)
+          .sort((a, b) => b[1] - a[1])
+          .map(([key, count]) => `${key} ${count}`);
+        if (formulaCells > 0) {
+          typeSummaryParts.push(`formulas ${formulaCells}`);
+        }
+        const typeSummary = typeSummaryParts.length ? typeSummaryParts.join(' | ') : 'empty';
+
+        columns.push({
+          index: columnNumber,
+          column: columnLetter,
+          header,
+          nonEmpty,
+          empty: typeCounts.empty,
+          typeSummary,
+          examples,
+          numericMin,
+          numericMax,
+          formulaCells
+        });
+      }
+
+      const sheetNames = [];
+      let activeSheetName = '';
+      workbookSheets = workbook.Sheets;
+      const sheetCount = workbookSheets ? Number(workbookSheets.Count) : 0;
+      for (let i = 1; i <= sheetCount; i++) {
+        const sheetItem = workbookSheets.Item(i);
+        sheetRefs.push(sheetItem);
+        sheetNames.push(String(sheetItem.Name));
+      }
+
+      try {
+        activeSheetRef = workbook.ActiveSheet;
+        if (activeSheetRef) {
+          activeSheetName = String(activeSheetRef.Name);
+        }
+      } catch (error) {
+        activeSheetName = '';
+      }
+
+      const selectionContext = includeSelection ? this._buildSelectionContext(excel) : null;
+
+      const structuralContext = {
+        workbook: this._describeWorkbook(workbook),
+        sheets: sheetNames,
+        activeSheet: activeSheetName
+      };
+
+      const dataContext = {
+        usedRange: {
+          address: String(usedRange.Address),
+          startRow,
+          startColumn,
+          rows: totalRows,
+          columns: totalColumns
+        },
+        headers,
+        headersByAddress: headerAddressMap,
+        sampleRows: {
+          startRow: sampleRowCount ? sampleRowStart : null,
+          endRow: sampleRowCount ? sampleRowStart + sampleRowCount - 1 : null,
+          rows: sampleRows
+        },
+        columns
+      };
+
+      const llmContext = {
+        structural: {
+          workbookName: structuralContext.workbook.name,
+          workbookPath: structuralContext.workbook.path,
+          worksheetNames: structuralContext.sheets,
+          activeSheet: structuralContext.activeSheet
+        },
+        data: {
+          usedRange: dataContext.usedRange,
+          headersByAddress: dataContext.headersByAddress,
+          sampleRows: dataContext.sampleRows,
+          columns: dataContext.columns.map((column) => ({
+            column: column.column,
+            header: column.header,
+            typeSummary: column.typeSummary,
+            nonEmpty: column.nonEmpty,
+            numericMin: column.numericMin,
+            numericMax: column.numericMax,
+            examples: column.examples,
+            formulaCells: column.formulaCells
+          }))
+        },
+        selection: selectionContext
+      };
+
+      return {
+        sheet: {
+          name: String(sheet.Name),
+          index: Number(sheet.Index)
+        },
+        structuralContext,
+        dataContext,
+        selectionContext,
+        llmContext,
+        preview: {
+          rows: preview,
+          truncated: totalRows > previewRows || totalColumns > previewCols
+        }
+      };
+    } finally {
+      this._safeRelease(
+        activeSheetRef,
+        ...sheetRefs,
+        workbookSheets,
+        sampleRange,
+        headerRange,
+        previewRange,
+        usedColumns,
+        usedRows,
+        usedRange
+      );
+    }
   }
 
   // ===========================================================================
@@ -858,24 +1026,36 @@ class ExcelBridge {
    */
   getWorkbookInfo() {
     try {
-      const workbook = this.getActiveWorkbook();
-      let activeSheet = '';
-      try {
-        activeSheet = workbook.ActiveSheet ? String(workbook.ActiveSheet.Name) : '';
-      } catch (error) {
-        activeSheet = '';
-      }
-      const sheets = [];
-      for (let i = 1; i <= workbook.Sheets.Count; i++) {
-        sheets.push(workbook.Sheets.Item(i).Name);
-      }
-      return {
-        success: true,
-        name: workbook.Name,
-        path: workbook.FullName,
-        activeSheet,
-        sheets
-      };
+      return this._withActiveWorkbook(({ workbook }) => {
+        let activeSheet = '';
+        let activeSheetRef = null;
+        const sheetRefs = [];
+        const sheets = [];
+
+        try {
+          try {
+            activeSheetRef = workbook.ActiveSheet;
+            activeSheet = activeSheetRef ? String(activeSheetRef.Name) : '';
+          } catch (error) {
+            activeSheet = '';
+          }
+          for (let i = 1; i <= workbook.Sheets.Count; i++) {
+            const sheet = workbook.Sheets.Item(i);
+            sheetRefs.push(sheet);
+            sheets.push(sheet.Name);
+          }
+        } finally {
+          this._safeRelease(activeSheetRef, ...sheetRefs);
+        }
+
+        return {
+          success: true,
+          name: workbook.Name,
+          path: workbook.FullName,
+          activeSheet,
+          sheets
+        };
+      });
     } catch (error) {
       return { success: false, message: error.message };
     }
@@ -887,16 +1067,23 @@ class ExcelBridge {
    */
   getOpenWorkbooks() {
     try {
-      const excel = this.getApp();
-      const workbooks = [];
-      const count = excel.Workbooks.Count;
+      return this._withExcelApp((excel) => {
+        const workbooks = [];
+        const count = excel.Workbooks.Count;
+        const workbookRefs = [];
 
-      for (let i = 1; i <= count; i++) {
-        const workbook = excel.Workbooks.Item(i);
-        workbooks.push(this._describeWorkbook(workbook));
-      }
+        try {
+          for (let i = 1; i <= count; i++) {
+            const workbook = excel.Workbooks.Item(i);
+            workbookRefs.push(workbook);
+            workbooks.push(this._describeWorkbook(workbook));
+          }
+        } finally {
+          this._safeRelease(...workbookRefs);
+        }
 
-      return { success: true, workbooks };
+        return { success: true, workbooks };
+      });
     } catch (error) {
       if (error.message.includes('NO_EXCEL')) {
         return { success: false, workbooks: [], message: 'Excel not found' };
@@ -911,37 +1098,59 @@ class ExcelBridge {
    */
   listWorksheets() {
     try {
-      const workbook = this.getActiveWorkbook();
-      const activeSheetName = workbook.ActiveSheet ? String(workbook.ActiveSheet.Name) : '';
-      const sheets = [];
-      for (let i = 1; i <= workbook.Sheets.Count; i++) {
-        const sheet = workbook.Sheets.Item(i);
-        let usedRange = null;
+      return this._withActiveWorkbook(({ workbook }) => {
+        let activeSheetRef = null;
+        let activeSheetName = '';
         try {
-          usedRange = sheet.UsedRange;
+          activeSheetRef = workbook.ActiveSheet;
+          activeSheetName = activeSheetRef ? String(activeSheetRef.Name) : '';
         } catch (error) {
-          usedRange = null;
+          activeSheetName = '';
         }
-        sheets.push({
-          name: String(sheet.Name),
-          index: i,
-          visible: Number(sheet.Visible),
-          active: activeSheetName ? activeSheetName === String(sheet.Name) : false,
-          usedRange: usedRange
-            ? {
-                address: String(usedRange.Address),
-                rows: Number(usedRange.Rows.Count),
-                columns: Number(usedRange.Columns.Count)
-              }
-            : null
-        });
-      }
+        const sheets = [];
+        const sheetRefs = [];
+        const rangeRefs = [];
+        let workbookSheets = null;
 
-      return {
-        success: true,
-        workbook: this._describeWorkbook(workbook),
-        sheets
-      };
+        try {
+          workbookSheets = workbook.Sheets;
+          const sheetCount = workbookSheets ? Number(workbookSheets.Count) : 0;
+          for (let i = 1; i <= sheetCount; i++) {
+            const sheet = workbookSheets.Item(i);
+            sheetRefs.push(sheet);
+            let usedRange = null;
+            try {
+              usedRange = sheet.UsedRange;
+              if (usedRange) {
+                rangeRefs.push(usedRange);
+              }
+            } catch (error) {
+              usedRange = null;
+            }
+            sheets.push({
+              name: String(sheet.Name),
+              index: i,
+              visible: Number(sheet.Visible),
+              active: activeSheetName ? activeSheetName === String(sheet.Name) : false,
+              usedRange: usedRange
+                ? {
+                    address: String(usedRange.Address),
+                    rows: Number(usedRange.Rows.Count),
+                    columns: Number(usedRange.Columns.Count)
+                  }
+                : null
+            });
+          }
+        } finally {
+          this._safeRelease(activeSheetRef, ...rangeRefs, ...sheetRefs, workbookSheets);
+        }
+
+        return {
+          success: true,
+          workbook: this._describeWorkbook(workbook),
+          sheets
+        };
+      });
     } catch (error) {
       return { success: false, sheets: [], message: error.message };
     }
@@ -954,24 +1163,28 @@ class ExcelBridge {
    */
   getWorksheetMetadata(options = {}) {
     try {
-      const excel = this.getApp();
-      const workbook = this.getActiveWorkbook();
-      const sheet = options.sheetName
-        ? workbook.Sheets.Item(options.sheetName)
-        : workbook.ActiveSheet;
+      return this._withActiveWorkbook(({ excel, workbook }) => {
+        const sheet = options.sheetName
+          ? workbook.Sheets.Item(options.sheetName)
+          : workbook.ActiveSheet;
 
-      const metadata = this._collectWorksheetMetadata({
-        excel,
-        workbook,
-        sheet,
-        includeSelection: true
+        try {
+          const metadata = this._collectWorksheetMetadata({
+            excel,
+            workbook,
+            sheet,
+            includeSelection: true
+          });
+
+          return {
+            success: true,
+            message: `Metadata read for "${sheet.Name}"`,
+            ...metadata
+          };
+        } finally {
+          this._safeRelease(sheet);
+        }
       });
-
-      return {
-        success: true,
-        message: `Metadata read for "${sheet.Name}"`,
-        ...metadata
-      };
     } catch (error) {
       return { success: false, message: error.message };
     }
@@ -992,17 +1205,21 @@ class ExcelBridge {
         const sheet = options.sheetName
           ? workbook.Sheets.Item(options.sheetName)
           : workbook.ActiveSheet;
-        const metadata = this._collectWorksheetMetadata({
-          excel,
-          workbook,
-          sheet,
-          includeSelection: false
-        });
-        return {
-          success: true,
-          message: `Metadata read for "${sheet.Name}"`,
-          ...metadata
-        };
+        try {
+          const metadata = this._collectWorksheetMetadata({
+            excel,
+            workbook,
+            sheet,
+            includeSelection: false
+          });
+          return {
+            success: true,
+            message: `Metadata read for "${sheet.Name}"`,
+            ...metadata
+          };
+        } finally {
+          this._safeRelease(sheet);
+        }
       });
     } catch (error) {
       return { success: false, message: error.message };
@@ -1020,9 +1237,14 @@ class ExcelBridge {
    */
   readCell(address) {
     try {
-      const excel = this.getApp();
-      const range = excel.ActiveSheet.Range(address);
-      return { success: true, address, value: this._normalizeValue(range.Value2) };
+      return this._withExcelApp((excel) => {
+        const range = excel.ActiveSheet.Range(address);
+        try {
+          return { success: true, address, value: this._normalizeValue(range.Value2) };
+        } finally {
+          this._safeRelease(range);
+        }
+      });
     } catch (error) {
       return { success: false, address, message: error.message };
     }
@@ -1036,10 +1258,15 @@ class ExcelBridge {
    */
   writeCell(address, value) {
     try {
-      const excel = this.getApp();
-      const range = excel.ActiveSheet.Range(address);
-      range.Value2 = value;
-      return { success: true, address };
+      return this._withExcelApp((excel) => {
+        const range = excel.ActiveSheet.Range(address);
+        try {
+          range.Value2 = value;
+          return { success: true, address };
+        } finally {
+          this._safeRelease(range);
+        }
+      });
     } catch (error) {
       return { success: false, address, message: error.message };
     }
@@ -1051,13 +1278,18 @@ class ExcelBridge {
    */
   getSelection() {
     try {
-      const excel = this.getApp();
-      const cell = excel.ActiveCell;
-      return {
-        success: true,
-        address: String(cell.Address).replace(/\$/g, ''),
-        value: this._normalizeValue(cell.Value2)
-      };
+      return this._withExcelApp((excel) => {
+        const cell = excel.ActiveCell;
+        try {
+          return {
+            success: true,
+            address: String(cell.Address).replace(/\$/g, ''),
+            value: this._normalizeValue(cell.Value2)
+          };
+        } finally {
+          this._safeRelease(cell);
+        }
+      });
     } catch (error) {
       return { success: false, message: error.message };
     }
@@ -1077,25 +1309,30 @@ class ExcelBridge {
     };
 
     try {
-      const excel = this.getApp();
-      const selection = excel.Selection;
+      return this._withExcelApp((excel) => {
+        const selection = excel.Selection;
 
-      if (!selection) {
-        return { success: false, message: 'No cells selected' };
-      }
+        try {
+          if (!selection) {
+            return { success: false, message: 'No cells selected' };
+          }
 
-      const colorValue = colorMap[colorName];
-      if (colorValue === undefined) {
-        return { success: false, message: `Unknown color: ${colorName}` };
-      }
+          const colorValue = colorMap[colorName];
+          if (colorValue === undefined) {
+            return { success: false, message: `Unknown color: ${colorName}` };
+          }
 
-      if (colorName === 'None') {
-        selection.Interior.ColorIndex = -4142;
-      } else {
-        selection.Interior.Color = colorValue;
-      }
+          if (colorName === 'None') {
+            selection.Interior.ColorIndex = -4142;
+          } else {
+            selection.Interior.Color = colorValue;
+          }
 
-      return { success: true, color: colorName };
+          return { success: true, color: colorName };
+        } finally {
+          this._safeRelease(selection);
+        }
+      });
     } catch (error) {
       return { success: false, message: error.message };
     }
@@ -1112,15 +1349,20 @@ class ExcelBridge {
   listModules(options = {}) {
     const { activate = true } = options;
     try {
-      const workbook = this.getActiveWorkbook({ activate });
-      const vbProject = this._getVBProjectForWorkbook(workbook);
-      const modules = this._listModulesForWorkbook(workbook, vbProject);
+      return this._withActiveWorkbook(({ workbook }) => {
+        const vbProject = this._getVBProjectForWorkbook(workbook);
+        try {
+          const modules = this._listModulesForWorkbook(workbook, vbProject);
 
-      return {
-        success: true,
-        workbook: this._describeWorkbook(workbook),
-        modules
-      };
+          return {
+            success: true,
+            workbook: this._describeWorkbook(workbook),
+            modules
+          };
+        } finally {
+          this._safeRelease(vbProject);
+        }
+      }, { activate });
     } catch (error) {
       return { success: false, modules: [], message: error.message };
     }
@@ -1147,31 +1389,40 @@ class ExcelBridge {
     }
 
     try {
-      const excel = this.getApp({ activate });
-      const workbook = this._findOpenWorkbook(excel, {
-        workbookName: normalizedName,
-        workbookPath: normalizedPath
-      });
-      if (!workbook) {
-        const workbookLabel = normalizedPath || normalizedName;
-        return {
-          success: true,
-          workbookFound: false,
-          workbook: null,
-          modules: [],
-          message: `Workbook "${workbookLabel}" is not open.`
-        };
-      }
+      return this._withExcelApp((excel) => {
+        const workbook = this._findOpenWorkbook(excel, {
+          workbookName: normalizedName,
+          workbookPath: normalizedPath
+        });
+        if (!workbook) {
+          const workbookLabel = normalizedPath || normalizedName;
+          return {
+            success: true,
+            workbookFound: false,
+            workbook: null,
+            modules: [],
+            message: `Workbook "${workbookLabel}" is not open.`
+          };
+        }
 
-      const vbProject = this._getVBProjectForWorkbook(workbook);
-      const modules = this._listModulesForWorkbook(workbook, vbProject);
+        try {
+          const vbProject = this._getVBProjectForWorkbook(workbook);
+          try {
+            const modules = this._listModulesForWorkbook(workbook, vbProject);
 
-      return {
-        success: true,
-        workbookFound: true,
-        workbook: this._describeWorkbook(workbook),
-        modules
-      };
+            return {
+              success: true,
+              workbookFound: true,
+              workbook: this._describeWorkbook(workbook),
+              modules
+            };
+          } finally {
+            this._safeRelease(vbProject);
+          }
+        } finally {
+          this._safeRelease(workbook);
+        }
+      }, { activate });
     } catch (error) {
       return {
         success: false,
@@ -1190,15 +1441,20 @@ class ExcelBridge {
   listProcedures(options = {}) {
     const { activate = true } = options;
     try {
-      const workbook = this.getActiveWorkbook({ activate });
-      const vbProject = this._getVBProjectForWorkbook(workbook);
-      const procedures = this._listProceduresForWorkbook(workbook, vbProject);
+      return this._withActiveWorkbook(({ workbook }) => {
+        const vbProject = this._getVBProjectForWorkbook(workbook);
+        try {
+          const procedures = this._listProceduresForWorkbook(workbook, vbProject);
 
-      return {
-        success: true,
-        workbook: this._describeWorkbook(workbook),
-        procedures
-      };
+          return {
+            success: true,
+            workbook: this._describeWorkbook(workbook),
+            procedures
+          };
+        } finally {
+          this._safeRelease(vbProject);
+        }
+      }, { activate });
     } catch (error) {
       this._proceduresCache = null;
       return { success: false, procedures: [], message: error.message };
@@ -1226,31 +1482,40 @@ class ExcelBridge {
     }
 
     try {
-      const excel = this.getApp({ activate });
-      const workbook = this._findOpenWorkbook(excel, {
-        workbookName: normalizedName,
-        workbookPath: normalizedPath
-      });
-      if (!workbook) {
-        const workbookLabel = normalizedPath || normalizedName;
-        return {
-          success: true,
-          workbookFound: false,
-          workbook: null,
-          procedures: [],
-          message: `Workbook "${workbookLabel}" is not open.`
-        };
-      }
+      return this._withExcelApp((excel) => {
+        const workbook = this._findOpenWorkbook(excel, {
+          workbookName: normalizedName,
+          workbookPath: normalizedPath
+        });
+        if (!workbook) {
+          const workbookLabel = normalizedPath || normalizedName;
+          return {
+            success: true,
+            workbookFound: false,
+            workbook: null,
+            procedures: [],
+            message: `Workbook "${workbookLabel}" is not open.`
+          };
+        }
 
-      const vbProject = this._getVBProjectForWorkbook(workbook);
-      const procedures = this._listProceduresForWorkbook(workbook, vbProject);
+        try {
+          const vbProject = this._getVBProjectForWorkbook(workbook);
+          try {
+            const procedures = this._listProceduresForWorkbook(workbook, vbProject);
 
-      return {
-        success: true,
-        workbookFound: true,
-        workbook: this._describeWorkbook(workbook),
-        procedures
-      };
+            return {
+              success: true,
+              workbookFound: true,
+              workbook: this._describeWorkbook(workbook),
+              procedures
+            };
+          } finally {
+            this._safeRelease(vbProject);
+          }
+        } finally {
+          this._safeRelease(workbook);
+        }
+      }, { activate });
     } catch (error) {
       this._proceduresCache = null;
       return {
@@ -1271,17 +1536,30 @@ class ExcelBridge {
    */
   injectModule(moduleName, code) {
     try {
-      const vbProject = this.getVBProject();
+      return this._withActiveWorkbook(({ workbook }) => {
+        const vbProject = this._getVBProjectForWorkbook(workbook);
+        try {
+          this._removeModule(vbProject, moduleName);
 
-      this._removeModule(vbProject, moduleName);
+          const newModule = vbProject.VBComponents.Add(VBA_COMPONENT_TYPE.STANDARD_MODULE);
+          try {
+            newModule.Name = moduleName;
 
-      const newModule = vbProject.VBComponents.Add(VBA_COMPONENT_TYPE.STANDARD_MODULE);
-      newModule.Name = moduleName;
+            const codeModule = newModule.CodeModule;
+            try {
+              codeModule.InsertLines(codeModule.CountOfLines + 1, code);
+            } finally {
+              this._safeRelease(codeModule);
+            }
+          } finally {
+            this._safeRelease(newModule);
+          }
 
-      const codeModule = newModule.CodeModule;
-      codeModule.InsertLines(codeModule.CountOfLines + 1, code);
-
-      return { success: true, message: `Module "${moduleName}" created successfully` };
+          return { success: true, message: `Module "${moduleName}" created successfully` };
+        } finally {
+          this._safeRelease(vbProject);
+        }
+      });
     } catch (error) {
       return { success: false, message: error.message };
     }
@@ -1294,17 +1572,25 @@ class ExcelBridge {
    * @private
    */
   _removeModule(vbProject, moduleName) {
+    let components = null;
     try {
-      const components = vbProject.VBComponents;
+      components = vbProject.VBComponents;
       for (let i = 1; i <= components.Count; i++) {
         const component = components.Item(i);
         if (component.Name === moduleName) {
-          vbProject.VBComponents.Remove(component);
+          try {
+            vbProject.VBComponents.Remove(component);
+          } finally {
+            this._safeRelease(component);
+          }
           return;
         }
+        this._safeRelease(component);
       }
     } catch (error) {
       // Module doesn't exist or can't be removed.
+    } finally {
+      this._safeRelease(components);
     }
   }
 
@@ -1328,38 +1614,38 @@ class ExcelBridge {
    */
   runMacroWithTrap(macroName) {
     try {
-      this._ensureRuntimeModule();
-      const excel = this.getApp();
-      const workbook = this.getActiveWorkbook();
-      const workbookName = this._qualifyWorkbookName(workbook.Name);
-      const runtimeMacro = `${workbookName}!MacroFlow_Runtime.MacroFlow_RunMacro`;
-      const targetMacro = this._normalizeMacroName(macroName, workbook);
+      return this._withActiveWorkbook(({ excel, workbook }) => {
+        this._ensureRuntimeModule(workbook);
+        const workbookName = this._qualifyWorkbookName(workbook.Name);
+        const runtimeMacro = `${workbookName}!MacroFlow_Runtime.MacroFlow_RunMacro`;
+        const targetMacro = this._normalizeMacroName(macroName, workbook);
 
-      if (!targetMacro) {
-        return { success: false, message: 'Macro name is required.' };
-      }
+        if (!targetMacro) {
+          return { success: false, message: 'Macro name is required.' };
+        }
 
-      const prep = this._prepareMacroRun(excel, workbook);
-      if (!prep.ready) {
-        return { success: false, message: prep.message };
-      }
+        const prep = this._prepareMacroRun(excel, workbook);
+        if (!prep.ready) {
+          return { success: false, message: prep.message };
+        }
 
-      const result = excel.Run(runtimeMacro, targetMacro);
+        const result = excel.Run(runtimeMacro, targetMacro);
 
-      if (typeof result === 'string' && result.startsWith('ERR|')) {
-        const [, number, description, source] = result.split('|');
-        return {
-          success: false,
-          message: `VBA error ${number}: ${description}`,
-          error: {
-            number: Number(number),
-            description: description || '',
-            source: source || ''
-          }
-        };
-      }
+        if (typeof result === 'string' && result.startsWith('ERR|')) {
+          const [, number, description, source] = result.split('|');
+          return {
+            success: false,
+            message: `VBA error ${number}: ${description}`,
+            error: {
+              number: Number(number),
+              description: description || '',
+              source: source || ''
+            }
+          };
+        }
 
-      return { success: true, message: `Executed "${targetMacro}"` };
+        return { success: true, message: `Executed "${targetMacro}"` };
+      });
     } catch (error) {
       const rawMessage = error && error.message ? String(error.message) : 'Unknown error';
       const hresultMatch = rawMessage.match(/0x[0-9a-fA-F]+/);
@@ -1382,57 +1668,73 @@ class ExcelBridge {
   }
 
   _loadShortcutRegistry(workbook) {
-    const props = workbook.CustomDocumentProperties;
     const registryName = 'MacroFlow_Shortcuts';
+    let props = null;
     let prop = null;
 
     try {
-      prop = props.Item(registryName);
-    } catch (error) {
-      prop = null;
-    }
+      props = workbook.CustomDocumentProperties;
 
-    if (!prop) {
-      props.Add(registryName, false, 4, '{}');
-      prop = props.Item(registryName);
-    }
+      try {
+        prop = props.Item(registryName);
+      } catch (error) {
+        prop = null;
+      }
 
-    try {
-      return JSON.parse(String(prop.Value || '{}'));
-    } catch (error) {
-      return {};
+      if (!prop) {
+        props.Add(registryName, false, 4, '{}');
+        prop = props.Item(registryName);
+      }
+
+      try {
+        return JSON.parse(String(prop.Value || '{}'));
+      } catch (error) {
+        return {};
+      }
+    } finally {
+      this._safeRelease(prop, props);
     }
   }
 
   _saveShortcutRegistry(workbook, registry) {
-    const props = workbook.CustomDocumentProperties;
     const registryName = 'MacroFlow_Shortcuts';
+    let props = null;
     let prop = null;
 
     try {
-      prop = props.Item(registryName);
-    } catch (error) {
-      prop = null;
-    }
+      props = workbook.CustomDocumentProperties;
 
-    if (!prop) {
-      props.Add(registryName, false, 4, JSON.stringify(registry));
-      return;
-    }
+      try {
+        prop = props.Item(registryName);
+      } catch (error) {
+        prop = null;
+      }
 
-    prop.Value = JSON.stringify(registry);
+      if (!prop) {
+        props.Add(registryName, false, 4, JSON.stringify(registry));
+        return;
+      }
+
+      prop.Value = JSON.stringify(registry);
+    } finally {
+      this._safeRelease(prop, props);
+    }
   }
 
   _listMacroProceduresForWorkbook(workbook) {
     try {
       const vbProject = this._getVBProjectForWorkbook(workbook);
-      const procedures = this._listProceduresForWorkbook(workbook, vbProject);
-      return procedures
-        .filter((proc) => String(proc?.kind || '').startsWith('Sub'))
-        .map((proc) => ({
-          name: proc.name,
-          module: proc.module
-        }));
+      try {
+        const procedures = this._listProceduresForWorkbook(workbook, vbProject);
+        return procedures
+          .filter((proc) => String(proc?.kind || '').startsWith('Sub'))
+          .map((proc) => ({
+            name: proc.name,
+            module: proc.module
+          }));
+      } finally {
+        this._safeRelease(vbProject);
+      }
     } catch (error) {
       this._proceduresCache = null;
       return [];
@@ -1442,17 +1744,17 @@ class ExcelBridge {
   _listMacroProcedures(options = {}) {
     const { activate = true } = options;
     try {
-      const workbook = this.getActiveWorkbook({ activate });
-      const procedures = this._listMacroProceduresForWorkbook(workbook);
-      return { workbook, procedures };
+      return this._withActiveWorkbook(({ workbook }) => {
+        const procedures = this._listMacroProceduresForWorkbook(workbook);
+        return { procedures };
+      }, { activate });
     } catch (error) {
       this._proceduresCache = null;
-      return { workbook: null, procedures: [] };
+      return { procedures: [] };
     }
   }
 
-  _setMacroShortcutForWorkbook(workbook, macroName, shortcutKey) {
-    const excel = this.getApp();
+  _setMacroShortcutForWorkbook(excel, workbook, macroName, shortcutKey) {
     const procedures = this._listMacroProceduresForWorkbook(workbook);
     const resolvedName = this._normalizeMacroNameForWorkbook(macroName, workbook, procedures);
     excel.MacroOptions(resolvedName || macroName, null, null, null, null, shortcutKey, null, null, null, null);
@@ -1477,8 +1779,9 @@ class ExcelBridge {
    */
   setMacroShortcut(macroName, shortcutKey) {
     try {
-      const workbook = this.getActiveWorkbook();
-      return this._setMacroShortcutForWorkbook(workbook, macroName, shortcutKey);
+      return this._withActiveWorkbook(({ excel, workbook }) =>
+        this._setMacroShortcutForWorkbook(excel, workbook, macroName, shortcutKey)
+      );
     } catch (error) {
       return { success: false, message: `Failed to set shortcut: ${error.message}` };
     }
@@ -1506,27 +1809,32 @@ class ExcelBridge {
     }
 
     try {
-      const excel = this.getApp({ activate });
-      const workbook = this._findOpenWorkbook(excel, {
-        workbookName: normalizedName,
-        workbookPath: normalizedPath
-      });
-      if (!workbook) {
-        const workbookLabel = normalizedPath || normalizedName;
-        return {
-          success: true,
-          workbookFound: false,
-          workbook: null,
-          message: `Workbook "${workbookLabel}" is not open.`
-        };
-      }
+      return this._withExcelApp((excel) => {
+        const workbook = this._findOpenWorkbook(excel, {
+          workbookName: normalizedName,
+          workbookPath: normalizedPath
+        });
+        if (!workbook) {
+          const workbookLabel = normalizedPath || normalizedName;
+          return {
+            success: true,
+            workbookFound: false,
+            workbook: null,
+            message: `Workbook "${workbookLabel}" is not open.`
+          };
+        }
 
-      const result = this._setMacroShortcutForWorkbook(workbook, macroName, shortcutKey);
-      return {
-        ...result,
-        workbookFound: true,
-        workbook: this._describeWorkbook(workbook)
-      };
+        try {
+          const result = this._setMacroShortcutForWorkbook(excel, workbook, macroName, shortcutKey);
+          return {
+            ...result,
+            workbookFound: true,
+            workbook: this._describeWorkbook(workbook)
+          };
+        } finally {
+          this._safeRelease(workbook);
+        }
+      }, { activate });
     } catch (error) {
       return {
         success: false,
@@ -1582,11 +1890,7 @@ class ExcelBridge {
    */
   auditShortcuts() {
     try {
-      const workbook = this.getActiveWorkbook();
-      if (!workbook) {
-        return { success: false, shortcuts: [], unmapped: [], message: 'Workbook not available.' };
-      }
-      return this._auditShortcutsForWorkbook(workbook);
+      return this._withActiveWorkbook(({ workbook }) => this._auditShortcutsForWorkbook(workbook));
     } catch (error) {
       return { success: false, shortcuts: [], unmapped: [], message: error.message };
     }
@@ -1614,29 +1918,34 @@ class ExcelBridge {
     }
 
     try {
-      const excel = this.getApp({ activate });
-      const workbook = this._findOpenWorkbook(excel, {
-        workbookName: normalizedName,
-        workbookPath: normalizedPath
-      });
-      if (!workbook) {
-        const workbookLabel = normalizedPath || normalizedName;
-        return {
-          success: true,
-          workbookFound: false,
-          workbook: null,
-          shortcuts: [],
-          unmapped: [],
-          message: `Workbook "${workbookLabel}" is not open.`
-        };
-      }
+      return this._withExcelApp((excel) => {
+        const workbook = this._findOpenWorkbook(excel, {
+          workbookName: normalizedName,
+          workbookPath: normalizedPath
+        });
+        if (!workbook) {
+          const workbookLabel = normalizedPath || normalizedName;
+          return {
+            success: true,
+            workbookFound: false,
+            workbook: null,
+            shortcuts: [],
+            unmapped: [],
+            message: `Workbook "${workbookLabel}" is not open.`
+          };
+        }
 
-      const result = this._auditShortcutsForWorkbook(workbook);
-      return {
-        ...result,
-        workbookFound: true,
-        workbook: this._describeWorkbook(workbook)
-      };
+        try {
+          const result = this._auditShortcutsForWorkbook(workbook);
+          return {
+            ...result,
+            workbookFound: true,
+            workbook: this._describeWorkbook(workbook)
+          };
+        } finally {
+          this._safeRelease(workbook);
+        }
+      }, { activate });
     } catch (error) {
       return {
         success: false,
@@ -1651,3 +1960,4 @@ class ExcelBridge {
 }
 
 module.exports = new ExcelBridge();
+

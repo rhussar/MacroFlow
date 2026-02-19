@@ -9,6 +9,7 @@ const fs = require('fs-extra');
 const path = require('path');
 const { exec } = require('child_process');
 const { promisify } = require('util');
+const persistentLogger = require('./logger');
 
 const execAsync = promisify(exec);
 
@@ -77,6 +78,16 @@ function log(level, category, message, details = null) {
             console.log;
 
     logFn(`${prefix} ${message}${detailStr}`);
+
+    // Mirror diagnostics logs to persistent electron-log file so shutdown traces
+    // are still available after the app process exits.
+    const normalizedLevel = String(level || '').toLowerCase();
+    const fileMessage = `[${category}] ${message}`;
+    if (typeof persistentLogger[normalizedLevel] === 'function') {
+        persistentLogger[normalizedLevel](fileMessage, details || undefined);
+    } else {
+        persistentLogger.info(fileMessage, details || undefined);
+    }
 }
 
 // Convenience logging methods

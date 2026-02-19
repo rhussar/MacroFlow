@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Threading;
@@ -6,6 +7,14 @@ using System.Windows.Forms;
 
 namespace WindowFocusHelper;
 
+// WindowFocusHelper responsibilities:
+// 1. Track foreground window transitions and publish Excel active/inactive state.
+// 2. Manage topmost z-order nudges for the MacroFlow window while Excel focus changes.
+// 3. Resolve the best Excel instance for COM rebind when multiple EXCEL.EXE processes exist.
+//
+// IPC contract: newline-delimited JSON on stdin/stdout.
+// Incoming commands include: setTarget, ping, shutdown, findExcelWithWorkbooks.
+// Outgoing events include: state, pong, error, excelResolved.
 internal static class Program
 {
   private const uint EVENT_SYSTEM_FOREGROUND = 0x0003;
@@ -266,123 +275,228 @@ internal static class Program
     return found;
   }
 
+  private static T RunOnSta<T>(Func<T> operation)
+  {
+    if (Thread.CurrentThread.GetApartmentState() == ApartmentState.STA)
+    {
+      return operation();
+    }
+
+    T? result = default;
+    Exception? error = null;
+    using var done = new ManualResetEventSlim(false);
+
+    var thread = new Thread(() =>
+    {
+      try
+      {
+        result = operation();
+      }
+      catch (Exception ex)
+      {
+        error = ex;
+      }
+      finally
+      {
+        done.Set();
+      }
+    });
+
+    thread.SetApartmentState(ApartmentState.STA);
+    thread.IsBackground = true;
+    thread.Start();
+
+    done.Wait();
+
+    if (error != null)
+    {
+      throw error;
+    }
+
+    return result!;
+  }
+
+  private static int GetForegroundExcelPid()
+  {
+    var foregroundHwnd = GetForegroundWindow();
+    if (foregroundHwnd == IntPtr.Zero || !IsWindow(foregroundHwnd))
+    {
+      return 0;
+    }
+
+    var processName = GetProcessNameForWindow(foregroundHwnd);
+    if (!string.Equals(processName, "EXCEL", StringComparison.OrdinalIgnoreCase))
+    {
+      return 0;
+    }
+
+    _ = GetWindowThreadProcessId(foregroundHwnd, out var processId);
+    return processId == 0 ? 0 : (int)processId;
+  }
+
   private static void HandleFindExcelWithWorkbooks()
   {
     try
     {
-      var processes = Process.GetProcessesByName("EXCEL");
-      IntPtr bestHwnd = IntPtr.Zero;
-      int bestPid = 0;
-      int bestWorkbookCount = 0;
-
-      try
-      {
-        foreach (var proc in processes)
-        {
-          try
-          {
-            var mainHwnd = proc.MainWindowHandle;
-            if (mainHwnd == IntPtr.Zero || !IsWindow(mainHwnd))
-              continue;
-
-            var excel7Hwnd = FindExcel7Child(mainHwnd);
-            if (excel7Hwnd == IntPtr.Zero)
-              continue;
-
-            var iid = IID_IDispatch;
-            int hr = AccessibleObjectFromWindow(excel7Hwnd, OBJID_NATIVEOM, ref iid, out object? window);
-            if (hr != 0 || window == null)
-              continue;
-
-            object? appObj = null;
-            object? workbooksObj = null;
-            try
-            {
-              dynamic excelWindow = window;
-              appObj = excelWindow.Application;
-              dynamic app = appObj;
-              workbooksObj = app.Workbooks;
-              dynamic workbooks = workbooksObj;
-              int totalCount = (int)workbooks.Count;
-              int userCount = 0;
-
-              for (int i = 1; i <= totalCount; i++)
-              {
-                object? wbObj = null;
-                try
-                {
-                  wbObj = workbooks[i];
-                  dynamic wb = wbObj;
-                  bool isAddin = false;
-                  bool isReadOnly = false;
-                  bool hasVBProject = false;
-
-                  try { isAddin = (bool)wb.IsAddin; } catch { }
-                  try { isReadOnly = (bool)wb.ReadOnly; } catch { }
-                  try { hasVBProject = wb.VBProject != null; } catch { }
-
-                  // Qualifies if not an add-in AND (not read-only OR has VBA project)
-                  if (!isAddin && (!isReadOnly || hasVBProject))
-                    userCount++;
-                }
-                catch
-                {
-                  // Skip workbooks that fail to query.
-                }
-                finally
-                {
-                  if (wbObj != null) try { Marshal.ReleaseComObject(wbObj); } catch { }
-                }
-              }
-
-              if (userCount > bestWorkbookCount)
-              {
-                bestWorkbookCount = userCount;
-                bestHwnd = mainHwnd;
-                bestPid = proc.Id;
-              }
-            }
-            finally
-            {
-              if (workbooksObj != null) try { Marshal.ReleaseComObject(workbooksObj); } catch { }
-              if (appObj != null) try { Marshal.ReleaseComObject(appObj); } catch { }
-              Marshal.ReleaseComObject(window);
-            }
-          }
-          catch
-          {
-            // Skip processes that fail; continue to next.
-          }
-        }
-      }
-      finally
-      {
-        foreach (var proc in processes)
-          proc.Dispose();
-      }
-
-      if (bestWorkbookCount > 0 && bestHwnd != IntPtr.Zero)
-      {
-        bool activated = SetForegroundWindow(bestHwnd);
-        Emit(new
-        {
-          type = "excelResolved",
-          found = true,
-          pid = bestPid,
-          hwnd = bestHwnd.ToInt64().ToString(),
-          workbookCount = bestWorkbookCount,
-          activated
-        });
-      }
-      else
-      {
-        Emit(new { type = "excelResolved", found = false });
-      }
+      var payload = RunOnSta(FindExcelWithWorkbooksCore);
+      Emit(payload);
     }
     catch (Exception ex)
     {
-      Emit(new { type = "excelResolved", found = false, error = ex.Message });
+      Emit(new { type = "excelResolved", found = false, reason = "helper-error", error = ex.Message });
     }
+  }
+
+  private static object FindExcelWithWorkbooksCore()
+  {
+    var foregroundExcelPid = GetForegroundExcelPid();
+    var candidates = new List<ExcelCandidate>();
+    var processes = Process.GetProcessesByName("EXCEL");
+
+    try
+    {
+      foreach (var proc in processes)
+      {
+        try
+        {
+          var mainHwnd = proc.MainWindowHandle;
+          if (mainHwnd == IntPtr.Zero || !IsWindow(mainHwnd))
+            continue;
+
+          var excel7Hwnd = FindExcel7Child(mainHwnd);
+          if (excel7Hwnd == IntPtr.Zero)
+            continue;
+
+          var iid = IID_IDispatch;
+          int hr = AccessibleObjectFromWindow(excel7Hwnd, OBJID_NATIVEOM, ref iid, out object? window);
+          if (hr != 0 || window == null)
+            continue;
+
+          object? appObj = null;
+          object? workbooksObj = null;
+          try
+          {
+            dynamic excelWindow = window;
+            appObj = excelWindow.Application;
+            dynamic app = appObj;
+            workbooksObj = app.Workbooks;
+            dynamic workbooks = workbooksObj;
+            int totalCount = (int)workbooks.Count;
+            int userWorkbookCount = 0;
+
+            for (int i = 1; i <= totalCount; i++)
+            {
+              object? wbObj = null;
+              try
+              {
+                wbObj = workbooks[i];
+                dynamic wb = wbObj;
+                bool isAddin = false;
+                try { isAddin = (bool)wb.IsAddin; } catch { }
+
+                // Qualifies when workbook is not an add-in (read-only still counts).
+                if (!isAddin)
+                  userWorkbookCount++;
+              }
+              catch
+              {
+                // Skip workbooks that fail to query.
+              }
+              finally
+              {
+                if (wbObj != null) try { Marshal.ReleaseComObject(wbObj); } catch { }
+              }
+            }
+
+            if (userWorkbookCount > 0)
+            {
+              candidates.Add(new ExcelCandidate
+              {
+                Pid = proc.Id,
+                Hwnd = mainHwnd,
+                WorkbookCount = userWorkbookCount
+              });
+            }
+          }
+          finally
+          {
+            if (workbooksObj != null) try { Marshal.ReleaseComObject(workbooksObj); } catch { }
+            if (appObj != null) try { Marshal.ReleaseComObject(appObj); } catch { }
+            Marshal.ReleaseComObject(window);
+          }
+        }
+        catch
+        {
+          // Skip processes that fail; continue to next.
+        }
+      }
+    }
+    finally
+    {
+      foreach (var proc in processes)
+        proc.Dispose();
+    }
+
+    if (candidates.Count < 1)
+    {
+      return new { type = "excelResolved", found = false, reason = "no-qualifying-instance" };
+    }
+
+    ExcelCandidate? selected = null;
+    string strategy = "max_workbooks";
+
+    // Foreground wins.
+    if (foregroundExcelPid > 0)
+    {
+      foreach (var candidate in candidates)
+      {
+        if (candidate.Pid != foregroundExcelPid)
+          continue;
+
+        if (selected == null ||
+            candidate.WorkbookCount > selected.WorkbookCount ||
+            (candidate.WorkbookCount == selected.WorkbookCount && candidate.Pid < selected.Pid))
+        {
+          selected = candidate;
+        }
+      }
+
+      if (selected != null)
+      {
+        strategy = "foreground";
+      }
+    }
+
+    // Fallback: most user workbooks, tie-break by lowest PID.
+    if (selected == null)
+    {
+      foreach (var candidate in candidates)
+      {
+        if (selected == null ||
+            candidate.WorkbookCount > selected.WorkbookCount ||
+            (candidate.WorkbookCount == selected.WorkbookCount && candidate.Pid < selected.Pid))
+        {
+          selected = candidate;
+        }
+      }
+    }
+
+    if (selected == null)
+    {
+      return new { type = "excelResolved", found = false, reason = "selection-failed" };
+    }
+
+    bool activated = SetForegroundWindow(selected.Hwnd);
+    return new
+    {
+      type = "excelResolved",
+      found = true,
+      activated,
+      pid = selected.Pid,
+      hwnd = selected.Hwnd.ToInt64().ToString(),
+      workbookCount = selected.WorkbookCount,
+      strategy
+    };
   }
 
   // -----------------------------------------------------------------------
@@ -997,6 +1111,13 @@ internal static class Program
   {
     public string? Type { get; set; }
     public string? Hwnd { get; set; }
+  }
+
+  private sealed class ExcelCandidate
+  {
+    public int Pid { get; set; }
+    public IntPtr Hwnd { get; set; }
+    public int WorkbookCount { get; set; }
   }
 
   private sealed class WindowRectPayload

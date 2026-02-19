@@ -5,10 +5,12 @@ const Module = require('node:module');
 
 const IPC_HANDLERS_PATH = path.resolve(__dirname, 'ipc-handlers.js');
 
-function loadHandlers({ excelOverrides = {} } = {}) {
+function loadHandlers({ excelOverrides = {}, appOverrides = {} } = {}) {
   const originalLoad = Module._load;
   const handlers = {};
+  const appEvents = {};
   let clearComCacheCalls = 0;
+  let quitCalls = 0;
 
   const excelStub = {
     clearComCache: () => {
@@ -20,6 +22,9 @@ function loadHandlers({ excelOverrides = {} } = {}) {
     getOpenWorkbooks: () => ({ success: true, workbooks: [] }),
     auditShortcuts: () => ({ success: true, shortcuts: [], unmapped: [] }),
     auditShortcutsByWorkbookName: () => ({ success: true, shortcuts: [], unmapped: [], workbookFound: true }),
+    _focusHelper: {
+      findExcelWithWorkbooks: async () => ({ found: false, reason: 'no-qualifying-instance' })
+    },
     getSelection: () => ({ success: true, address: 'A1', value: 'x' }),
     ...excelOverrides
   };
@@ -29,10 +34,18 @@ function loadHandlers({ excelOverrides = {} } = {}) {
       handle: (channel, handler) => {
         handlers[channel] = handler;
       },
-      on: () => {}
+      on: (channel, handler) => {
+        handlers[channel] = handler;
+      }
     },
     app: {
-      quit: () => {}
+      quit: () => {
+        quitCalls += 1;
+      },
+      on: (event, handler) => {
+        appEvents[event] = handler;
+      },
+      ...appOverrides
     },
     BrowserWindow: {
       getAllWindows: () => []
@@ -42,6 +55,7 @@ function loadHandlers({ excelOverrides = {} } = {}) {
   const diagnosticsStub = {
     logger: {
       debug: () => {},
+      info: () => {},
       warn: () => {}
     },
     checkExcelModalState: async () => ({ hasModal: false }),
@@ -71,7 +85,13 @@ function loadHandlers({ excelOverrides = {} } = {}) {
   return {
     handlers,
     excelStub,
-    getClearComCacheCalls: () => clearComCacheCalls
+    getQuitCalls: () => quitCalls,
+    getClearComCacheCalls: () => clearComCacheCalls,
+    triggerAppEvent: (event) => {
+      if (typeof appEvents[event] === 'function') {
+        appEvents[event]();
+      }
+    }
   };
 }
 
@@ -201,4 +221,110 @@ test('shortcut audit channels short-circuit while polling is paused', async () =
   assert.equal(auditByWorkbookResult.paused, true);
   assert.deepEqual(auditByWorkbookResult.shortcuts, []);
   assert.equal(auditByWorkbookCalls, 0);
+});
+
+test('excel:resolveInstance dedupes concurrent requests and reuses one helper call', async () => {
+  let workbookInfoCalls = 0;
+  let helperCalls = 0;
+
+  const { handlers } = loadHandlers({
+    excelOverrides: {
+      getWorkbookInfo: () => {
+        workbookInfoCalls += 1;
+        if (workbookInfoCalls === 1) {
+          return { success: false, message: 'NO_WORKBOOK: No active workbook.' };
+        }
+        return {
+          success: true,
+          name: 'Book2.xlsx',
+          path: 'C:\\Book2.xlsx',
+          activeSheet: 'Sheet1',
+          sheets: ['Sheet1']
+        };
+      },
+      _focusHelper: {
+        findExcelWithWorkbooks: async () => {
+          helperCalls += 1;
+          await new Promise((resolve) => setTimeout(resolve, 25));
+          return {
+            found: true,
+            activated: true,
+            pid: 10840,
+            workbookCount: 1,
+            strategy: 'foreground'
+          };
+        }
+      }
+    }
+  });
+
+  const [first, second] = await Promise.all([
+    handlers['excel:resolveInstance'](),
+    handlers['excel:resolveInstance']()
+  ]);
+
+  assert.equal(helperCalls, 1);
+  assert.equal(workbookInfoCalls, 2);
+  assert.equal(first.resolved, true);
+  assert.equal(second.resolved, true);
+  assert.equal(first.reason, 'helper-resolved');
+  assert.equal(first.pid, 10840);
+  assert.equal(first.workbookCount, 1);
+  assert.equal(first.strategy, 'foreground');
+  assert.equal(second.pid, 10840);
+});
+
+test('excel:resolveInstance returns helper metadata when no qualifying instance is found', async () => {
+  const { handlers } = loadHandlers({
+    excelOverrides: {
+      getWorkbookInfo: () => ({ success: false, message: 'NO_WORKBOOK: No active workbook.' }),
+      _focusHelper: {
+        findExcelWithWorkbooks: async () => ({
+          found: false,
+          reason: 'timeout',
+          pid: 2222,
+          workbookCount: 0,
+          strategy: 'max_workbooks'
+        })
+      }
+    }
+  });
+
+  const result = await handlers['excel:resolveInstance']();
+  assert.equal(result.resolved, false);
+  assert.equal(result.reason, 'timeout');
+  assert.equal(result.pid, 2222);
+  assert.equal(result.workbookCount, 0);
+  assert.equal(result.strategy, 'max_workbooks');
+});
+
+test('before-quit latch blocks Excel COM calls during shutdown', async () => {
+  let workbookInfoCalls = 0;
+  const { handlers, triggerAppEvent } = loadHandlers({
+    excelOverrides: {
+      getWorkbookInfo: () => {
+        workbookInfoCalls += 1;
+        return { success: true, name: 'Book1.xlsx' };
+      }
+    }
+  });
+
+  triggerAppEvent('before-quit');
+
+  const result = await handlers['workbook:info']();
+  assert.equal(result.success, false);
+  assert.match(result.message, /APP_SHUTTING_DOWN/);
+  assert.equal(workbookInfoCalls, 0);
+});
+
+test('app:close sets shutdown latch and eventually calls app.quit', async () => {
+  const { handlers, getQuitCalls } = loadHandlers({
+    excelOverrides: {
+      setShuttingDown: () => {}
+    }
+  });
+
+  handlers['app:close']();
+  await new Promise((resolve) => setTimeout(resolve, 120));
+  assert.equal(getQuitCalls() > 0, true);
 });

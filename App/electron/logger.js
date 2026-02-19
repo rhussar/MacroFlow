@@ -9,13 +9,19 @@ try {
   baseLogger = require('electron-log');
 }
 
+const LOG_LEVELS = new Set(['error', 'warn', 'info', 'verbose', 'debug', 'silly']);
+const envLevel = String(process.env.MACROFLOW_LOG_LEVEL || '').trim().toLowerCase();
+const resolvedLevel = LOG_LEVELS.has(envLevel)
+  ? envLevel
+  : (process.env.NODE_ENV === 'development' ? 'debug' : 'info');
+
 if (baseLogger?.transports?.file) {
-  baseLogger.transports.file.level = 'info';
+  baseLogger.transports.file.level = resolvedLevel;
   baseLogger.transports.file.format = '[{y}-{m}-{d} {h}:{i}:{s}.{ms}] [{level}] {text}';
 }
 
 if (baseLogger?.transports?.console) {
-  baseLogger.transports.console.level = process.env.NODE_ENV === 'development' ? 'debug' : 'info';
+  baseLogger.transports.console.level = resolvedLevel;
 }
 
 function stringifyMeta(meta) {

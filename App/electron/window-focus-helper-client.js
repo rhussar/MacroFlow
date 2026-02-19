@@ -3,6 +3,13 @@ const fs = require('node:fs');
 const path = require('node:path');
 const readline = require('node:readline');
 
+/**
+ * WindowFocusHelperClient
+ *
+ * Electron-side manager for the native WindowFocusHelper process.
+ * Owns helper lifecycle (start/stop/restart), heartbeat health checks,
+ * and one-shot Excel instance resolution requests used by IPC recovery.
+ */
 const DEFAULT_MAX_RESTART_ATTEMPTS = 3;
 const DEFAULT_RESTART_BASE_DELAY_MS = 300;
 const HEARTBEAT_INTERVAL_MS = 30_000;
@@ -59,6 +66,8 @@ class WindowFocusHelperClient {
     this.unexpectedExitHandled = false;
     this.helperHealthy = false;
 
+    // Single in-flight resolve request shared by concurrent callers.
+    // Shape: { promise, resolve, timer }
     this._pendingExcelResolve = null;
   }
 
@@ -94,6 +103,7 @@ class WindowFocusHelperClient {
   stop() {
     this.stopping = true;
     this.unexpectedExitHandled = true;
+    this.resolvePendingExcelRequest({ found: false, reason: 'helper-stopping' });
     this.clearRestartTimer();
     this.stopHeartbeat();
 
@@ -116,25 +126,31 @@ class WindowFocusHelperClient {
   }
 
   findExcelWithWorkbooks(timeoutMs = 5000) {
-    return new Promise((resolve, reject) => {
-      if (!this.process || this.stopping) {
-        resolve({ found: false, reason: 'helper-not-running' });
-        return;
-      }
+    // No helper process available; fail closed without throwing.
+    if (!this.process || this.stopping) {
+      return Promise.resolve({ found: false, reason: 'helper-not-running' });
+    }
 
-      const timer = setTimeout(() => {
-        this._pendingExcelResolve = null;
-        resolve({ found: false, reason: 'timeout' });
-      }, timeoutMs);
+    // Dedupe concurrent resolve requests to avoid helper races.
+    if (this._pendingExcelResolve?.promise) {
+      return this._pendingExcelResolve.promise;
+    }
 
-      this._pendingExcelResolve = (payload) => {
-        clearTimeout(timer);
-        this._pendingExcelResolve = null;
-        resolve(payload);
-      };
-
-      this.send({ type: 'findExcelWithWorkbooks' });
+    let resolvePending = null;
+    const promise = new Promise((resolve) => {
+      resolvePending = resolve;
     });
+    const timer = setTimeout(() => {
+      this.resolvePendingExcelRequest({ found: false, reason: 'timeout' });
+    }, timeoutMs);
+    this._pendingExcelResolve = {
+      promise,
+      resolve: resolvePending,
+      timer
+    };
+
+    this.send({ type: 'findExcelWithWorkbooks' });
+    return promise;
   }
 
   launchHelper(reason) {
@@ -222,6 +238,7 @@ class WindowFocusHelperClient {
     }
 
     this.stopHeartbeat();
+    this.resolvePendingExcelRequest({ found: false, reason: 'helper-exit' });
     this.cleanupHandles();
 
     if (this.restartAttempts >= this.maxRestartAttempts) {
@@ -380,9 +397,7 @@ class WindowFocusHelperClient {
     }
 
     if (payload.type === 'excelResolved') {
-      if (this._pendingExcelResolve) {
-        this._pendingExcelResolve(payload);
-      }
+      this.resolvePendingExcelRequest(payload);
       return;
     }
 
@@ -399,6 +414,8 @@ class WindowFocusHelperClient {
   }
 
   cleanupHandles() {
+    this.resolvePendingExcelRequest({ found: false, reason: 'helper-cleanup' });
+
     if (this.stdoutInterface) {
       this.stdoutInterface.removeAllListeners();
       this.stdoutInterface.close();
@@ -417,6 +434,26 @@ class WindowFocusHelperClient {
       this.pongTimeout = null;
     }
     this.awaitingPong = false;
+  }
+
+  resolvePendingExcelRequest(payload) {
+    // Centralized completion path so timeout/exit/message all settle exactly once.
+    if (!this._pendingExcelResolve) {
+      return;
+    }
+
+    const pending = this._pendingExcelResolve;
+    this._pendingExcelResolve = null;
+
+    if (pending.timer) {
+      clearTimeout(pending.timer);
+    }
+
+    try {
+      pending.resolve(payload);
+    } catch {
+      // Ignore promise resolution errors.
+    }
   }
 
   log(level, message, meta) {

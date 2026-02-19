@@ -181,3 +181,18 @@ test('auditShortcuts releases workbook property COM handles', () => {
   assert.ok(releasedObjects.includes(customProps), 'CustomDocumentProperties should be released');
   assert.ok(releasedObjects.includes(shortcutProp), 'Shortcut registry property should be released');
 });
+
+test('shutdown latch blocks COM attach immediately', () => {
+  const { bridge, getObjectCalls } = loadExcelBridge({
+    processIds: [5555],
+    objectFactory: () => {
+      throw new Error('COM attach should not be attempted during shutdown');
+    }
+  });
+
+  bridge.setShuttingDown(true);
+  const result = bridge.getWorkbookInfo();
+  assert.equal(result.success, false);
+  assert.match(result.message, /APP_SHUTTING_DOWN/);
+  assert.equal(getObjectCalls(), 0);
+});

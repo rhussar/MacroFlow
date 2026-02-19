@@ -50,6 +50,16 @@ let detachDisplayListeners = null;
 let lastExcelDisplayId = null;
 let hasInitialContextPlacement = false;
 
+function isSquirrelFirstRunLaunch() {
+  if (process.platform !== 'win32') {
+    return false;
+  }
+
+  return process.argv.some(
+    (arg) => String(arg || '').trim().toLowerCase() === '--squirrel-firstrun'
+  );
+}
+
 async function writeRegistryStringValue(keyPath, valueName, valueData) {
   const args = ['add', keyPath];
   if (valueName === null) {
@@ -492,6 +502,25 @@ if (!gotLock) {
 
   // ONLY register app lifecycle events if we have the lock
   app.whenReady().then(async () => {
+    const squirrelFirstRun = isSquirrelFirstRunLaunch();
+    if (squirrelFirstRun) {
+      // Squirrel may auto-launch the app after install. Skip full UI startup so
+      // we do not begin helper/polling activity during this installer handoff.
+      logger.info('[Lifecycle] squirrel first-run launch detected; running post-install tasks only', {
+        argv: process.argv
+      });
+
+      await registerInstallPathInRegistry();
+      try {
+        await installExcelAddin();
+      } catch (error) {
+        logger.error('[AddinInstaller] first-run install failed', { error: error.message });
+      }
+
+      app.quit();
+      return;
+    }
+
     // Register window control handlers BEFORE creating window
     registerWindowHandlers();
 
@@ -516,12 +545,24 @@ if (!gotLock) {
 
   // Quit when all windows are closed (except on macOS)
   app.on('window-all-closed', () => {
+    logger.info('[Lifecycle] window-all-closed');
     if (process.platform !== 'darwin') {
       app.quit();
     }
   });
 
   app.on('before-quit', () => {
+    const excelProcessIds = excel.getExcelProcessIds?.() || [];
+    logger.info('[Lifecycle] before-quit');
+    logger.info('[Lifecycle] Excel process snapshot at main before-quit', {
+      excelProcessIds,
+      excelProcessCount: excelProcessIds.length
+    });
+    try {
+      excel.setShuttingDown(true);
+    } catch (error) {
+      logger.warn('[Excel] failed to set shutdown latch', { error: error.message });
+    }
     stopExcelWindowMonitor();
   });
 }

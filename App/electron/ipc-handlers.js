@@ -146,10 +146,67 @@ async function withExcelFocus(fn, options = {}) {
 }
 
 function registerHandlers() {
+  let isAppQuitting = false;
+  let closeRequested = false;
+  let activeExcelOperations = 0;
+
+  // Hard shutdown latch: once quit starts, never touch Excel COM again.
+  app.on('before-quit', () => {
+    isAppQuitting = true;
+    const excelProcessIds = excel.getExcelProcessIds?.() || [];
+    logger.info('Lifecycle', 'before-quit received; enabling Excel shutdown latch');
+    logger.info('Lifecycle', 'Excel process snapshot at before-quit', {
+      excelProcessIds,
+      excelProcessCount: excelProcessIds.length
+    });
+    try {
+      excel.setShuttingDown?.(true);
+    } catch {
+      // Ignore shutdown flag errors.
+    }
+  });
+
+  const buildShutdownResult = () => ({
+    success: false,
+    message: 'APP_SHUTTING_DOWN: MacroFlow is closing and Excel operations are paused.'
+  });
+
+  const waitForExcelOperationsToDrain = (timeoutMs = 2000, pollMs = 50) => new Promise((resolve) => {
+    if (activeExcelOperations < 1) {
+      resolve({ drained: true, remaining: 0, waitedMs: 0 });
+      return;
+    }
+
+    const startedAt = Date.now();
+    const timer = setInterval(() => {
+      const waitedMs = Date.now() - startedAt;
+      if (activeExcelOperations < 1) {
+        clearInterval(timer);
+        resolve({ drained: true, remaining: 0, waitedMs });
+        return;
+      }
+      if (waitedMs >= timeoutMs) {
+        clearInterval(timer);
+        resolve({
+          drained: false,
+          remaining: activeExcelOperations,
+          waitedMs
+        });
+      }
+    }, pollMs);
+  });
+
   const withComRelease = async (operation) => {
+    if (isAppQuitting) {
+      logger.warn('IPC', 'Excel operation blocked because app is shutting down');
+      return buildShutdownResult();
+    }
+
+    activeExcelOperations += 1;
     try {
       return await Promise.resolve(operation());
     } finally {
+      activeExcelOperations = Math.max(0, activeExcelOperations - 1);
       try {
         excel.clearComCache();
       } catch {
@@ -267,13 +324,132 @@ function registerHandlers() {
     return result;
   };
 
+  let resolveInstanceInFlight = null;
+
+  const toFiniteNumberOrUndefined = (value) => {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  };
+
+  const normalizeResolveMetadata = (payload) => {
+    if (!payload || typeof payload !== 'object') {
+      return {};
+    }
+
+    const strategy = payload.strategy === 'foreground' || payload.strategy === 'max_workbooks'
+      ? payload.strategy
+      : undefined;
+
+    return {
+      pid: toFiniteNumberOrUndefined(payload.pid),
+      workbookCount: toFiniteNumberOrUndefined(payload.workbookCount),
+      strategy
+    };
+  };
+
+  const runResolveInstance = async () => {
+    // Step 1: Check if we're already connected to an active workbook.
+    const currentInfo = excel.getWorkbookInfo();
+    if (currentInfo.success) {
+      return { resolved: true, reason: 'already-connected', attempt: 0 };
+    }
+
+    // If the error isn't workbook/instance related, surface that directly.
+    const msg = String(currentInfo.message || '').toUpperCase();
+    if (!msg.includes('NO_WORKBOOK') && !msg.includes('MULTI_INSTANCE')) {
+      return {
+        resolved: false,
+        reason: 'different-error',
+        message: currentInfo.message
+      };
+    }
+
+    // Step 2: Ask the C# helper to select and foreground the most likely Excel instance.
+    const helper = excel._focusHelper;
+    if (!helper || typeof helper.findExcelWithWorkbooks !== 'function') {
+      return { resolved: false, reason: 'helper-unavailable' };
+    }
+
+    let helperResult;
+    try {
+      helperResult = await helper.findExcelWithWorkbooks(3000);
+    } catch {
+      return { resolved: false, reason: 'helper-error' };
+    }
+
+    const helperMeta = normalizeResolveMetadata(helperResult);
+
+    if (!helperResult || !helperResult.found) {
+      return {
+        resolved: false,
+        reason: String(helperResult?.reason || 'no-qualifying-instance'),
+        ...helperMeta
+      };
+    }
+
+    if (!helperResult.activated) {
+      return { resolved: false, reason: 'activation-failed', ...helperMeta };
+    }
+
+    // Step 3: Poll-retry - ROT update after SetForegroundWindow is not instant.
+    const maxRetries = 3;
+    const retryDelayMs = 150;
+
+    for (let attempt = 1; attempt <= maxRetries; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+      excel.clearComCache();
+      const retryInfo = excel.getWorkbookInfo();
+      if (retryInfo.success) {
+        return { resolved: true, reason: 'helper-resolved', attempt, ...helperMeta };
+      }
+    }
+
+    return { resolved: false, reason: 'poll-exhausted', attempt: maxRetries, ...helperMeta };
+  };
+
+  const resolveInstanceOnce = async () => {
+    if (!resolveInstanceInFlight) {
+      resolveInstanceInFlight = withComRelease(runResolveInstance).finally(() => {
+        resolveInstanceInFlight = null;
+      });
+    }
+    return resolveInstanceInFlight;
+  };
+
   // ==========================================================================
   // APP CONTROLS
   // ==========================================================================
 
   ipcMain.on('app:close', () => {
+    if (closeRequested) {
+      logger.info('Lifecycle', 'app:close ignored (close already requested)');
+      return;
+    }
+    closeRequested = true;
+
     logIpc('app:close', 'start');
-    app.quit();
+    isAppQuitting = true;
+    const excelProcessIds = excel.getExcelProcessIds?.() || [];
+    logger.info('Lifecycle', 'app:close requested; enabling Excel shutdown latch');
+    logger.info('Lifecycle', 'Excel process snapshot at app:close', {
+      excelProcessIds,
+      excelProcessCount: excelProcessIds.length
+    });
+    try {
+      excel.setShuttingDown?.(true);
+    } catch {
+      // Ignore shutdown flag errors.
+    }
+
+    void (async () => {
+      const drain = await waitForExcelOperationsToDrain();
+      logger.info('Lifecycle', 'Excel operations drain before quit', {
+        drained: drain.drained,
+        remaining: drain.remaining,
+        waitedMs: drain.waitedMs
+      });
+      app.quit();
+    })();
   });
 
   // ==========================================================================
@@ -583,79 +759,28 @@ function registerHandlers() {
    */
   ipcMain.handle('excel:resolveInstance', async () => {
     logIpc('excel:resolveInstance', 'start');
-    const result = await withComRelease(async () => {
-      // Step 1: Check if we're already connected to the right instance
-      const currentInfo = excel.getWorkbookInfo();
-      if (currentInfo.success) {
-        logIpc('excel:resolveInstance', 'end', { resolved: true, reason: 'already-connected' });
-        return { resolved: true, reason: 'already-connected' };
+    try {
+      const result = await resolveInstanceOnce();
+
+      if (result?.resolved) {
+        clearPollingPaused();
       }
 
-      // If the error isn't a workbook-not-found type, there's a different problem
-      const msg = String(currentInfo.message || '').toUpperCase();
-      if (!msg.includes('NO_WORKBOOK') && !msg.includes('MULTI_INSTANCE')) {
-        logIpc('excel:resolveInstance', 'end', { resolved: false, reason: 'different-error', message: currentInfo.message });
-        return { resolved: false, reason: 'different-error', message: currentInfo.message };
-      }
+      logIpc('excel:resolveInstance', 'end', {
+        resolved: Boolean(result?.resolved),
+        reason: result?.reason,
+        pid: result?.pid,
+        workbookCount: result?.workbookCount,
+        strategy: result?.strategy,
+        attempt: result?.attempt
+      });
 
-      // Step 2: Ask the C# helper to find and activate the correct Excel instance
-      const helper = excel._focusHelper;
-      if (!helper || typeof helper.findExcelWithWorkbooks !== 'function') {
-        logIpc('excel:resolveInstance', 'end', { resolved: false, reason: 'helper-unavailable' });
-        return { resolved: false, reason: 'helper-unavailable' };
-      }
-
-      let helperResult;
-      try {
-        helperResult = await helper.findExcelWithWorkbooks(3000);
-      } catch (error) {
-        logIpc('excel:resolveInstance', 'end', { resolved: false, reason: 'helper-error', error: error.message });
-        return { resolved: false, reason: 'helper-error' };
-      }
-
-      if (!helperResult || !helperResult.found) {
-        logIpc('excel:resolveInstance', 'end', { resolved: false, reason: 'no-qualifying-instance' });
-        return { resolved: false, reason: 'no-qualifying-instance' };
-      }
-
-      // If SetForegroundWindow failed, the ROT won't update — skip poll-retry
-      if (!helperResult.activated) {
-        logIpc('excel:resolveInstance', 'end', {
-          resolved: false,
-          reason: 'activation-failed',
-          pid: helperResult.pid
-        });
-        return { resolved: false, reason: 'activation-failed' };
-      }
-
-      // Step 3: Poll-retry — the ROT update from SetForegroundWindow can take variable time
-      const MAX_RETRIES = 3;
-      const RETRY_DELAY_MS = 150;
-
-      for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-        await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS));
-        excel.clearComCache();
-        const retryInfo = excel.getWorkbookInfo();
-        if (retryInfo.success) {
-          logIpc('excel:resolveInstance', 'end', {
-            resolved: true,
-            reason: 'helper-resolved',
-            attempt,
-            pid: helperResult.pid
-          });
-          return { resolved: true, reason: 'helper-resolved', attempt };
-        }
-      }
-
-      logIpc('excel:resolveInstance', 'end', { resolved: false, reason: 'poll-exhausted' });
-      return { resolved: false, reason: 'poll-exhausted' };
-    });
-
-    if (result?.resolved) {
-      clearPollingPaused();
+      return result;
+    } catch (error) {
+      const message = String(error?.message || error || 'Unknown resolve error');
+      logIpc('excel:resolveInstance', 'error', { message });
+      return { resolved: false, reason: 'handler-error', message };
     }
-
-    return result;
   });
 
   /**

@@ -209,9 +209,20 @@ contextBridge.exposeInMainWorld('excel', {
   // ==========================================================================
   // MULTI-INSTANCE RESOLUTION
   // ==========================================================================
+  // These APIs are used by renderer recovery flows when workbook polling detects
+  // multi-instance/no-workbook states. Payloads intentionally include diagnostics
+  // fields (pid/workbookCount/strategy/attempt) for log traceability.
   /**
    * Attempt to silently resolve the correct Excel instance
-   * @returns {Promise<{ resolved: boolean, reason?: string }>}
+   * @returns {Promise<{
+   *   resolved: boolean,
+   *   reason?: string,
+   *   pid?: number,
+   *   workbookCount?: number,
+   *   strategy?: 'foreground' | 'max_workbooks',
+   *   attempt?: number,
+   *   message?: string
+   * }>}
    */
   resolveInstance: () => ipcRenderer.invoke('excel:resolveInstance'),
 

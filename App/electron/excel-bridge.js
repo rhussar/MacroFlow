@@ -7,6 +7,7 @@
 
 const { execSync } = require('node:child_process');
 const winax = require('winax');
+const logger = require('./logger');
 
 function parseTasklistRows(output) {
   return String(output || '')
@@ -36,10 +37,20 @@ class ExcelBridge {
     this._focusHelper = null;
     this._multiInstanceCacheTimestamp = 0;
     this._multiInstanceCacheResult = null;
+    this._isShuttingDown = false;
+    this._attachAttemptSeq = 0;
   }
 
   setFocusHelper(client) {
     this._focusHelper = client || null;
+  }
+
+  setShuttingDown(value = true) {
+    this._isShuttingDown = Boolean(value);
+    logger.info('[ExcelBridge] shutdown latch updated', { shuttingDown: this._isShuttingDown });
+    if (this._isShuttingDown) {
+      this.clearComCache();
+    }
   }
 
   clearComCache() {
@@ -79,6 +90,10 @@ class ExcelBridge {
     }
   }
 
+  getExcelProcessIds() {
+    return this._listExcelProcessIds();
+  }
+
   // ===========================================================================
   // CONNECTION
   // ===========================================================================
@@ -91,9 +106,22 @@ class ExcelBridge {
    */
   getApp(options = {}) {
     const { activate = true } = options;
+    const attempt = ++this._attachAttemptSeq;
+
+    logger.debug('[ExcelBridge] COM attach requested', {
+      attempt,
+      activate,
+      shuttingDown: this._isShuttingDown
+    });
+
+    if (this._isShuttingDown) {
+      logger.warn('[ExcelBridge] COM attach blocked by shutdown latch', { attempt, activate });
+      throw new Error('APP_SHUTTING_DOWN: MacroFlow is closing and Excel operations are paused.');
+    }
 
     const processIds = this._listExcelProcessIds();
     if (processIds.length === 0) {
+      logger.debug('[ExcelBridge] COM attach preflight found no Excel processes', { attempt });
       throw new Error('NO_EXCEL: Excel is not running. Please open Excel first.');
     }
 
@@ -102,9 +130,28 @@ class ExcelBridge {
       if (!excel) {
         throw new Error('Excel application not found');
       }
+      const afterAttachProcessIds = this._listExcelProcessIds();
+      logger.debug('[ExcelBridge] COM attach succeeded', {
+        attempt,
+        processCount: processIds.length,
+        processCountAfterAttach: afterAttachProcessIds.length
+      });
+      if (afterAttachProcessIds.length > processIds.length) {
+        logger.warn('[ExcelBridge] Excel process count increased after COM attach', {
+          attempt,
+          processIdsBeforeAttach: processIds,
+          processIdsAfterAttach: afterAttachProcessIds
+        });
+      }
       return excel;
     } catch (error) {
       const remainingProcessIds = this._listExcelProcessIds();
+      logger.warn('[ExcelBridge] COM attach failed', {
+        attempt,
+        processCountBefore: processIds.length,
+        processCountAfter: remainingProcessIds.length,
+        error: String(error?.message || error || 'Unknown COM attach error')
+      });
       if (remainingProcessIds.length === 0) {
         throw new Error('NO_EXCEL: Excel is not running. Please open Excel first.');
       }

@@ -69,6 +69,14 @@ export function useSearchData({ mode, runState, macroRunInFlightRef, shortcutSav
       const workbookApi = window.excel?.workbook?.info;
       const modulesApi = window.excel?.vba?.modules;
       const proceduresApi = window.excel?.vba?.procedures;
+      const fetchBundle = async () => {
+        const [workbookResult, modulesResult, proceduresResult] = await Promise.all([
+          workbookApi(),
+          modulesApi(),
+          proceduresApi()
+        ]);
+        return { workbookResult, modulesResult, proceduresResult };
+      };
 
       if (!workbookApi || !modulesApi || !proceduresApi) {
         const mappedError = mapSearchError('NO_EXCEL: Excel bridge API is unavailable.');
@@ -94,26 +102,22 @@ export function useSearchData({ mode, runState, macroRunInFlightRef, shortcutSav
         return;
       }
 
-      const [workbookResult, modulesResult, proceduresResult] = await Promise.all([
-        workbookApi(),
-        modulesApi(),
-        proceduresApi()
-      ]);
+      let { workbookResult, modulesResult, proceduresResult } = await fetchBundle();
 
       if (requestId !== searchRequestSequence.current) {
         return;
       }
 
-      const failedResults = [workbookResult, modulesResult, proceduresResult].filter(
+      let failedResults = [workbookResult, modulesResult, proceduresResult].filter(
         (result) => !result?.success
       );
 
       if (failedResults.length > 0) {
-        const failureMessage = failedResults
+        let failureMessage = failedResults
           .map((result) => result?.message)
           .filter(Boolean)
           .join(' | ');
-        const mappedError = mapSearchError(failureMessage);
+        let mappedError = mapSearchError(failureMessage);
 
         // One-shot: when multi_instance is first detected, try Solution 1
         // (C# helper enumerates instances and activates the correct one)
@@ -122,33 +126,45 @@ export function useSearchData({ mode, runState, macroRunInFlightRef, shortcutSav
           try {
             const resolved = await window.excel?.resolveInstance();
             if (resolved?.resolved) {
-              // Helper found and activated the correct instance — retry immediately
-              searchLoadInFlight.current = false;
-              await loadSearchData({ silent: true });
-              return;
+              ({ workbookResult, modulesResult, proceduresResult } = await fetchBundle());
+              if (requestId !== searchRequestSequence.current) {
+                return;
+              }
+              failedResults = [workbookResult, modulesResult, proceduresResult].filter(
+                (result) => !result?.success
+              );
+              if (failedResults.length > 0) {
+                failureMessage = failedResults
+                  .map((result) => result?.message)
+                  .filter(Boolean)
+                  .join(' | ');
+                mappedError = mapSearchError(failureMessage);
+              }
             }
           } catch {
-            // Resolution failed — fall through to show multi_instance UI
+            // Resolution failed - fall through to show multi_instance UI.
           }
         }
 
-        if (isTerminalConnectionStatus(mappedError.status) && !pollingPausedRef.current) {
-          pollingPausedRef.current = true;
-          pollingPausedReasonRef.current = String(mappedError.code || '').toUpperCase() || 'NO_EXCEL';
-        }
-
-        lastWorkbookSignature.current = '';
-        setSearchData({
-          status: mappedError.status,
-          workbook: null,
-          modules: [],
-          macros: [],
-          error: {
-            code: mappedError.code,
-            message: mappedError.message
+        if (failedResults.length > 0) {
+          if (isTerminalConnectionStatus(mappedError.status) && !pollingPausedRef.current) {
+            pollingPausedRef.current = true;
+            pollingPausedReasonRef.current = String(mappedError.code || '').toUpperCase() || 'NO_EXCEL';
           }
-        });
-        return;
+
+          lastWorkbookSignature.current = '';
+          setSearchData({
+            status: mappedError.status,
+            workbook: null,
+            modules: [],
+            macros: [],
+            error: {
+              code: mappedError.code,
+              message: mappedError.message
+            }
+          });
+          return;
+        }
       }
 
       const fallbackWorkbook = modulesResult?.workbook || proceduresResult?.workbook || null;
@@ -308,3 +324,4 @@ export function useSearchData({ mode, runState, macroRunInFlightRef, shortcutSav
     loadSearchData
   };
 }
+

@@ -178,7 +178,7 @@ body {
   gap: 6px;
   padding: 6px 10px;
   background: transparent;
-  border: none;
+  border: 1px solid var(--border-default);
   border-radius: var(--border-radius-sm);
   color: var(--text-secondary);
   font-size: 12px;
@@ -188,7 +188,7 @@ body {
 }
 
 .build-mode-btn:hover {
-  background: var(--bg-hover);
+  background: transparent;
   color: var(--text-primary);
 }
 
@@ -197,7 +197,7 @@ body {
   align-items: center;
   justify-content: center;
   padding: 2px 6px;
-  background: var(--bg-input);
+  background: transparent;
   border: 1px solid var(--border-default);
   border-radius: var(--border-radius-xs);
   font-size: 10px;
@@ -1034,6 +1034,9 @@ body {
 }
 
 .build-footer-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
   gap: 14px;
 }
 
@@ -1041,10 +1044,12 @@ body {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  min-height: 22px;
   padding: 0;
   background: transparent;
   border: none;
   font-size: 12px;
+  line-height: 1;
   color: var(--text-secondary);
   cursor: pointer;
 }
@@ -1061,6 +1066,7 @@ body {
 .build-shortcut-binding {
   display: inline-flex;
   align-items: center;
+  min-height: 22px;
   gap: 4px;
 }
 
@@ -1479,6 +1485,41 @@ body {
 .code-breadcrumb-separator {
   color: var(--text-muted);
   margin: 0 2px;
+}
+
+.code-breadcrumb-module-btn {
+  display: inline-flex;
+  align-items: center;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: inherit;
+  font-family: inherit;
+  cursor: text;
+}
+
+.code-breadcrumb-module-btn:hover:not(:disabled) {
+  color: var(--text-primary);
+}
+
+.code-breadcrumb-module-btn:disabled {
+  opacity: 0.7;
+  cursor: default;
+}
+
+.build-module-rename-editable {
+  display: inline;
+  min-width: 1ch;
+  color: var(--text-secondary);
+  outline: none;
+  border: none;
+  background: transparent;
+  white-space: nowrap;
+}
+
+.build-module-rename-editable:focus {
+  color: var(--text-primary);
 }
 
 /* Syntax Highlighting Classes */

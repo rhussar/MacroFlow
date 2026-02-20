@@ -182,12 +182,6 @@ function App() {
         }
       }
 
-      // Alt+M for new macro (go to build mode)
-      if (e.altKey && e.key === 'm') {
-        e.preventDefault();
-        openBuildModeRef.current(null, { mode: 'new_module', source: 'hotkey' });
-      }
-
       // Escape to close or go back
       if (e.key === 'Escape') {
         if (settingsOpenRef.current) {
@@ -359,13 +353,6 @@ function App() {
             >
               <MacroFlowLogo size={20} />
             </div>
-          </div>
-          <div className="footer-right">
-            <span className="footer-action">
-              New macro
-              <span className="kbd">Alt</span>
-              <span className="kbd">M</span>
-            </span>
           </div>
         </footer>
       )}

@@ -160,13 +160,13 @@ const SearchMode = ({
 
   const getPersonalActionButtonLabel = useCallback((action) => {
     if (action === 'create_global_macro') {
-      return 'Create a global macro +';
+      return 'Create a macro +';
     }
     if (action === 'create_file') {
       return 'Create file +';
     }
     if (action === 'open_file') {
-      return 'Open file';
+      return 'Open file +';
     }
     return '';
   }, []);
@@ -874,8 +874,7 @@ const SearchMode = ({
             className="build-mode-btn"
             onClick={() => onBuildModeClick?.(selectedWorkbook || selectedWorkbookForBuild || null)}
           >
-            AI Build Mode
-            <span className="kbd">Tab</span>
+            New macro
           </button>
           <button className="close-btn" onClick={onClose}>
             <CloseIcon />

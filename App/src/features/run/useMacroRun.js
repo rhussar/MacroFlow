@@ -49,6 +49,7 @@ export function useMacroRun({ loadSearchDataRef, setActionStatus }) {
       if (typeof loadSearchDataRef?.current === 'function') {
         await loadSearchDataRef.current({ silent: true });
       }
+      setSelectedMacro(null);
     }
   }, [loadSearchDataRef, runState, setActionStatus]);
 

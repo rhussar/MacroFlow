@@ -23,6 +23,10 @@ import {
   normalizeShortcutLetterDraft,
   toExcelShortcutKeyFromLetter
 } from '../lib/shortcut-keybind';
+import {
+  isValidVbaModuleName,
+  shouldCommitModuleRename
+} from '../features/search/module-actions';
 
 // Placeholder generated VBA code until AI codegen is wired in.
 const mockGeneratedCode = `Sub CleanData()
@@ -106,6 +110,8 @@ const BuildMode = ({
   const [draftShortcutLetter, setDraftShortcutLetter] = useState('');
   const [shortcutInputError, setShortcutInputError] = useState(false);
   const [shortcutSaving, setShortcutSaving] = useState(false);
+  const [moduleRenameDraft, setModuleRenameDraft] = useState('');
+  const [moduleRenameActive, setModuleRenameActive] = useState(false);
 
   const normalizedWorkbook = useMemo(
     () => normalizeBuildWorkbook(targetWorkbook),
@@ -136,6 +142,9 @@ const BuildMode = ({
   const activeShortcutHydrationIdRef = useRef(0);
   const dirtyLocalRef = useRef(false);
   const exitInFlightRef = useRef(false);
+  const moduleRenameInputRef = useRef(null);
+  const moduleRenameCommitInFlightRef = useRef(false);
+  const moduleRenameRestoreValueRef = useRef('');
 
   buildStateRef.current = buildState;
   promptRef.current = prompt;
@@ -707,6 +716,102 @@ const BuildMode = ({
     markLocalDirty();
   }, [markLocalDirty]);
 
+  const cancelModuleRename = useCallback(() => {
+    const restoreName = String(
+      moduleRenameRestoreValueRef.current || sessionContextRef.current?.moduleName || location.module || ''
+    ).trim();
+    setModuleRenameDraft(restoreName);
+    setModuleRenameActive(false);
+  }, [location.module]);
+
+  const commitModuleRename = useCallback(async (nextModuleNameOverride = null) => {
+    if (moduleRenameCommitInFlightRef.current) {
+      return;
+    }
+
+    const renameApi = window.excel?.vba?.renameModuleByWorkbook;
+    if (typeof renameApi !== 'function') {
+      setErrorInfo({
+        title: 'Rename failed: workbook module rename API is unavailable.',
+        line: null
+      });
+      setModuleRenameActive(false);
+      return;
+    }
+
+    const session = sessionContextRef.current;
+    if (!session) {
+      setModuleRenameActive(false);
+      return;
+    }
+
+    const currentModuleName = String(session.moduleName || '').trim();
+    const nextModuleName = String(
+      nextModuleNameOverride ??
+      moduleRenameInputRef.current?.textContent ??
+      moduleRenameDraft
+    ).trim();
+
+    if (!shouldCommitModuleRename({ currentName: currentModuleName, nextName: nextModuleName })) {
+      setModuleRenameDraft(currentModuleName);
+      setModuleRenameActive(false);
+      return;
+    }
+
+    if (!isValidVbaModuleName(nextModuleName)) {
+      setErrorInfo({
+        title: 'Rename failed: module names must start with a letter and use only letters, numbers, or underscores.',
+        line: null
+      });
+      return;
+    }
+
+    moduleRenameCommitInFlightRef.current = true;
+    setIsBusy(true);
+
+    try {
+      const result = await renameApi({
+        workbookName: session.workbook.name,
+        workbookPath: session.workbook.path,
+        moduleName: currentModuleName,
+        nextModuleName
+      });
+
+      if (!result?.success || result?.workbookFound === false || result?.moduleFound === false || result?.renamed === false) {
+        throw new Error(result?.message || 'Unable to rename module.');
+      }
+
+      const updatedWorkbook =
+        normalizeBuildWorkbook(result?.workbook || session.workbook) || session.workbook;
+      const updatedModuleName = String(result?.moduleName || nextModuleName).trim() || nextModuleName;
+      const updatedSession = {
+        ...session,
+        workbook: updatedWorkbook,
+        moduleName: updatedModuleName
+      };
+
+      sessionContextRef.current = updatedSession;
+      setSessionContext(updatedSession);
+      setLocation(buildLocation(updatedWorkbook.name, updatedModuleName));
+      setModuleRenameDraft(updatedModuleName);
+      setModuleRenameActive(false);
+      setErrorInfo(null);
+
+      if (typeof onRefreshSearchData === 'function') {
+        await onRefreshSearchData({ silent: true });
+      }
+    } catch (error) {
+      const message = String(error?.message || 'Unable to rename module.');
+      setErrorInfo({
+        title: `Rename failed: ${message}`,
+        line: null
+      });
+    } finally {
+      moduleRenameCommitInFlightRef.current = false;
+      setIsBusy(false);
+    }
+  }, [moduleRenameDraft, onRefreshSearchData]);
+
   const handleRunMacro = useCallback(async () => {
     if (isBusyRef.current) {
       return;
@@ -865,6 +970,39 @@ const BuildMode = ({
     requestedLaunchModuleName
   ]);
 
+  useEffect(() => {
+    if (moduleRenameActive) {
+      return;
+    }
+    const currentName = String(sessionContext?.moduleName || location.module || '').trim();
+    setModuleRenameDraft(currentName);
+  }, [location.module, moduleRenameActive, sessionContext?.moduleName]);
+
+  useEffect(() => {
+    if (!moduleRenameActive) {
+      return undefined;
+    }
+
+    const timerId = window.setTimeout(() => {
+      const input = moduleRenameInputRef.current;
+      if (!input) {
+        return;
+      }
+      input.focus();
+      const selection = window.getSelection();
+      if (!selection) {
+        return;
+      }
+      const range = document.createRange();
+      range.selectNodeContents(input);
+      range.collapse(false);
+      selection.removeAllRanges();
+      selection.addRange(range);
+    }, 0);
+
+    return () => window.clearTimeout(timerId);
+  }, [moduleRenameActive]);
+
   // Keyboard shortcut handler uses refs so the listener is registered once.
   useEffect(() => {
     const handleKeyDown = (event) => {
@@ -923,6 +1061,63 @@ const BuildMode = ({
         ? 'error'
         : 'normal';
   const currentCode = String(editedCode || BUILD_MODE_SEED_CODE);
+  const renderModuleBreadcrumb = () => {
+    if (!showCodePanel) {
+      return location.module;
+    }
+
+    if (moduleRenameActive) {
+      return (
+        <span
+          ref={moduleRenameInputRef}
+          className="build-module-rename-editable"
+          contentEditable={!isBusy}
+          suppressContentEditableWarning
+          role="textbox"
+          aria-label="Rename module"
+          onBlur={() => {
+            const nextValue = String(moduleRenameInputRef.current?.textContent || '').trim();
+            void commitModuleRename(nextValue);
+          }}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') {
+              event.preventDefault();
+              const nextValue = String(moduleRenameInputRef.current?.textContent || '').trim();
+              void commitModuleRename(nextValue);
+              return;
+            }
+            if (event.key === 'Escape') {
+              event.preventDefault();
+              if (moduleRenameInputRef.current) {
+                moduleRenameInputRef.current.textContent = moduleRenameRestoreValueRef.current;
+              }
+              cancelModuleRename();
+            }
+          }}
+        >
+          {moduleRenameDraft}
+        </span>
+      );
+    }
+
+    return (
+      <button
+        type="button"
+        className="code-breadcrumb-module-btn"
+        onClick={() => {
+          if (!isBusy) {
+            const currentName = String(location.module || '').trim();
+            moduleRenameRestoreValueRef.current = currentName;
+            setModuleRenameDraft(currentName);
+            setModuleRenameActive(true);
+          }
+        }}
+        disabled={isBusy}
+      >
+        {location.module}
+      </button>
+    );
+  };
 
   const conversationPanel = (
     <div className="conversation-panel">
@@ -1064,7 +1259,7 @@ const BuildMode = ({
                   <span className="code-breadcrumb-text">
                     {location.workbook}
                     <span className="code-breadcrumb-separator"> &gt; </span>
-                    {location.module}
+                    {renderModuleBreadcrumb()}
                   </span>
                 </div>
               </div>
@@ -1086,7 +1281,7 @@ const BuildMode = ({
                 <span className="code-breadcrumb-text">
                   {location.workbook}
                   <span className="code-breadcrumb-separator"> &gt; </span>
-                  {location.module}
+                  {renderModuleBreadcrumb()}
                 </span>
               </div>
             </div>

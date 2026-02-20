@@ -791,3 +791,198 @@ test('module rename/delete operations release COM handles', () => {
   assert.ok(released.includes(workbook), 'Workbook should be released');
   assert.ok(released.includes(vbProject), 'VBProject should be released');
 });
+
+test('runMacroWithTrap uses add-in runtime first when available', () => {
+  const vbComponents = { Count: 0 };
+  const vbProject = { VBComponents: vbComponents };
+  const workbook = {
+    Name: 'Book1.xlsx',
+    FullName: 'C:\\Book1.xlsx',
+    VBProject: vbProject,
+    Activate: () => {}
+  };
+
+  const runCalls = [];
+  const excelApp = {
+    ActiveWorkbook: workbook,
+    ActiveWindow: { Activate: () => {} },
+    Ready: true,
+    Run: (...args) => {
+      runCalls.push(args);
+      return 'OK';
+    }
+  };
+
+  const { bridge } = loadExcelBridge({
+    processIds: [12001],
+    objectFactory: () => excelApp
+  });
+
+  let ensureCalls = 0;
+  bridge._ensureRuntimeModule = () => {
+    ensureCalls += 1;
+  };
+
+  const result = bridge.runMacroWithTrap('Module1.RunA');
+
+  assert.equal(result.success, true);
+  assert.equal(runCalls.length, 1);
+  assert.equal(runCalls[0][0], 'MacroFlow.xlam!MacroFlow_Runtime.MacroFlow_RunMacro');
+  assert.equal(ensureCalls, 0);
+});
+
+test('runMacroWithTrap falls back to workbook runtime when add-in runtime is unavailable', () => {
+  const vbComponents = { Count: 0 };
+  const vbProject = { VBComponents: vbComponents };
+  const workbook = {
+    Name: 'Book1.xlsx',
+    FullName: 'C:\\Book1.xlsx',
+    VBProject: vbProject,
+    Activate: () => {}
+  };
+
+  const runCalls = [];
+  const excelApp = {
+    ActiveWorkbook: workbook,
+    ActiveWindow: { Activate: () => {} },
+    Ready: true,
+    Run: (...args) => {
+      runCalls.push(args);
+      if (runCalls.length === 1) {
+        throw new Error('Cannot run the macro "MacroFlow_Runtime.MacroFlow_RunMacro".');
+      }
+      return 'OK';
+    }
+  };
+
+  const { bridge } = loadExcelBridge({
+    processIds: [12002],
+    objectFactory: () => excelApp
+  });
+
+  let ensureCalls = 0;
+  bridge._ensureRuntimeModule = () => {
+    ensureCalls += 1;
+  };
+
+  const result = bridge.runMacroWithTrap('Module1.RunA');
+
+  assert.equal(result.success, true);
+  assert.equal(runCalls.length, 2);
+  assert.equal(runCalls[0][0], 'MacroFlow.xlam!MacroFlow_Runtime.MacroFlow_RunMacro');
+  assert.equal(runCalls[1][0], 'Book1.xlsx!MacroFlow_Runtime.MacroFlow_RunMacro');
+  assert.equal(ensureCalls, 1);
+});
+
+test('runMacroWithTrap parses add-in runtime ERR payload without fallback', () => {
+  const vbComponents = { Count: 0 };
+  const vbProject = { VBComponents: vbComponents };
+  const workbook = {
+    Name: 'Book1.xlsx',
+    FullName: 'C:\\Book1.xlsx',
+    VBProject: vbProject,
+    Activate: () => {}
+  };
+
+  const runCalls = [];
+  const excelApp = {
+    ActiveWorkbook: workbook,
+    ActiveWindow: { Activate: () => {} },
+    Ready: true,
+    Run: (...args) => {
+      runCalls.push(args);
+      return 'ERR|11|Runtime exploded|VBAProject';
+    }
+  };
+
+  const { bridge } = loadExcelBridge({
+    processIds: [12003],
+    objectFactory: () => excelApp
+  });
+
+  let ensureCalls = 0;
+  bridge._ensureRuntimeModule = () => {
+    ensureCalls += 1;
+  };
+
+  const result = bridge.runMacroWithTrap('Module1.RunA');
+
+  assert.equal(result.success, false);
+  assert.match(result.message, /VBA error 11/);
+  assert.equal(runCalls.length, 1);
+  assert.equal(ensureCalls, 0);
+});
+
+test('runMacroWithTrap does not fallback for non-availability add-in runtime failures', () => {
+  const vbComponents = { Count: 0 };
+  const vbProject = { VBComponents: vbComponents };
+  const workbook = {
+    Name: 'Book1.xlsx',
+    FullName: 'C:\\Book1.xlsx',
+    VBProject: vbProject,
+    Activate: () => {}
+  };
+
+  const runCalls = [];
+  const excelApp = {
+    ActiveWorkbook: workbook,
+    ActiveWindow: { Activate: () => {} },
+    Ready: true,
+    Run: (...args) => {
+      runCalls.push(args);
+      throw new Error('0x800a9c68: compile error in hidden module');
+    }
+  };
+
+  const { bridge } = loadExcelBridge({
+    processIds: [12004],
+    objectFactory: () => excelApp
+  });
+
+  let ensureCalls = 0;
+  bridge._ensureRuntimeModule = () => {
+    ensureCalls += 1;
+  };
+
+  const result = bridge.runMacroWithTrap('Module1.RunA');
+
+  assert.equal(result.success, false);
+  assert.equal(result.error?.kind, 'excel-run-failed');
+  assert.equal(runCalls.length, 1);
+  assert.equal(ensureCalls, 0);
+});
+
+test('runMacroWithTrap releases COM handles on fallback failures', () => {
+  const vbComponents = { Count: 0 };
+  const vbProject = { VBComponents: vbComponents };
+  const workbook = {
+    Name: 'Book1.xlsx',
+    FullName: 'C:\\Book1.xlsx',
+    VBProject: vbProject,
+    Activate: () => {}
+  };
+
+  const excelApp = {
+    ActiveWorkbook: workbook,
+    ActiveWindow: { Activate: () => {} },
+    Ready: true,
+    Run: () => {
+      throw new Error('Cannot run the macro "MacroFlow_Runtime.MacroFlow_RunMacro".');
+    }
+  };
+
+  const { bridge, releaseCalls } = loadExcelBridge({
+    processIds: [12005],
+    objectFactory: () => excelApp
+  });
+
+  const result = bridge.runMacroWithTrap('Module1.RunA');
+
+  assert.equal(result.success, false);
+  assert.equal(result.error?.fallbackUsed, true);
+  assert.deepEqual(result.error?.runtimeSourceTried, ['addin', 'workbook']);
+
+  const released = releaseCalls.flat();
+  assert.ok(released.includes(excelApp), 'Excel app should be released');
+  assert.ok(released.includes(workbook), 'Workbook should be released');
+});

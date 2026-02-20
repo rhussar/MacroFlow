@@ -36,6 +36,7 @@ const VBA_COMPONENT_NAME = {
 const PERSONAL_WORKBOOK_NAME = 'PERSONAL.XLSB';
 const XLSB_FILE_FORMAT = 50;
 const VBA_MODULE_NAME_PATTERN = /^[A-Za-z][A-Za-z0-9_]*$/;
+const MACROFLOW_ADDIN_WORKBOOK_NAME = 'MacroFlow.xlam';
 
 class ExcelBridge {
   constructor() {
@@ -855,6 +856,60 @@ class ExcelBridge {
     } finally {
       this._safeRelease(codeModule, existing, newModule, vbProject);
     }
+  }
+
+  _buildAddinRuntimeTarget() {
+    const addinName = this._qualifyWorkbookName(MACROFLOW_ADDIN_WORKBOOK_NAME);
+    return `${addinName}!MacroFlow_Runtime.MacroFlow_RunMacro`;
+  }
+
+  _buildWorkbookRuntimeTarget(workbook) {
+    const workbookName = this._qualifyWorkbookName(workbook?.Name);
+    return `${workbookName}!MacroFlow_Runtime.MacroFlow_RunMacro`;
+  }
+
+  _parseRuntimeTrapResult(result) {
+    if (typeof result !== 'string' || !result.startsWith('ERR|')) {
+      return null;
+    }
+
+    const [, number, description, source] = result.split('|');
+    return {
+      success: false,
+      message: `VBA error ${number}: ${description}`,
+      error: {
+        number: Number(number),
+        description: description || '',
+        source: source || ''
+      }
+    };
+  }
+
+  _isRuntimeUnavailableError(error) {
+    const message = String(error?.message || error || '').toLowerCase();
+
+    // Typical Excel COM text when the macro entry point cannot be found.
+    if (message.includes('cannot run the macro')) {
+      return true;
+    }
+    if (message.includes('the macro may not be available in this workbook')) {
+      return true;
+    }
+
+    // Typical invoke/dispatch failure surfaces for missing method/member.
+    if (message.includes('0x80020006')) {
+      return true;
+    }
+    if (message.includes('0x80020003')) {
+      return true;
+    }
+
+    // VBA runtime 1004 style surface for missing macro target.
+    if (message.includes('0x800a03ec')) {
+      return true;
+    }
+
+    return false;
   }
 
   _withWorkbookAtPath(path, callback) {
@@ -2921,9 +2976,8 @@ class ExcelBridge {
   runMacroWithTrap(macroName) {
     try {
       return this._withActiveWorkbook(({ excel, workbook }) => {
-        this._ensureRuntimeModule(workbook);
-        const workbookName = this._qualifyWorkbookName(workbook.Name);
-        const runtimeMacro = `${workbookName}!MacroFlow_Runtime.MacroFlow_RunMacro`;
+        const addinRuntimeTarget = this._buildAddinRuntimeTarget();
+        const workbookRuntimeTarget = this._buildWorkbookRuntimeTarget(workbook);
         const targetMacro = this._normalizeMacroName(macroName, workbook);
 
         if (!targetMacro) {
@@ -2935,22 +2989,59 @@ class ExcelBridge {
           return { success: false, message: prep.message };
         }
 
-        const result = excel.Run(runtimeMacro, targetMacro);
+        logger.debug('[ExcelBridge] macro-run runtime attempt', { source: 'addin' });
+        try {
+          const addinResult = excel.Run(addinRuntimeTarget, targetMacro);
+          const parsedAddinError = this._parseRuntimeTrapResult(addinResult);
+          if (parsedAddinError) {
+            return parsedAddinError;
+          }
 
-        if (typeof result === 'string' && result.startsWith('ERR|')) {
-          const [, number, description, source] = result.split('|');
-          return {
-            success: false,
-            message: `VBA error ${number}: ${description}`,
-            error: {
-              number: Number(number),
-              description: description || '',
-              source: source || ''
+          logger.debug('[ExcelBridge] macro-run runtime source resolved', { source: 'addin' });
+          return { success: true, message: `Executed "${targetMacro}"` };
+        } catch (addinError) {
+          if (!this._isRuntimeUnavailableError(addinError)) {
+            throw addinError;
+          }
+
+          logger.debug('[ExcelBridge] macro-run runtime fallback', {
+            from: 'addin',
+            to: 'workbook',
+            reason: String(addinError?.message || addinError || 'runtime unavailable')
+          });
+
+          try {
+            this._ensureRuntimeModule(workbook);
+            logger.debug('[ExcelBridge] macro-run runtime attempt', { source: 'workbook' });
+            const workbookResult = excel.Run(workbookRuntimeTarget, targetMacro);
+            const parsedWorkbookError = this._parseRuntimeTrapResult(workbookResult);
+            if (parsedWorkbookError) {
+              return {
+                ...parsedWorkbookError,
+                error: {
+                  ...parsedWorkbookError.error,
+                  runtimeSourceTried: ['addin', 'workbook'],
+                  fallbackUsed: true
+                }
+              };
             }
-          };
-        }
 
-        return { success: true, message: `Executed "${targetMacro}"` };
+            logger.debug('[ExcelBridge] macro-run runtime source resolved', { source: 'workbook' });
+            return { success: true, message: `Executed "${targetMacro}"` };
+          } catch (fallbackError) {
+            const fallbackMessage = String(fallbackError?.message || fallbackError || 'Unknown fallback error');
+            return {
+              success: false,
+              message: `Failed to run macro: ${fallbackMessage}`,
+              error: {
+                kind: 'runtime',
+                rawMessage: fallbackMessage,
+                runtimeSourceTried: ['addin', 'workbook'],
+                fallbackUsed: true
+              }
+            };
+          }
+        }
       });
     } catch (error) {
       const rawMessage = error && error.message ? String(error.message) : 'Unknown error';

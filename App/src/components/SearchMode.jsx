@@ -17,6 +17,7 @@ const defaultSearchData = {
   workbook: null,
   modules: [],
   macros: [],
+  shortcutAudit: null,
   error: null
 };
 
@@ -36,10 +37,14 @@ const SearchMode = ({
   onShortcutCommit,
   onActionStatus,
   shortcutSaveInFlightRef,
+  selectedWorkbookForBuild = null,
+  onSelectedWorkbookForBuildChange,
   onClose
 }) => {
   const status = searchData.status || 'idle';
-  const workbookPickerState = useWorkbookPickerData(searchData);
+  const workbookPickerState = useWorkbookPickerData(searchData, {
+    preferredWorkbookKey: selectedWorkbookForBuild?.key || ''
+  });
   const [isWorkbookMenuOpen, setWorkbookMenuOpen] = useState(false);
   const workbookMenuRef = useRef(null);
 
@@ -78,7 +83,7 @@ const SearchMode = ({
   }, [searchData?.macros, searchData?.modules, searchData?.workbook, selectedWorkbook, selectedWorkbookData, status, usingActiveWorkbookShortcuts]);
 
   const workbookShortcutState = useWorkbookShortcutState({
-    enabled: status === 'ready' && !usingActiveWorkbookShortcuts && displayedWorkbookData.status === 'ready',
+    enabled: status === 'ready' && !usingActiveWorkbookShortcuts && Boolean(selectedWorkbook?.name),
     workbook: selectedWorkbook,
     macros: displayedWorkbookData.macros,
     setActionStatus: onActionStatus,
@@ -113,7 +118,7 @@ const SearchMode = ({
     [displayedWorkbookData.macros, effectiveShortcutByMacroId, searchQuery]
   );
 
-  const personalMacrosState = usePersonalMacros(searchData, selectedWorkbook?.name);
+  const personalMacrosState = usePersonalMacros(searchData, workbookPickerState.workbookListSignature);
   const personalMacroRows = useMemo(
     () => selectPersonalGlobalMacros(personalMacrosState.macros, searchQuery),
     [personalMacrosState.macros, searchQuery]
@@ -175,6 +180,18 @@ const SearchMode = ({
     setWorkbookMenuOpen(false);
   };
 
+  useEffect(() => {
+    if (!onSelectedWorkbookForBuildChange) {
+      return;
+    }
+    onSelectedWorkbookForBuildChange(selectedWorkbook || null);
+  }, [
+    onSelectedWorkbookForBuildChange,
+    selectedWorkbook?.key,
+    selectedWorkbook?.name,
+    selectedWorkbook?.path
+  ]);
+
   const renderNonReadyState = () => {
     const statusView = getSearchStatusView(searchData);
 
@@ -192,6 +209,7 @@ const SearchMode = ({
   const workbookDataIsLoading = displayedWorkbookData.status === 'loading';
   const workbookDataHasError = displayedWorkbookData.status === 'error';
   const workbookDataIsReady = displayedWorkbookData.status === 'ready';
+  const canRenderMacroRows = workbookDataIsReady || (workbookDataIsLoading && activeMacroRows.length > 0);
 
   const macrosEmptyMessage = workbookDataIsLoading
     ? `Loading macros from ${selectedWorkbookLabel}...`
@@ -261,11 +279,11 @@ const SearchMode = ({
         </div>
 
         <div className="shortcuts-grid">
-          {(workbookDataIsLoading || workbookDataHasError || activeMacroRows.length === 0) && (
+          {(workbookDataHasError || activeMacroRows.length === 0) && (
             <div className="search-empty-state search-empty-state-grid">{macrosEmptyMessage}</div>
           )}
 
-          {workbookDataIsReady && activeMacroRows.map((row) => {
+          {canRenderMacroRows && activeMacroRows.map((row) => {
             const macro = row.macro;
             const currentShortcutLetter =
               effectiveShortcutDraftByMacroId[macro.id] ?? effectiveShortcutByMacroId[macro.id] ?? '';
@@ -325,6 +343,43 @@ const SearchMode = ({
         </div>
       </section>
 
+      {!personalSectionModel.hidden && (
+        <section className="search-ready-section">
+          <div className="section-header">
+            <span className="section-title">Global Macros (PERSONAL.XLSB)</span>
+            <span className="section-count">{personalSectionModel.count} items</span>
+          </div>
+
+          {personalSectionModel.isEmpty ? (
+            <div className="search-empty-state global-macros-empty">
+              {personalSectionModel.emptyMessage}
+            </div>
+          ) : (
+            <div className="shortcuts-grid">
+              {personalMacroRows.map((row) => {
+                const macro = row.macro;
+                return (
+                  <div
+                    key={row.uiId}
+                    className="shortcut-item readonly"
+                  >
+                    <div className="shortcut-run-target readonly-target">
+                      <span className="shortcut-icon">
+                        <ReturnIcon size={16} />
+                      </span>
+                      <span className="shortcut-name">{macro.name}</span>
+                    </div>
+                    <div className="shortcut-binding">
+                      <span className="global-shortcut-placeholder">Unavailable</span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </section>
+      )}
+
       <section className="search-ready-section">
         <div className="section-header">
           <span className="section-title">All Files</span>
@@ -366,43 +421,6 @@ const SearchMode = ({
           ))}
         </div>
       </section>
-
-      {!personalSectionModel.hidden && (
-        <section className="search-ready-section">
-          <div className="section-header">
-            <span className="section-title">Global Macros (PERSONAL.XLSB)</span>
-            <span className="section-count">{personalSectionModel.count} items</span>
-          </div>
-
-          {personalSectionModel.isEmpty ? (
-            <div className="search-empty-state global-macros-empty">
-              {personalSectionModel.emptyMessage}
-            </div>
-          ) : (
-            <div className="shortcuts-grid">
-              {personalMacroRows.map((row) => {
-                const macro = row.macro;
-                return (
-                  <div
-                    key={row.uiId}
-                    className="shortcut-item readonly"
-                  >
-                    <div className="shortcut-run-target readonly-target">
-                      <span className="shortcut-icon">
-                        <ReturnIcon size={16} />
-                      </span>
-                      <span className="shortcut-name">{macro.name}</span>
-                    </div>
-                    <div className="shortcut-binding">
-                      <span className="global-shortcut-placeholder">Unavailable</span>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </section>
-      )}
     </>
   );
 
@@ -423,7 +441,10 @@ const SearchMode = ({
         </div>
 
         <div className="header-actions">
-          <button className="build-mode-btn" onClick={onBuildModeClick}>
+          <button
+            className="build-mode-btn"
+            onClick={() => onBuildModeClick?.(selectedWorkbook || selectedWorkbookForBuild || null)}
+          >
             AI Build Mode
             <span className="kbd">Tab</span>
           </button>

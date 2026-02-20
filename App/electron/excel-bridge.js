@@ -59,6 +59,10 @@ class ExcelBridge {
     this._multiInstanceCacheResult = null;
   }
 
+  isShuttingDown() {
+    return this._isShuttingDown;
+  }
+
   _safeRelease(...objects) {
     const releasable = objects.filter(Boolean);
     if (releasable.length < 1) {
@@ -268,6 +272,39 @@ class ExcelBridge {
     return {
       name: workbook.Name,
       path: workbook.FullName
+    };
+  }
+
+  _describeWorkbookWithActiveSheet(workbook) {
+    let activeSheet = '';
+    let activeSheetRef = null;
+    let workbookSheets = null;
+    const sheetRefs = [];
+    const sheets = [];
+
+    try {
+      try {
+        activeSheetRef = workbook.ActiveSheet;
+        activeSheet = activeSheetRef ? String(activeSheetRef.Name) : '';
+      } catch {
+        activeSheet = '';
+      }
+
+      workbookSheets = workbook?.Sheets;
+      const count = workbookSheets ? Number(workbookSheets.Count) : 0;
+      for (let i = 1; i <= count; i += 1) {
+        const sheet = workbookSheets.Item(i);
+        sheetRefs.push(sheet);
+        sheets.push(String(sheet.Name));
+      }
+    } finally {
+      this._safeRelease(activeSheetRef, ...sheetRefs, workbookSheets);
+    }
+
+    return {
+      ...this._describeWorkbook(workbook),
+      activeSheet,
+      sheets
     };
   }
 
@@ -598,6 +635,147 @@ class ExcelBridge {
     }
 
     return [[this._normalizeValue(values)]];
+  }
+
+  _normalizeVbaCode(code) {
+    return String(code || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  }
+
+  _hashFnv1aHex(text) {
+    const bytes = Buffer.from(String(text || ''), 'utf8');
+    let hash = 0x811c9dc5;
+
+    for (let i = 0; i < bytes.length; i += 1) {
+      hash ^= bytes[i];
+      hash = Math.imul(hash, 0x01000193) >>> 0;
+    }
+
+    return hash.toString(16).padStart(8, '0');
+  }
+
+  _buildCodeSignature(code) {
+    const normalizedCode = this._normalizeVbaCode(code);
+    const lineCount = normalizedCode ? normalizedCode.split('\n').length : 0;
+    return {
+      code: normalizedCode,
+      lineCount,
+      hash: this._hashFnv1aHex(normalizedCode)
+    };
+  }
+
+  _readCodeModuleText(codeModule) {
+    const lineCount = Number(codeModule?.CountOfLines) || 0;
+    if (lineCount < 1) {
+      return '';
+    }
+    return String(codeModule.Lines(1, lineCount) || '');
+  }
+
+  _getModuleCodeForWorkbook(vbProject, moduleName) {
+    const normalizedModuleName = String(moduleName || '').trim();
+    if (!normalizedModuleName) {
+      return {
+        success: false,
+        moduleFound: false,
+        moduleName: '',
+        lineCount: 0,
+        hash: this._hashFnv1aHex(''),
+        code: '',
+        message: 'Module name is required.'
+      };
+    }
+
+    let component = null;
+    let codeModule = null;
+
+    try {
+      component = this._findComponentByName(vbProject, normalizedModuleName);
+      if (!component) {
+        const emptySignature = this._buildCodeSignature('');
+        return {
+          success: true,
+          moduleFound: false,
+          moduleName: normalizedModuleName,
+          lineCount: emptySignature.lineCount,
+          hash: emptySignature.hash,
+          code: '',
+          message: `Module "${normalizedModuleName}" was not found.`
+        };
+      }
+
+      codeModule = component.CodeModule;
+      const code = this._readCodeModuleText(codeModule);
+      const signature = this._buildCodeSignature(code);
+      return {
+        success: true,
+        moduleFound: true,
+        moduleName: normalizedModuleName,
+        lineCount: signature.lineCount,
+        hash: signature.hash,
+        code: signature.code
+      };
+    } finally {
+      this._safeRelease(codeModule, component);
+    }
+  }
+
+  _setModuleCodeForWorkbook(vbProject, moduleName, code, options = {}) {
+    const { createIfMissing = false } = options;
+    const normalizedModuleName = String(moduleName || '').trim();
+    if (!normalizedModuleName) {
+      return {
+        success: false,
+        moduleFound: false,
+        moduleName: '',
+        lineCount: 0,
+        hash: this._hashFnv1aHex(''),
+        message: 'Module name is required.'
+      };
+    }
+
+    const signature = this._buildCodeSignature(code);
+    let component = null;
+    let codeModule = null;
+
+    try {
+      component = this._findComponentByName(vbProject, normalizedModuleName);
+      const hasExisting = Boolean(component);
+
+      if (!component && !createIfMissing) {
+        return {
+          success: false,
+          moduleFound: false,
+          moduleName: normalizedModuleName,
+          lineCount: signature.lineCount,
+          hash: signature.hash,
+          message: `Module "${normalizedModuleName}" was not found.`
+        };
+      }
+
+      if (!component) {
+        component = vbProject.VBComponents.Add(VBA_COMPONENT_TYPE.STANDARD_MODULE);
+        component.Name = normalizedModuleName;
+      }
+
+      codeModule = component.CodeModule;
+      const existingLineCount = Number(codeModule?.CountOfLines) || 0;
+      if (existingLineCount > 0) {
+        codeModule.DeleteLines(1, existingLineCount);
+      }
+      if (signature.code) {
+        codeModule.InsertLines(1, signature.code);
+      }
+
+      return {
+        success: true,
+        moduleFound: hasExisting,
+        moduleName: normalizedModuleName,
+        lineCount: signature.lineCount,
+        hash: signature.hash
+      };
+    } finally {
+      this._safeRelease(codeModule, component);
+    }
   }
 
   _getRuntimeModuleCode() {
@@ -1273,6 +1451,136 @@ class ExcelBridge {
     }
   }
 
+  /**
+   * Fetch active workbook + modules + procedures + shortcut audit in one COM session.
+   * This is the fast path used by renderer search hydration.
+   * @returns {{
+   *   success: boolean,
+   *   workbook: { name: string, path: string, activeSheet: string, sheets: string[] } | null,
+   *   modules: Array,
+   *   procedures: Array,
+   *   shortcutAudit: { success: boolean, shortcuts: Array, unmapped: Array, note?: string, message?: string },
+   *   message?: string
+   * }}
+   */
+  getActiveWorkbookContext(options = {}) {
+    const { activate = true } = options;
+    try {
+      return this._withActiveWorkbook(({ workbook }) => {
+        const workbookInfo = this._describeWorkbookWithActiveSheet(workbook);
+        const vbProject = this._getVBProjectForWorkbook(workbook);
+        try {
+          const modules = this._listModulesForWorkbook(workbook, vbProject);
+          const procedures = this._listProceduresForWorkbook(workbook, vbProject);
+
+          let shortcutAudit = {
+            success: true,
+            shortcuts: [],
+            unmapped: [],
+            note: 'Excel does not expose global shortcut listings. Only MacroFlow-tracked shortcuts are available.'
+          };
+          try {
+            shortcutAudit = this._auditShortcutsForWorkbook(workbook);
+          } catch (error) {
+            shortcutAudit = {
+              success: false,
+              shortcuts: [],
+              unmapped: [],
+              message: String(error?.message || 'Shortcut audit failed.')
+            };
+          }
+
+          return {
+            success: true,
+            workbook: workbookInfo,
+            modules,
+            procedures,
+            shortcutAudit
+          };
+        } finally {
+          this._safeRelease(vbProject);
+        }
+      }, { activate });
+    } catch (error) {
+      return {
+        success: false,
+        workbook: null,
+        modules: [],
+        procedures: [],
+        shortcutAudit: { success: false, shortcuts: [], unmapped: [] },
+        message: error.message
+      };
+    }
+  }
+
+  /**
+   * Fetch open workbook list and all workbook modules in one COM session.
+   * This avoids per-workbook round trips for the workbook picker and "All Files".
+   * @returns {{
+   *   success: boolean,
+   *   workbooks: Array<{ name: string, path: string }>,
+   *   allFilesModules: Array,
+   *   message?: string
+   * }}
+   */
+  getOpenWorkbookListContext(options = {}) {
+    const { activate = true } = options;
+    try {
+      return this._withExcelApp((excel) => {
+        const workbooks = [];
+        const allFilesModules = [];
+        const workbookRefs = [];
+        const vbProjectRefs = [];
+        let workbookCollection = null;
+
+        try {
+          workbookCollection = excel.Workbooks;
+          const count = workbookCollection ? Number(workbookCollection.Count) : 0;
+          for (let i = 1; i <= count; i += 1) {
+            const workbook = workbookCollection.Item(i);
+            if (!workbook) {
+              continue;
+            }
+            workbookRefs.push(workbook);
+
+            const workbookInfo = this._describeWorkbook(workbook);
+            workbooks.push(workbookInfo);
+
+            try {
+              const vbProject = this._getVBProjectForWorkbook(workbook);
+              vbProjectRefs.push(vbProject);
+              const modules = this._listModulesForWorkbook(workbook, vbProject);
+              modules.forEach((module) => {
+                allFilesModules.push({
+                  ...module,
+                  workbookName: workbookInfo.name,
+                  workbookPath: workbookInfo.path
+                });
+              });
+            } catch {
+              // Ignore workbook-scoped VBA failures so the list can still render.
+            }
+          }
+        } finally {
+          this._safeRelease(...vbProjectRefs, ...workbookRefs, workbookCollection);
+        }
+
+        return {
+          success: true,
+          workbooks,
+          allFilesModules
+        };
+      }, { activate });
+    } catch (error) {
+      return {
+        success: false,
+        workbooks: [],
+        allFilesModules: [],
+        message: error.message
+      };
+    }
+  }
+
   // ===========================================================================
   // CELL OPERATIONS (LEGACY)
   // ===========================================================================
@@ -1576,6 +1884,264 @@ class ExcelBridge {
   }
 
   /**
+   * Read module code for a specific open workbook.
+   * @param {string} workbookName
+   * @param {string} moduleName
+   * @param {{ activate?: boolean, workbookPath?: string }} options
+   * @returns {{ success: boolean, workbookFound: boolean, moduleFound: boolean, workbook?: { name: string, path: string } | null, moduleName?: string, lineCount?: number, hash?: string, code?: string, message?: string }}
+   */
+  getModuleCodeByWorkbookName(workbookName, moduleName, options = {}) {
+    const { activate = true, workbookPath = '' } = options;
+    const normalizedName = String(workbookName || '').trim();
+    const normalizedPath = String(workbookPath || '').trim();
+    const normalizedModuleName = String(moduleName || '').trim();
+
+    if (!normalizedName && !normalizedPath) {
+      return {
+        success: false,
+        workbookFound: false,
+        moduleFound: false,
+        workbook: null,
+        moduleName: normalizedModuleName,
+        lineCount: 0,
+        hash: this._hashFnv1aHex(''),
+        code: '',
+        message: 'Workbook name or workbook path is required.'
+      };
+    }
+
+    if (!normalizedModuleName) {
+      return {
+        success: false,
+        workbookFound: false,
+        moduleFound: false,
+        workbook: null,
+        moduleName: '',
+        lineCount: 0,
+        hash: this._hashFnv1aHex(''),
+        code: '',
+        message: 'Module name is required.'
+      };
+    }
+
+    try {
+      return this._withExcelApp((excel) => {
+        const workbook = this._findOpenWorkbook(excel, {
+          workbookName: normalizedName,
+          workbookPath: normalizedPath
+        });
+
+        if (!workbook) {
+          const workbookLabel = normalizedPath || normalizedName;
+          return {
+            success: true,
+            workbookFound: false,
+            moduleFound: false,
+            workbook: null,
+            moduleName: normalizedModuleName,
+            lineCount: 0,
+            hash: this._hashFnv1aHex(''),
+            code: '',
+            message: `Workbook "${workbookLabel}" is not open.`
+          };
+        }
+
+        const workbookSummary = this._describeWorkbook(workbook);
+        try {
+          const vbProject = this._getVBProjectForWorkbook(workbook);
+          try {
+            const result = this._getModuleCodeForWorkbook(vbProject, normalizedModuleName);
+            return {
+              ...result,
+              workbookFound: true,
+              workbook: workbookSummary
+            };
+          } finally {
+            this._safeRelease(vbProject);
+          }
+        } finally {
+          this._safeRelease(workbook);
+        }
+      }, { activate });
+    } catch (error) {
+      return {
+        success: false,
+        workbookFound: false,
+        moduleFound: false,
+        workbook: null,
+        moduleName: normalizedModuleName,
+        lineCount: 0,
+        hash: this._hashFnv1aHex(''),
+        code: '',
+        message: error.message
+      };
+    }
+  }
+
+  /**
+   * Read module signature (line count + hash) for a specific open workbook.
+   * @param {string} workbookName
+   * @param {string} moduleName
+   * @param {{ activate?: boolean, workbookPath?: string }} options
+   * @returns {{ success: boolean, workbookFound: boolean, moduleFound: boolean, workbook?: { name: string, path: string } | null, moduleName?: string, lineCount?: number, hash?: string, message?: string }}
+   */
+  getModuleSignatureByWorkbookName(workbookName, moduleName, options = {}) {
+    const result = this.getModuleCodeByWorkbookName(workbookName, moduleName, options);
+    if (Object.prototype.hasOwnProperty.call(result, 'code')) {
+      delete result.code;
+    }
+    return result;
+  }
+
+  /**
+   * Set module code for a specific open workbook.
+   * @param {string} workbookName
+   * @param {string} moduleName
+   * @param {string} code
+   * @param {{ activate?: boolean, workbookPath?: string, createIfMissing?: boolean }} options
+   * @returns {{ success: boolean, workbookFound: boolean, moduleFound: boolean, workbook?: { name: string, path: string } | null, moduleName?: string, lineCount?: number, hash?: string, message?: string }}
+   */
+  setModuleCodeByWorkbookName(workbookName, moduleName, code, options = {}) {
+    const { activate = true, workbookPath = '', createIfMissing = false } = options;
+    const normalizedName = String(workbookName || '').trim();
+    const normalizedPath = String(workbookPath || '').trim();
+    const normalizedModuleName = String(moduleName || '').trim();
+
+    if (!normalizedName && !normalizedPath) {
+      return {
+        success: false,
+        workbookFound: false,
+        moduleFound: false,
+        workbook: null,
+        moduleName: normalizedModuleName,
+        lineCount: 0,
+        hash: this._hashFnv1aHex(''),
+        message: 'Workbook name or workbook path is required.'
+      };
+    }
+
+    if (!normalizedModuleName) {
+      return {
+        success: false,
+        workbookFound: false,
+        moduleFound: false,
+        workbook: null,
+        moduleName: '',
+        lineCount: 0,
+        hash: this._hashFnv1aHex(''),
+        message: 'Module name is required.'
+      };
+    }
+
+    try {
+      return this._withExcelApp((excel) => {
+        const workbook = this._findOpenWorkbook(excel, {
+          workbookName: normalizedName,
+          workbookPath: normalizedPath
+        });
+        if (!workbook) {
+          const workbookLabel = normalizedPath || normalizedName;
+          return {
+            success: true,
+            workbookFound: false,
+            moduleFound: false,
+            workbook: null,
+            moduleName: normalizedModuleName,
+            lineCount: 0,
+            hash: this._hashFnv1aHex(''),
+            message: `Workbook "${workbookLabel}" is not open.`
+          };
+        }
+
+        const workbookSummary = this._describeWorkbook(workbook);
+        try {
+          const vbProject = this._getVBProjectForWorkbook(workbook);
+          try {
+            const result = this._setModuleCodeForWorkbook(vbProject, normalizedModuleName, code, {
+              createIfMissing
+            });
+
+            return {
+              ...result,
+              workbookFound: true,
+              workbook: workbookSummary
+            };
+          } finally {
+            this._safeRelease(vbProject);
+          }
+        } finally {
+          this._safeRelease(workbook);
+        }
+      }, { activate });
+    } catch (error) {
+      return {
+        success: false,
+        workbookFound: false,
+        moduleFound: false,
+        workbook: null,
+        moduleName: normalizedModuleName,
+        lineCount: 0,
+        hash: this._hashFnv1aHex(''),
+        message: error.message
+      };
+    }
+  }
+
+  /**
+   * Inject VBA code into a standard module for a specific workbook.
+   * Creates the module when missing (if enabled) and replaces existing code.
+   * @param {object} vbProject - Workbook VBProject COM object
+   * @param {string} moduleName
+   * @param {string} code
+   * @param {{ createIfMissing?: boolean }} options
+   * @returns {{ success: boolean, moduleFound?: boolean, created?: boolean, moduleName?: string, message?: string }}
+   * @private
+   */
+  _injectModuleForWorkbook(vbProject, moduleName, code, options = {}) {
+    const { createIfMissing = true } = options;
+    const normalizedModuleName = String(moduleName || '').trim();
+    if (!normalizedModuleName) {
+      return { success: false, message: 'Module name is required.' };
+    }
+
+    const normalizedCode = String(code || '');
+    const existing = this._findComponentByName(vbProject, normalizedModuleName);
+    const hasExisting = Boolean(existing);
+    this._safeRelease(existing);
+
+    if (!hasExisting && !createIfMissing) {
+      return {
+        success: false,
+        moduleFound: false,
+        moduleName: normalizedModuleName,
+        message: `Module "${normalizedModuleName}" was not found.`
+      };
+    }
+
+    if (hasExisting) {
+      this._removeModule(vbProject, normalizedModuleName);
+    }
+
+    let newModule = null;
+    let codeModule = null;
+    try {
+      newModule = vbProject.VBComponents.Add(VBA_COMPONENT_TYPE.STANDARD_MODULE);
+      newModule.Name = normalizedModuleName;
+      codeModule = newModule.CodeModule;
+      codeModule.InsertLines(codeModule.CountOfLines + 1, normalizedCode);
+    } finally {
+      this._safeRelease(codeModule, newModule);
+    }
+
+    return {
+      success: true,
+      moduleFound: hasExisting,
+      created: !hasExisting,
+      moduleName: normalizedModuleName
+    };
+  }
+
+  /**
    * Inject or replace a VBA module in the active workbook.
    * @param {string} moduleName - Name of the module (e.g., 'MacroFlowModule')
    * @param {string} code - VBA code to inject
@@ -1586,29 +2152,102 @@ class ExcelBridge {
       return this._withActiveWorkbook(({ workbook }) => {
         const vbProject = this._getVBProjectForWorkbook(workbook);
         try {
-          this._removeModule(vbProject, moduleName);
-
-          const newModule = vbProject.VBComponents.Add(VBA_COMPONENT_TYPE.STANDARD_MODULE);
-          try {
-            newModule.Name = moduleName;
-
-            const codeModule = newModule.CodeModule;
-            try {
-              codeModule.InsertLines(codeModule.CountOfLines + 1, code);
-            } finally {
-              this._safeRelease(codeModule);
-            }
-          } finally {
-            this._safeRelease(newModule);
+          const result = this._injectModuleForWorkbook(vbProject, moduleName, code, {
+            createIfMissing: true
+          });
+          if (!result.success) {
+            return result;
           }
 
-          return { success: true, message: `Module "${moduleName}" created successfully` };
+          const action = result.created ? 'created' : 'updated';
+          return {
+            success: true,
+            moduleName: result.moduleName,
+            message: `Module "${result.moduleName}" ${action} successfully`
+          };
         } finally {
           this._safeRelease(vbProject);
         }
       });
     } catch (error) {
       return { success: false, message: error.message };
+    }
+  }
+
+  /**
+   * Inject or replace a VBA module in a specific open workbook.
+   * @param {string} workbookName
+   * @param {string} moduleName
+   * @param {string} code
+   * @param {{ activate?: boolean, workbookPath?: string, createIfMissing?: boolean }} options
+   * @returns {{ success: boolean, workbookFound: boolean, workbook?: { name: string, path: string } | null, moduleName?: string, message: string }}
+   */
+  injectModuleByWorkbookName(workbookName, moduleName, code, options = {}) {
+    const { activate = true, workbookPath = '', createIfMissing = true } = options;
+    const normalizedName = String(workbookName || '').trim();
+    const normalizedPath = String(workbookPath || '').trim();
+    if (!normalizedName && !normalizedPath) {
+      return {
+        success: false,
+        workbookFound: false,
+        workbook: null,
+        message: 'Workbook name or workbook path is required.'
+      };
+    }
+
+    try {
+      return this._withExcelApp((excel) => {
+        const workbook = this._findOpenWorkbook(excel, {
+          workbookName: normalizedName,
+          workbookPath: normalizedPath
+        });
+        if (!workbook) {
+          const workbookLabel = normalizedPath || normalizedName;
+          return {
+            success: true,
+            workbookFound: false,
+            workbook: null,
+            message: `Workbook "${workbookLabel}" is not open.`
+          };
+        }
+
+        const workbookSummary = this._describeWorkbook(workbook);
+        try {
+          const vbProject = this._getVBProjectForWorkbook(workbook);
+          try {
+            const result = this._injectModuleForWorkbook(vbProject, moduleName, code, {
+              createIfMissing
+            });
+            if (!result.success) {
+              return {
+                ...result,
+                workbookFound: true,
+                workbook: workbookSummary
+              };
+            }
+
+            const action = result.created ? 'created' : 'updated';
+            return {
+              success: true,
+              workbookFound: true,
+              workbook: workbookSummary,
+              moduleName: result.moduleName,
+              message: `Module "${result.moduleName}" ${action} successfully`
+            };
+          } finally {
+            this._safeRelease(vbProject);
+          }
+        } finally {
+          this._safeRelease(workbook);
+        }
+      }, { activate });
+    } catch (error) {
+      return {
+        success: false,
+        workbookFound: false,
+        workbook: null,
+        message: error.message
+      };
     }
   }
 

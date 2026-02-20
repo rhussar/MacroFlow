@@ -5,21 +5,20 @@ import './App.css';
 import SearchMode from './components/SearchMode';
 import BuildMode from './components/BuildMode';
 import FileExplorer from './components/FileExplorer';
-import ManualEditMode from './components/ManualEditMode';
 import SettingsMenu from './components/SettingsMenu';
 import { MacroFlowLogo } from './components/icons';
 import { useSearchData } from './features/search/useSearchData';
 import { useMacroRun } from './features/run/useMacroRun';
 import { useShortcutState } from './features/shortcuts/useShortcutState';
+import { normalizeBuildWorkbook } from './features/build/build-target';
 
 /**
  * Main App Component
  *
  * Modes:
  * - 'search': Main search window with files and VBA shortcuts
- * - 'build': AI Build mode for generating macros
+ * - 'build': AI Build mode for generating macros (includes inline code editor)
  * - 'explorer': File explorer with details panel
- * - 'edit': Manual code editor mode
  */
 function App() {
   // Current view mode
@@ -33,6 +32,7 @@ function App() {
   const [actionState, setActionState] = useState('idle');
   const [actionMessage, setActionMessage] = useState('');
   const [explorerContext, setExplorerContext] = useState(null);
+  const [selectedWorkbookForBuild, setSelectedWorkbookForBuild] = useState(null);
   const loadSearchDataRef = useRef(null);
   const shortcutSaveInFlightRef = useRef(false);
 
@@ -106,41 +106,80 @@ function App() {
 
   const modeRef = useRef(mode);
   const settingsOpenRef = useRef(settingsOpen);
+  const selectedWorkbookForBuildRef = useRef(selectedWorkbookForBuild);
+  const searchWorkbookRef = useRef(searchData?.workbook || null);
+  const openBuildModeRef = useRef(() => {});
   modeRef.current = mode;
   settingsOpenRef.current = settingsOpen;
+  selectedWorkbookForBuildRef.current = selectedWorkbookForBuild;
+  searchWorkbookRef.current = searchData?.workbook || null;
+
+  const handleSelectedWorkbookForBuildChange = useCallback((workbook) => {
+    const normalized = normalizeBuildWorkbook(workbook);
+    setSelectedWorkbookForBuild((previous) => {
+      const previousKey = String(previous?.key || '').trim();
+      const nextKey = String(normalized?.key || '').trim();
+      if (previousKey === nextKey) {
+        return previous;
+      }
+      return normalized;
+    });
+  }, []);
+
+  useEffect(() => {
+    if (selectedWorkbookForBuildRef.current?.key) {
+      return;
+    }
+    const fallbackWorkbook = normalizeBuildWorkbook(searchData?.workbook);
+    if (!fallbackWorkbook) {
+      return;
+    }
+    setSelectedWorkbookForBuild(fallbackWorkbook);
+  }, [searchData?.workbook]);
+
+  const openBuildMode = useCallback((workbook = null) => {
+    const normalizedWorkbook = normalizeBuildWorkbook(
+      workbook || selectedWorkbookForBuildRef.current || searchWorkbookRef.current
+    );
+    if (normalizedWorkbook) {
+      setSelectedWorkbookForBuild(normalizedWorkbook);
+    }
+    setMode('build');
+  }, []);
+
+  openBuildModeRef.current = openBuildMode;
 
   // Handle keyboard shortcuts — uses refs so the listener is registered once
   useEffect(() => {
     const handleKeyDown = (e) => {
-      // Tab to toggle between Search and Build modes
+      // Tab opens Build mode from Search mode only.
+      // Build-mode exits are handled inside BuildMode so boundary-save cannot be bypassed.
       if (e.key === 'Tab' && !e.ctrlKey && !e.shiftKey && !e.altKey) {
+        if (modeRef.current !== 'search') {
+          return;
+        }
+
         const target = e.target;
         const isSearchInput = target.classList?.contains('search-input');
 
         if (isSearchInput || target.tagName !== 'INPUT') {
           e.preventDefault();
-          setMode((prev) => {
-            if (prev === 'search') return 'build';
-            if (prev === 'build') return 'search';
-            return prev;
-          });
+          openBuildModeRef.current();
         }
       }
 
       // Alt+M for new macro (go to build mode)
       if (e.altKey && e.key === 'm') {
         e.preventDefault();
-        setMode('build');
+        openBuildModeRef.current();
       }
 
       // Escape to close or go back
       if (e.key === 'Escape') {
         if (settingsOpenRef.current) {
           setSettingsOpen(false);
-        } else if (modeRef.current === 'explorer' || modeRef.current === 'edit') {
+        } else if (modeRef.current === 'explorer') {
           setExplorerContext(null);
-          setMode('search');
-        } else if (modeRef.current === 'build') {
           setMode('search');
         }
       }
@@ -187,12 +226,13 @@ function App() {
     setMode('explorer');
   }, []);
 
-  const goToBuild = useCallback(() => setMode('build'), []);
+  const goToBuild = useCallback((workbook = null) => {
+    openBuildMode(workbook);
+  }, [openBuildMode]);
   const goToSearch = useCallback(() => {
     setExplorerContext(null);
     setMode('search');
   }, []);
-  const goToEdit = useCallback(() => setMode('edit'), []);
   const toggleSettings = useCallback(() => setSettingsOpen((prev) => !prev), []);
   const closeSettings = useCallback(() => setSettingsOpen(false), []);
   const handleExplorerContextConsumed = useCallback(() => {}, []);
@@ -218,6 +258,8 @@ function App() {
             onShortcutCommit={handleShortcutCommit}
             onActionStatus={setActionStatus}
             shortcutSaveInFlightRef={shortcutSaveInFlightRef}
+            selectedWorkbookForBuild={selectedWorkbookForBuild}
+            onSelectedWorkbookForBuildChange={handleSelectedWorkbookForBuildChange}
             onClose={handleClose}
           />
         );
@@ -227,7 +269,8 @@ function App() {
           <BuildMode
             onBack={goToSearch}
             onClose={handleClose}
-            onEditMode={goToEdit}
+            targetWorkbook={selectedWorkbookForBuild}
+            onRefreshSearchData={loadSearchData}
           />
         );
 
@@ -240,14 +283,6 @@ function App() {
             shortcutByMacroId={shortcutByMacroId}
             explorerContext={explorerContext}
             onExplorerContextConsumed={handleExplorerContextConsumed}
-          />
-        );
-
-      case 'edit':
-        return (
-          <ManualEditMode
-            onBack={goToBuild}
-            onClose={handleClose}
           />
         );
 

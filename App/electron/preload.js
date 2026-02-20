@@ -29,6 +29,34 @@ contextBridge.exposeInMainWorld('excel', {
     inject: (args) => ipcRenderer.invoke('vba:inject', args),
 
     /**
+     * Inject VBA code into a module in a specific open workbook
+     * @param {{ workbookName?: string, workbookPath?: string, moduleName: string, code: string, createIfMissing?: boolean }} args
+     * @returns {Promise<{ success: boolean, workbookFound: boolean, workbook?: object, moduleName?: string, message: string }>}
+     */
+    injectByWorkbook: (args) => ipcRenderer.invoke('vba:inject:by-workbook', args),
+
+    /**
+     * Read module code from a specific open workbook
+     * @param {{ workbookName?: string, workbookPath?: string, moduleName: string }} args
+     * @returns {Promise<{ success: boolean, workbookFound: boolean, moduleFound: boolean, workbook?: object, moduleName?: string, lineCount?: number, hash?: string, code?: string, message?: string }>}
+     */
+    moduleCodeByWorkbook: (args) => ipcRenderer.invoke('vba:module-code:by-workbook', args),
+
+    /**
+     * Read module signature (lineCount + hash) from a specific open workbook
+     * @param {{ workbookName?: string, workbookPath?: string, moduleName: string }} args
+     * @returns {Promise<{ success: boolean, workbookFound: boolean, moduleFound: boolean, workbook?: object, moduleName?: string, lineCount?: number, hash?: string, message?: string }>}
+     */
+    moduleSignatureByWorkbook: (args) => ipcRenderer.invoke('vba:module-signature:by-workbook', args),
+
+    /**
+     * Set module code in a specific open workbook
+     * @param {{ workbookName?: string, workbookPath?: string, moduleName: string, code: string, createIfMissing?: boolean }} args
+     * @returns {Promise<{ success: boolean, workbookFound: boolean, moduleFound: boolean, workbook?: object, moduleName?: string, lineCount?: number, hash?: string, message?: string }>}
+     */
+    setModuleCodeByWorkbook: (args) => ipcRenderer.invoke('vba:module-code:set:by-workbook', args),
+
+    /**
      * Run a VBA macro
      * @param {{ macroName: string }} args
      * @returns {Promise<{ success: boolean, message: string }>}
@@ -139,6 +167,26 @@ contextBridge.exposeInMainWorld('excel', {
     list: () => ipcRenderer.invoke('workbook:list'),
 
     /**
+     * Get active workbook context (workbook + modules + procedures + shortcut audit) in one call.
+     * Non-breaking fast path used by search hydration when available.
+     * @returns {Promise<{
+     *   success: boolean,
+     *   workbook: { name: string, path: string, activeSheet: string, sheets: string[] } | null,
+     *   modules: Array,
+     *   procedures: Array,
+     *   shortcutAudit: { success: boolean, shortcuts: Array, unmapped: Array, note?: string, message?: string },
+     *   message?: string
+     * }>}
+     */
+    context: () => ipcRenderer.invoke('workbook:context'),
+
+    /**
+     * Get open workbook list and all-files modules in one call.
+     * @returns {Promise<{ success: boolean, workbooks: Array<{ name: string, path: string }>, allFilesModules: Array, message?: string }>}
+     */
+    listContext: () => ipcRenderer.invoke('workbook:list-context'),
+
+    /**
      * List worksheets with UsedRange stats
      * @returns {Promise<{ success: boolean, sheets: Array }>}
      */
@@ -231,6 +279,30 @@ contextBridge.exposeInMainWorld('excel', {
    * @returns {Promise<{ success: boolean, name?: string, path?: string }>}
    */
   reconnect: () => ipcRenderer.invoke('excel:reconnect'),
+
+  // ==========================================================================
+  // EVENT SUBSCRIPTIONS
+  // ==========================================================================
+  events: {
+    /**
+     * Subscribe to foreground Excel context transitions reported by WindowHelper.
+     * @param {(payload: { excelActive: boolean, excelHwnd: string | null, process: string, timestamp: number }) => void} callback
+     * @returns {() => void} unsubscribe function
+     */
+    onForegroundChanged: (callback) => {
+      if (typeof callback !== 'function') {
+        return () => {};
+      }
+
+      const listener = (_event, payload) => {
+        callback(payload);
+      };
+      ipcRenderer.on('excel:foreground-changed', listener);
+      return () => {
+        ipcRenderer.removeListener('excel:foreground-changed', listener);
+      };
+    }
+  },
 
   // ==========================================================================
   // APP CONTROLS

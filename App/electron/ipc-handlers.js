@@ -218,6 +218,8 @@ function registerHandlers() {
   const POLLING_PAUSE_PROTECTED_CHANNELS = new Set([
     'workbook:info',
     'workbook:list',
+    'workbook:context',
+    'workbook:list-context',
     'vba:modules',
     'vba:procedures',
     'vba:shortcut:audit',
@@ -286,6 +288,24 @@ function registerHandlers() {
 
     if (channel === 'workbook:list') {
       return { ...base, workbooks: [] };
+    }
+
+    if (channel === 'workbook:context') {
+      return {
+        ...base,
+        workbook: null,
+        modules: [],
+        procedures: [],
+        shortcutAudit: {
+          success: false,
+          shortcuts: [],
+          unmapped: []
+        }
+      };
+    }
+
+    if (channel === 'workbook:list-context') {
+      return { ...base, workbooks: [], allFilesModules: [] };
     }
 
     if (channel === 'vba:shortcut:audit' || channel === 'vba:shortcut:audit:by-workbook') {
@@ -470,6 +490,140 @@ function registerHandlers() {
     );
 
     logIpc('vba:inject', 'end', { success: result.success });
+    return result;
+  });
+
+  /**
+   * Inject VBA code into a module in a specific open workbook.
+   * Channel: 'vba:inject:by-workbook'
+   * Args: { workbookName?: string, workbookPath?: string, moduleName: string, code: string, createIfMissing?: boolean }
+   */
+  ipcMain.handle('vba:inject:by-workbook', async (_, {
+    workbookName,
+    workbookPath,
+    moduleName = 'MacroFlowModule',
+    code,
+    createIfMissing = true
+  } = {}) => {
+    logIpc('vba:inject:by-workbook', 'start', {
+      workbookName,
+      workbookPath,
+      moduleName,
+      codeLength: code?.length,
+      createIfMissing
+    });
+
+    const result = await withComRelease(
+      () => withExcelFocus(
+        () => excel.injectModuleByWorkbookName(workbookName, moduleName, code, {
+          workbookPath,
+          createIfMissing
+        })
+      )
+    );
+
+    logIpc('vba:inject:by-workbook', 'end', {
+      success: result.success,
+      workbookFound: result.workbookFound,
+      moduleName: result.moduleName
+    });
+    return result;
+  });
+
+  /**
+   * Read VBA module code in a specific open workbook.
+   * Channel: 'vba:module-code:by-workbook'
+   * Args: { workbookName?: string, workbookPath?: string, moduleName: string }
+   */
+  ipcMain.handle('vba:module-code:by-workbook', async (_, {
+    workbookName,
+    workbookPath,
+    moduleName = ''
+  } = {}) => {
+    logIpc('vba:module-code:by-workbook', 'start', {
+      workbookName,
+      workbookPath,
+      moduleName
+    });
+
+    const result = await withComRelease(
+      () => excel.getModuleCodeByWorkbookName(workbookName, moduleName, { workbookPath })
+    );
+
+    logIpc('vba:module-code:by-workbook', 'end', {
+      success: result.success,
+      workbookFound: result.workbookFound,
+      moduleFound: result.moduleFound,
+      moduleName: result.moduleName,
+      lineCount: result.lineCount
+    });
+    return result;
+  });
+
+  /**
+   * Read VBA module signature in a specific open workbook.
+   * Channel: 'vba:module-signature:by-workbook'
+   * Args: { workbookName?: string, workbookPath?: string, moduleName: string }
+   */
+  ipcMain.handle('vba:module-signature:by-workbook', async (_, {
+    workbookName,
+    workbookPath,
+    moduleName = ''
+  } = {}) => {
+    logIpc('vba:module-signature:by-workbook', 'start', {
+      workbookName,
+      workbookPath,
+      moduleName
+    });
+
+    const result = await withComRelease(
+      () => excel.getModuleSignatureByWorkbookName(workbookName, moduleName, { workbookPath })
+    );
+
+    logIpc('vba:module-signature:by-workbook', 'end', {
+      success: result.success,
+      workbookFound: result.workbookFound,
+      moduleFound: result.moduleFound,
+      moduleName: result.moduleName,
+      lineCount: result.lineCount
+    });
+    return result;
+  });
+
+  /**
+   * Set VBA module code in a specific open workbook.
+   * Channel: 'vba:module-code:set:by-workbook'
+   * Args: { workbookName?: string, workbookPath?: string, moduleName: string, code: string, createIfMissing?: boolean }
+   */
+  ipcMain.handle('vba:module-code:set:by-workbook', async (_, {
+    workbookName,
+    workbookPath,
+    moduleName = '',
+    code = '',
+    createIfMissing = false
+  } = {}) => {
+    logIpc('vba:module-code:set:by-workbook', 'start', {
+      workbookName,
+      workbookPath,
+      moduleName,
+      codeLength: code?.length,
+      createIfMissing
+    });
+
+    const result = await withComRelease(
+      () => excel.setModuleCodeByWorkbookName(workbookName, moduleName, code, {
+        workbookPath,
+        createIfMissing
+      })
+    );
+
+    logIpc('vba:module-code:set:by-workbook', 'end', {
+      success: result.success,
+      workbookFound: result.workbookFound,
+      moduleFound: result.moduleFound,
+      moduleName: result.moduleName,
+      lineCount: result.lineCount
+    });
     return result;
   });
 
@@ -708,6 +862,45 @@ function registerHandlers() {
     logIpc('workbook:list', 'start');
     const result = await withPollingPause('workbook:list', () => excel.getOpenWorkbooks());
     logIpc('workbook:list', 'end', { success: result.success, count: result.workbooks?.length });
+    return result;
+  });
+
+  /**
+   * Get active workbook context in one backend call.
+   * Channel: 'workbook:context'
+   * Returns: { success, workbook, modules, procedures, shortcutAudit }
+   */
+  ipcMain.handle('workbook:context', async () => {
+    const startedAt = Date.now();
+    logIpc('workbook:context', 'start');
+    const result = await withPollingPause('workbook:context', () => excel.getActiveWorkbookContext());
+    logIpc('workbook:context', 'end', {
+      success: result.success,
+      modules: result.modules?.length,
+      procedures: result.procedures?.length,
+      durationMs: Date.now() - startedAt
+    });
+    return result;
+  });
+
+  /**
+   * Get open workbook list + all-files modules in one backend call.
+   * Channel: 'workbook:list-context'
+   * Returns: { success, workbooks, allFilesModules }
+   */
+  ipcMain.handle('workbook:list-context', async () => {
+    const startedAt = Date.now();
+    logIpc('workbook:list-context', 'start');
+    const result = await withPollingPause(
+      'workbook:list-context',
+      () => excel.getOpenWorkbookListContext()
+    );
+    logIpc('workbook:list-context', 'end', {
+      success: result.success,
+      workbookCount: result.workbooks?.length,
+      moduleCount: result.allFilesModules?.length,
+      durationMs: Date.now() - startedAt
+    });
     return result;
   });
 

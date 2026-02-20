@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useRef, useEffect, useCallback } from 'react';
 
 /**
  * Syntax highlight VBA code
@@ -89,10 +89,6 @@ const CodePreview = ({
   code,
   title = 'Preview',
   showHeader = true,
-  showEdit = false,
-  showOpenAgent = false,
-  onEdit,
-  onOpenAgent,
   editable = false,
   onChange,
   status = 'normal', // 'normal', 'success', 'error'
@@ -100,6 +96,8 @@ const CodePreview = ({
   className = '',
 }) => {
   const containerClass = `code-preview-container ${status} ${className}`.trim();
+  const bodyRef = useRef(null);
+  const isUserEditingRef = useRef(false);
 
   const finalCode = useMemo(() => {
     const highlighted = highlightVBA(code);
@@ -113,31 +111,36 @@ const CodePreview = ({
     return highlighted;
   }, [code, errorLine]);
 
+  // Update innerHTML only when the code changes externally (not from user typing)
+  useEffect(() => {
+    if (!bodyRef.current) return;
+    if (isUserEditingRef.current) {
+      isUserEditingRef.current = false;
+      return;
+    }
+    bodyRef.current.innerHTML = finalCode;
+  }, [finalCode]);
+
+  const handleInput = useCallback((e) => {
+    if (!editable) return;
+    isUserEditingRef.current = true;
+    onChange?.(e.currentTarget.textContent);
+  }, [editable, onChange]);
+
   return (
     <div className={containerClass}>
       {showHeader && (
         <div className="code-preview-header">
           <span className="code-preview-title">{title}</span>
-          <div className="code-preview-actions">
-            {showOpenAgent && (
-              <button className="code-action-btn" onClick={onOpenAgent}>
-                ○ Open Agent
-              </button>
-            )}
-            {showEdit && (
-              <button className="code-action-btn" onClick={onEdit}>
-                Edit ✏️
-              </button>
-            )}
-          </div>
         </div>
       )}
       <div
+        ref={bodyRef}
         className={`code-preview-body ${editable ? 'editable' : ''}`}
         contentEditable={editable}
         suppressContentEditableWarning={true}
-        onInput={editable ? (e) => onChange?.(e.currentTarget.textContent) : undefined}
-        dangerouslySetInnerHTML={{ __html: finalCode }}
+        spellCheck={false}
+        onInput={handleInput}
       />
     </div>
   );

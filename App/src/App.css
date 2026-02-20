@@ -252,6 +252,8 @@ body {
 
 .main-content {
   flex: 1;
+  display: flex;
+  flex-direction: column;
   overflow-y: auto;
   overflow-x: hidden;
   -webkit-app-region: no-drag;
@@ -885,6 +887,41 @@ body {
   color: var(--text-secondary);
 }
 
+.build-footer-actions {
+  gap: 14px;
+}
+
+.build-run-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  font-size: 12px;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.build-run-action:hover:not(:disabled) {
+  color: var(--text-primary);
+}
+
+.build-run-action:disabled {
+  opacity: 0.7;
+  cursor: default;
+}
+
+.build-shortcut-binding {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.build-shortcut-binding.saving .shortcut-keycap-input {
+  border-color: var(--accent-blue);
+}
+
 .footer-separator {
   color: var(--text-muted);
   margin: 0 4px;
@@ -1060,6 +1097,7 @@ body {
 .split-view {
   display: flex;
   flex: 1;
+  min-height: 100%;
   overflow: hidden;
   -webkit-app-region: no-drag;
 }
@@ -1075,8 +1113,14 @@ body {
   flex: 1;
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  overflow-y: auto;
+  overflow-x: hidden;
   padding: 16px;
+  align-items: stretch;
+}
+
+.split-right .code-preview-container {
+  flex: 0 0 auto;
 }
 
 /* ============================================
@@ -1211,37 +1255,83 @@ body {
 .code-preview-body.editable {
   outline: none;
   white-space: pre-wrap;
+  min-height: calc(10 * 1.6em);
 }
 
-/* Code Editor (Manual Edit Mode) */
-.code-editor-container {
+/* Build Mode - Full-width code view (chat closed) */
+.build-code-fullwidth {
   flex: 1;
   display: flex;
   flex-direction: column;
-  margin: 16px;
-  background: var(--bg-secondary);
-  border-radius: var(--border-radius-sm);
-  border: 1px solid var(--border-default);
-  overflow: hidden;
-}
-
-.code-editor-container.success {
-  border-color: var(--accent-green);
-}
-
-.code-editor-container.error {
-  border-color: var(--accent-red);
-}
-
-.code-editor-body {
-  flex: 1;
   padding: 16px;
-  overflow: auto;
-  font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+  overflow: hidden;
+  -webkit-app-region: no-drag;
+}
+
+/* Build mode chat panel - narrower than default split-left */
+.build-chat-panel {
+  width: 40%;
+}
+
+/* Bar above code with chat toggle + macro location */
+.build-code-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 4px;
+  margin-top: -4px;
+  margin-bottom: 6px;
+  flex-shrink: 0;
+}
+
+/* Chat toggle icon-only button */
+.chat-toggle-icon-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  border-radius: var(--border-radius-xs);
+  transition: all 0.15s;
+  flex-shrink: 0;
+  -webkit-app-region: no-drag;
+  margin-left: -6px;
+  margin-right: -6px;
+}
+
+.chat-toggle-icon-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+/* Code breadcrumb (macro location) */
+.code-breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   font-size: 12px;
-  line-height: 1.7;
-  outline: none;
-  white-space: pre-wrap;
+  color: var(--text-secondary);
+}
+
+.code-breadcrumb-icon {
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.code-breadcrumb-text {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.code-breadcrumb-separator {
+  color: var(--text-muted);
+  margin: 0 2px;
 }
 
 /* Syntax Highlighting Classes */
@@ -1370,6 +1460,122 @@ body {
   font-size: 13px;
   color: var(--text-primary);
   line-height: 1.5;
+}
+
+.build-sync-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.build-sync-label {
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  font-size: 11px;
+}
+
+.build-sync-value {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.build-sync-detail {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-top: -6px;
+}
+
+.build-recover-btn {
+  align-self: flex-start;
+  padding: 8px 10px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--border-radius-xs);
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.build-recover-btn:hover {
+  background: var(--bg-hover);
+}
+
+.build-exit-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 120;
+  -webkit-app-region: no-drag;
+}
+
+.build-exit-dialog {
+  width: min(420px, calc(100vw - 32px));
+  background: var(--bg-panel);
+  border: 1px solid var(--border-default);
+  border-radius: var(--border-radius-sm);
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.5);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.build-exit-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.build-exit-message {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.build-exit-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.build-exit-btn {
+  padding: 6px 10px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--border-radius-xs);
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.build-exit-btn:hover {
+  background: var(--bg-hover);
+}
+
+.build-exit-btn.primary {
+  border-color: rgba(96, 165, 250, 0.5);
+  background: rgba(96, 165, 250, 0.12);
+}
+
+.build-exit-btn.primary:hover {
+  background: rgba(96, 165, 250, 0.2);
+}
+
+.build-exit-btn.danger {
+  border-color: rgba(248, 113, 113, 0.45);
+  color: #fca5a5;
+}
+
+.build-exit-btn.danger:hover {
+  background: rgba(248, 113, 113, 0.12);
 }
 
 .error-title {

@@ -48,6 +48,22 @@ function toWorkbookModel(workbook) {
   };
 }
 
+export function normalizeListContextModules(rawModules = []) {
+  const source = Array.isArray(rawModules) ? rawModules : [];
+  const normalized = [];
+
+  source.forEach((moduleItem) => {
+    const workbook = {
+      name: String(moduleItem?.workbookName || '').trim(),
+      path: String(moduleItem?.workbookPath || '').trim()
+    };
+    const rows = normalizeModules([moduleItem], workbook);
+    rows.forEach((row) => normalized.push(row));
+  });
+
+  return normalized;
+}
+
 export function sortWorkbooksForPicker(workbooks, activeWorkbookKey) {
   const source = Array.isArray(workbooks) ? workbooks.filter(Boolean) : [];
   const uniqueByKey = new Map();
@@ -173,7 +189,8 @@ export function sortAllFilesModules(modules, activeWorkbookKey = '') {
   return [...activeRows, ...nonActiveRows];
 }
 
-export function useWorkbookPickerData(searchData) {
+export function useWorkbookPickerData(searchData, options = {}) {
+  const preferredWorkbookKey = String(options?.preferredWorkbookKey || '').trim();
   const [pickerState, setPickerState] = useState(INITIAL_PICKER_STATE);
   const [selectedWorkbookKey, setSelectedWorkbookKey] = useState('');
   const [selectedWorkbookData, setSelectedWorkbookData] = useState(INITIAL_SELECTED_WORKBOOK_DATA);
@@ -195,7 +212,8 @@ export function useWorkbookPickerData(searchData) {
     }
 
     const workbookListApi = window.excel?.workbook?.list;
-    if (!workbookListApi) {
+    const workbookListContextApi = window.excel?.workbook?.listContext;
+    if (!workbookListApi && typeof workbookListContextApi !== 'function') {
       setPickerState({
         status: 'error',
         workbooks: [],
@@ -214,7 +232,9 @@ export function useWorkbookPickerData(searchData) {
     }
 
     try {
-      const result = await workbookListApi();
+      const result = typeof workbookListContextApi === 'function'
+        ? await workbookListContextApi()
+        : await workbookListApi();
       if (requestId !== listRequestSequence.current) {
         return [];
       }
@@ -243,9 +263,21 @@ export function useWorkbookPickerData(searchData) {
         workbooks: sortedWorkbooks,
         error: null
       });
+
+      if (typeof workbookListContextApi === 'function') {
+        const contextModules = normalizeListContextModules(result?.allFilesModules);
+        const fallbackModules = Array.isArray(searchData?.modules) ? searchData.modules : [];
+        const mergedModules = contextModules.length > 0 ? contextModules : fallbackModules;
+        setAllFilesData({
+          status: 'ready',
+          modules: sortAllFilesModules(mergedModules, activeWorkbookKey),
+          error: null
+        });
+      }
+
       setSelectedWorkbookKey((previousKey) =>
         resolveSelectedWorkbookKey({
-          requestedKey: previousKey,
+          requestedKey: previousKey || preferredWorkbookKey,
           workbooks: sortedWorkbooks,
           activeWorkbookKey
         })
@@ -263,7 +295,15 @@ export function useWorkbookPickerData(searchData) {
       });
       return [];
     }
-  }, [activeWorkbook, activeWorkbookKey, searchData?.status]);
+  }, [activeWorkbook, activeWorkbookKey, preferredWorkbookKey, searchData?.modules, searchData?.status]);
+
+  useEffect(() => {
+    if (!preferredWorkbookKey) {
+      return;
+    }
+
+    setSelectedWorkbookKey((previousKey) => (previousKey ? previousKey : preferredWorkbookKey));
+  }, [preferredWorkbookKey]);
 
   useEffect(() => {
     if (searchData?.status !== 'ready') {
@@ -452,6 +492,11 @@ export function useWorkbookPickerData(searchData) {
       return;
     }
 
+    const workbookListContextApi = window.excel?.workbook?.listContext;
+    if (typeof workbookListContextApi === 'function' && pickerState.status !== 'error') {
+      return;
+    }
+
     const modulesByWorkbookApi = window.excel?.vba?.modulesByWorkbook;
     if (!modulesByWorkbookApi) {
       const activeModules = Array.isArray(searchData?.modules) ? searchData.modules : [];
@@ -561,11 +606,21 @@ export function useWorkbookPickerData(searchData) {
     };
   }, [
     activeWorkbookKey,
+    pickerState.status,
     pickerState.workbooks,
     refreshWorkbooks,
     searchData?.modules,
     searchData?.status
   ]);
+
+  const workbookListSignature = useMemo(() => {
+    const rows = Array.isArray(pickerState.workbooks) ? pickerState.workbooks : [];
+    return rows
+      .map((workbook) => String(workbook?.key || ''))
+      .filter(Boolean)
+      .sort()
+      .join('|');
+  }, [pickerState.workbooks]);
 
   const handleSelectedWorkbookChange = useCallback((nextWorkbookKey) => {
     setSelectedWorkbookKey(String(nextWorkbookKey || '').trim());
@@ -581,6 +636,7 @@ export function useWorkbookPickerData(searchData) {
     refreshWorkbooks,
     selectedWorkbookData,
     isSelectedActiveWorkbook,
-    allFilesData
+    allFilesData,
+    workbookListSignature
   };
 }

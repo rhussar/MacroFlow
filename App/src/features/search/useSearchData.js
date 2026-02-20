@@ -8,6 +8,8 @@ import {
 import {
   INITIAL_SEARCH_DATA,
   SEARCH_FOCUS_REFRESH_COOLDOWN_MS,
+  SEARCH_HELPER_EVENT_COOLDOWN_MS,
+  SEARCH_HELPER_EVENT_DEBOUNCE_MS,
   SEARCH_FULL_REFRESH_STALE_MS,
   SEARCH_PERIODIC_REFRESH_MS
 } from './search-constants.js';
@@ -45,6 +47,9 @@ export function useSearchData({ mode, runState, macroRunInFlightRef, shortcutSav
   const resumeAttemptInFlightRef = useRef(false);
   const lastResumeAttemptAtRef = useRef(0);
   const lastFocusRefreshAttemptAt = useRef(0);
+  const helperRefreshDebounceTimerRef = useRef(null);
+  const helperRefreshInFlightRef = useRef(false);
+  const lastHelperRefreshAtRef = useRef(0);
   const lastFullSearchRefreshAt = useRef(0);
   const lastWorkbookSignature = useRef('');
   const resolveInstanceAttempted = useRef(false);
@@ -67,18 +72,68 @@ export function useSearchData({ mode, runState, macroRunInFlightRef, shortcutSav
 
     try {
       const workbookApi = window.excel?.workbook?.info;
+      const workbookContextApi = window.excel?.workbook?.context;
       const modulesApi = window.excel?.vba?.modules;
       const proceduresApi = window.excel?.vba?.procedures;
       const fetchBundle = async () => {
+        if (typeof workbookContextApi === 'function') {
+          const contextResult = await workbookContextApi();
+
+          return {
+            workbookResult: contextResult?.success
+              ? {
+                  success: true,
+                  name: contextResult?.workbook?.name,
+                  path: contextResult?.workbook?.path,
+                  activeSheet: contextResult?.workbook?.activeSheet,
+                  sheets: contextResult?.workbook?.sheets
+                }
+              : {
+                  success: false,
+                  message: contextResult?.message || 'Unable to load workbook context.'
+                },
+            modulesResult: contextResult?.success
+              ? {
+                  success: true,
+                  workbook: contextResult?.workbook || null,
+                  modules: Array.isArray(contextResult?.modules) ? contextResult.modules : []
+                }
+              : {
+                  success: false,
+                  modules: [],
+                  message: contextResult?.message || 'Unable to load workbook modules.'
+                },
+            proceduresResult: contextResult?.success
+              ? {
+                  success: true,
+                  workbook: contextResult?.workbook || null,
+                  procedures: Array.isArray(contextResult?.procedures) ? contextResult.procedures : []
+                }
+              : {
+                  success: false,
+                  procedures: [],
+                  message: contextResult?.message || 'Unable to load workbook procedures.'
+                },
+            shortcutAuditResult: contextResult?.success
+              ? contextResult?.shortcutAudit || { success: true, shortcuts: [], unmapped: [] }
+              : { success: false, shortcuts: [], unmapped: [] }
+          };
+        }
+
         const [workbookResult, modulesResult, proceduresResult] = await Promise.all([
           workbookApi(),
           modulesApi(),
           proceduresApi()
         ]);
-        return { workbookResult, modulesResult, proceduresResult };
+        return {
+          workbookResult,
+          modulesResult,
+          proceduresResult,
+          shortcutAuditResult: null
+        };
       };
 
-      if (!workbookApi || !modulesApi || !proceduresApi) {
+      if ((!workbookApi || !modulesApi || !proceduresApi) && typeof workbookContextApi !== 'function') {
         const mappedError = mapSearchError('NO_EXCEL: Excel bridge API is unavailable.');
         if (requestId !== searchRequestSequence.current) {
           return;
@@ -94,6 +149,7 @@ export function useSearchData({ mode, runState, macroRunInFlightRef, shortcutSav
           workbook: null,
           modules: [],
           macros: [],
+          shortcutAudit: null,
           error: {
             code: mappedError.code,
             message: mappedError.message
@@ -102,7 +158,12 @@ export function useSearchData({ mode, runState, macroRunInFlightRef, shortcutSav
         return;
       }
 
-      let { workbookResult, modulesResult, proceduresResult } = await fetchBundle();
+      let {
+        workbookResult,
+        modulesResult,
+        proceduresResult,
+        shortcutAuditResult
+      } = await fetchBundle();
 
       if (requestId !== searchRequestSequence.current) {
         return;
@@ -126,7 +187,12 @@ export function useSearchData({ mode, runState, macroRunInFlightRef, shortcutSav
           try {
             const resolved = await window.excel?.resolveInstance();
             if (resolved?.resolved) {
-              ({ workbookResult, modulesResult, proceduresResult } = await fetchBundle());
+              ({
+                workbookResult,
+                modulesResult,
+                proceduresResult,
+                shortcutAuditResult
+              } = await fetchBundle());
               if (requestId !== searchRequestSequence.current) {
                 return;
               }
@@ -158,6 +224,7 @@ export function useSearchData({ mode, runState, macroRunInFlightRef, shortcutSav
             workbook: null,
             modules: [],
             macros: [],
+            shortcutAudit: null,
             error: {
               code: mappedError.code,
               message: mappedError.message
@@ -171,6 +238,9 @@ export function useSearchData({ mode, runState, macroRunInFlightRef, shortcutSav
       const workbook = normalizeWorkbook(workbookResult, fallbackWorkbook);
       const modules = normalizeModules(modulesResult?.modules, workbook);
       const macros = normalizeMacros(proceduresResult?.procedures);
+      const shortcutAudit = shortcutAuditResult && typeof shortcutAuditResult === 'object'
+        ? shortcutAuditResult
+        : null;
       lastWorkbookSignature.current = `${workbook?.path || ''}::${workbook?.name || ''}`;
       lastFullSearchRefreshAt.current = Date.now();
       resolveInstanceAttempted.current = false;
@@ -182,6 +252,7 @@ export function useSearchData({ mode, runState, macroRunInFlightRef, shortcutSav
         workbook,
         modules,
         macros,
+        shortcutAudit,
         error: null
       });
     } catch (error) {
@@ -199,6 +270,7 @@ export function useSearchData({ mode, runState, macroRunInFlightRef, shortcutSav
         workbook: null,
         modules: [],
         macros: [],
+        shortcutAudit: null,
         error: {
           code: mappedError.code,
           message: mappedError.message
@@ -259,6 +331,13 @@ export function useSearchData({ mode, runState, macroRunInFlightRef, shortcutSav
       }
     }
 
+    // Helper events already represent a meaningful Excel context transition,
+    // so skip the lightweight ping and perform one direct refresh.
+    if (trigger === 'helper') {
+      await loadSearchData({ silent: true });
+      return;
+    }
+
     const workbookApi = window.excel?.workbook?.info;
     if (!workbookApi || workbookPingInFlight.current) {
       await loadSearchData({ silent: true });
@@ -308,6 +387,43 @@ export function useSearchData({ mode, runState, macroRunInFlightRef, shortcutSav
     window.addEventListener('focus', handleFocus);
     document.addEventListener('visibilitychange', handleVisibilityChange);
 
+    const unsubscribeForegroundChange = window.excel?.events?.onForegroundChanged?.((payload) => {
+      const excelActive = Boolean(payload?.excelActive);
+      if (excelActive) {
+        return;
+      }
+
+      if (document.visibilityState !== 'visible') {
+        return;
+      }
+
+      if (typeof document.hasFocus === 'function' && !document.hasFocus()) {
+        return;
+      }
+
+      const now = Date.now();
+      if (now - lastHelperRefreshAtRef.current < SEARCH_HELPER_EVENT_COOLDOWN_MS) {
+        return;
+      }
+      lastHelperRefreshAtRef.current = now;
+
+      if (helperRefreshDebounceTimerRef.current) {
+        clearTimeout(helperRefreshDebounceTimerRef.current);
+        helperRefreshDebounceTimerRef.current = null;
+      }
+
+      helperRefreshDebounceTimerRef.current = window.setTimeout(() => {
+        helperRefreshDebounceTimerRef.current = null;
+        if (helperRefreshInFlightRef.current) {
+          return;
+        }
+        helperRefreshInFlightRef.current = true;
+        Promise.resolve(refreshSearchOnForeground({ trigger: 'helper' })).finally(() => {
+          helperRefreshInFlightRef.current = false;
+        });
+      }, SEARCH_HELPER_EVENT_DEBOUNCE_MS);
+    });
+
     const periodicId = setInterval(() => {
       refreshSearchOnForeground({ trigger: 'interval' });
     }, SEARCH_PERIODIC_REFRESH_MS);
@@ -316,6 +432,13 @@ export function useSearchData({ mode, runState, macroRunInFlightRef, shortcutSav
       window.removeEventListener('focus', handleFocus);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       clearInterval(periodicId);
+      if (helperRefreshDebounceTimerRef.current) {
+        clearTimeout(helperRefreshDebounceTimerRef.current);
+        helperRefreshDebounceTimerRef.current = null;
+      }
+      if (typeof unsubscribeForegroundChange === 'function') {
+        unsubscribeForegroundChange();
+      }
     };
   }, [loadSearchData, mode, refreshSearchOnForeground, runState]);
 

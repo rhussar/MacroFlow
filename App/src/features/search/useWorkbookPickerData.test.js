@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   getWorkbookKey,
+  normalizeListContextModules,
   sortAllFilesModules,
   sortWorkbooksForPicker,
   resolveSelectedWorkbookKey,
@@ -108,4 +109,15 @@ test('sortAllFilesModules puts active workbook modules first and sorts remaining
   );
 
   assert.deepEqual(rows.map((row) => row.id), ['a1', 'a2', 'b1', 'z']);
+});
+
+test('normalizeListContextModules applies workbook namespace for each module row', () => {
+  const rows = normalizeListContextModules([
+    { name: 'Module1', type: 'Standard Module', typeId: 1, lineCount: 10, workbookName: 'BookA.xlsm', workbookPath: 'C:/BookA.xlsm' },
+    { name: 'Module2', type: 'Standard Module', typeId: 1, lineCount: 20, workbookName: 'BookB.xlsm', workbookPath: 'C:/BookB.xlsm' }
+  ]);
+
+  assert.equal(rows.length, 2);
+  assert.equal(rows[0].id, 'C:/BookA.xlsm::module::Module1');
+  assert.equal(rows[1].id, 'C:/BookB.xlsm::module::Module2');
 });

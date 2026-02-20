@@ -49,6 +49,8 @@ let lastAdaptiveLayoutKey = '';
 let detachDisplayListeners = null;
 let lastExcelDisplayId = null;
 let hasInitialContextPlacement = false;
+let helperForegroundEventTimer = null;
+let lastHelperForegroundState = { excelActive: null, excelHwnd: null };
 
 function isSquirrelFirstRunLaunch() {
   if (process.platform !== 'win32') {
@@ -318,6 +320,7 @@ function startExcelWindowMonitor(win) {
   let jsReassertToken = 0;
   const JS_REASSERT_DELAYS = [50, 150, 350];
   let helperTargetConfirmed = false;
+  const HELPER_FOREGROUND_EVENT_DEBOUNCE_MS = 120;
 
   try {
     const hwnd = getNativeWindowHandleValue(win);
@@ -349,6 +352,47 @@ function startExcelWindowMonitor(win) {
         }
 
         logger.debug('[WindowHelper] state', state);
+
+        const nextExcelActive = Boolean(state && state.excelActive);
+        const nextExcelHwnd = state && state.excelHwnd ? String(state.excelHwnd) : null;
+        const foregroundChanged =
+          lastHelperForegroundState.excelActive !== nextExcelActive ||
+          lastHelperForegroundState.excelHwnd !== nextExcelHwnd;
+
+        if (foregroundChanged) {
+          lastHelperForegroundState = {
+            excelActive: nextExcelActive,
+            excelHwnd: nextExcelHwnd
+          };
+
+          if (helperForegroundEventTimer) {
+            clearTimeout(helperForegroundEventTimer);
+            helperForegroundEventTimer = null;
+          }
+
+          helperForegroundEventTimer = setTimeout(() => {
+            helperForegroundEventTimer = null;
+            if (excel.isShuttingDown?.()) {
+              return;
+            }
+            if (!win || win.isDestroyed()) {
+              return;
+            }
+            if (!win.webContents || win.webContents.isDestroyed()) {
+              return;
+            }
+            win.webContents.send('excel:foreground-changed', {
+              excelActive: nextExcelActive,
+              excelHwnd: nextExcelHwnd,
+              process: String((state && state.process) || ''),
+              timestamp: Date.now()
+            });
+          }, HELPER_FOREGROUND_EVENT_DEBOUNCE_MS);
+
+          if (typeof helperForegroundEventTimer.unref === 'function') {
+            helperForegroundEventTimer.unref();
+          }
+        }
 
         if (helperFallbackMode) {
           disableFallbackAlwaysOnTop('helper-state-received');
@@ -456,6 +500,11 @@ function startExcelWindowMonitor(win) {
 
 function stopExcelWindowMonitor() {
   excel.setFocusHelper(null);
+  if (helperForegroundEventTimer) {
+    clearTimeout(helperForegroundEventTimer);
+    helperForegroundEventTimer = null;
+  }
+  lastHelperForegroundState = { excelActive: null, excelHwnd: null };
 
   if (windowFocusHelper) {
     try {

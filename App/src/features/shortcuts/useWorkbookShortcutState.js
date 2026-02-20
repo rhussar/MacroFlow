@@ -35,6 +35,7 @@ export function useWorkbookShortcutState({
   const shortcutSnapshotTimestampRef = useRef(0);
   const shortcutByMacroIdRef = useRef({});
   const shortcutDraftByMacroIdRef = useRef({});
+  const shortcutCacheBySnapshotRef = useRef(new Map());
   const shortcutSavingMacroIdRef = useRef(null);
   const shortcutLoadErrorRef = useRef('');
 
@@ -68,6 +69,18 @@ export function useWorkbookShortcutState({
     const snapshotAgeMs = Date.now() - shortcutSnapshotTimestampRef.current;
     const snapshotStillFresh = snapshotAgeMs < SHORTCUT_REFRESH_TTL_MS;
     if (!force && snapshotUnchanged && snapshotStillFresh) {
+      return;
+    }
+
+    const cachedSnapshot = shortcutCacheBySnapshotRef.current.get(snapshotKey);
+    if (!force && cachedSnapshot && (Date.now() - Number(cachedSnapshot.timestamp || 0)) < SHORTCUT_REFRESH_TTL_MS) {
+      shortcutSnapshotRef.current = snapshotKey;
+      shortcutSnapshotTimestampRef.current = Number(cachedSnapshot.timestamp || Date.now());
+      shortcutLoadErrorRef.current = '';
+      setShortcutByMacroId(cachedSnapshot.shortcutMap || {});
+      setShortcutDraftByMacroId(cachedSnapshot.draftMap || {});
+      shortcutByMacroIdRef.current = cachedSnapshot.shortcutMap || {};
+      shortcutDraftByMacroIdRef.current = cachedSnapshot.draftMap || {};
       return;
     }
 
@@ -136,6 +149,11 @@ export function useWorkbookShortcutState({
       shortcutSnapshotRef.current = snapshotKey;
       shortcutSnapshotTimestampRef.current = Date.now();
       shortcutLoadErrorRef.current = '';
+      shortcutCacheBySnapshotRef.current.set(snapshotKey, {
+        shortcutMap,
+        draftMap: nextDraftMap,
+        timestamp: shortcutSnapshotTimestampRef.current
+      });
       setShortcutByMacroId(shortcutMap);
       setShortcutDraftByMacroId(nextDraftMap);
       shortcutByMacroIdRef.current = shortcutMap;

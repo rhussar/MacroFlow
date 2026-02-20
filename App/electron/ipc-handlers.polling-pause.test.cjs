@@ -16,10 +16,53 @@ function loadHandlers({ excelOverrides = {}, appOverrides = {} } = {}) {
     clearComCache: () => {
       clearComCacheCalls += 1;
     },
+    injectModuleByWorkbookName: () => ({
+      success: true,
+      workbookFound: true,
+      workbook: { name: 'Book1.xlsx', path: 'C:\\Book1.xlsx' },
+      moduleName: 'MacroFlowModule1',
+      message: 'ok'
+    }),
+    getModuleCodeByWorkbookName: () => ({
+      success: true,
+      workbookFound: true,
+      moduleFound: true,
+      workbook: { name: 'Book1.xlsx', path: 'C:\\Book1.xlsx' },
+      moduleName: 'MacroFlowModule1',
+      lineCount: 1,
+      hash: 'deadbeef',
+      code: 'Option Explicit'
+    }),
+    getModuleSignatureByWorkbookName: () => ({
+      success: true,
+      workbookFound: true,
+      moduleFound: true,
+      workbook: { name: 'Book1.xlsx', path: 'C:\\Book1.xlsx' },
+      moduleName: 'MacroFlowModule1',
+      lineCount: 1,
+      hash: 'deadbeef'
+    }),
+    setModuleCodeByWorkbookName: () => ({
+      success: true,
+      workbookFound: true,
+      moduleFound: true,
+      workbook: { name: 'Book1.xlsx', path: 'C:\\Book1.xlsx' },
+      moduleName: 'MacroFlowModule1',
+      lineCount: 1,
+      hash: 'deadbeef'
+    }),
     getWorkbookInfo: () => ({ success: true, name: 'Book1' }),
     listModules: () => ({ success: true, modules: [] }),
     listProcedures: () => ({ success: true, procedures: [] }),
     getOpenWorkbooks: () => ({ success: true, workbooks: [] }),
+    getActiveWorkbookContext: () => ({
+      success: true,
+      workbook: { name: 'Book1.xlsx', path: 'C:\\Book1.xlsx', activeSheet: 'Sheet1', sheets: ['Sheet1'] },
+      modules: [],
+      procedures: [],
+      shortcutAudit: { success: true, shortcuts: [], unmapped: [] }
+    }),
+    getOpenWorkbookListContext: () => ({ success: true, workbooks: [], allFilesModules: [] }),
     auditShortcuts: () => ({ success: true, shortcuts: [], unmapped: [] }),
     auditShortcutsByWorkbookName: () => ({ success: true, shortcuts: [], unmapped: [], workbookFound: true }),
     _focusHelper: {
@@ -221,6 +264,261 @@ test('shortcut audit channels short-circuit while polling is paused', async () =
   assert.equal(auditByWorkbookResult.paused, true);
   assert.deepEqual(auditByWorkbookResult.shortcuts, []);
   assert.equal(auditByWorkbookCalls, 0);
+});
+
+test('vba:inject:by-workbook forwards workbook args to bridge', async () => {
+  let capturedArgs = null;
+  const { handlers } = loadHandlers({
+    excelOverrides: {
+      injectModuleByWorkbookName: (workbookName, moduleName, code, options = {}) => {
+        capturedArgs = { workbookName, moduleName, code, options };
+        return {
+          success: true,
+          workbookFound: true,
+          workbook: { name: workbookName, path: options.workbookPath || '' },
+          moduleName,
+          message: 'ok'
+        };
+      }
+    }
+  });
+
+  const result = await handlers['vba:inject:by-workbook'](null, {
+    workbookName: 'Book1.xlsm',
+    workbookPath: 'C:\\Book1.xlsm',
+    moduleName: 'MacroFlowModule4',
+    code: 'Sub RunA()\nEnd Sub',
+    createIfMissing: true
+  });
+
+  assert.equal(result.success, true);
+  assert.equal(result.workbookFound, true);
+  assert.equal(result.moduleName, 'MacroFlowModule4');
+  assert.deepEqual(capturedArgs, {
+    workbookName: 'Book1.xlsm',
+    moduleName: 'MacroFlowModule4',
+    code: 'Sub RunA()\nEnd Sub',
+    options: {
+      workbookPath: 'C:\\Book1.xlsm',
+      createIfMissing: true
+    }
+  });
+});
+
+test('module code channels forward workbook args and payloads to bridge', async () => {
+  let capturedReadArgs = null;
+  let capturedSignatureArgs = null;
+  let capturedWriteArgs = null;
+
+  const { handlers } = loadHandlers({
+    excelOverrides: {
+      getModuleCodeByWorkbookName: (workbookName, moduleName, options = {}) => {
+        capturedReadArgs = { workbookName, moduleName, options };
+        return {
+          success: true,
+          workbookFound: true,
+          moduleFound: true,
+          workbook: { name: workbookName, path: options.workbookPath || '' },
+          moduleName,
+          lineCount: 2,
+          hash: '11111111',
+          code: 'Option Explicit\nSub RunA()\nEnd Sub'
+        };
+      },
+      getModuleSignatureByWorkbookName: (workbookName, moduleName, options = {}) => {
+        capturedSignatureArgs = { workbookName, moduleName, options };
+        return {
+          success: true,
+          workbookFound: true,
+          moduleFound: true,
+          workbook: { name: workbookName, path: options.workbookPath || '' },
+          moduleName,
+          lineCount: 2,
+          hash: '22222222'
+        };
+      },
+      setModuleCodeByWorkbookName: (workbookName, moduleName, code, options = {}) => {
+        capturedWriteArgs = { workbookName, moduleName, code, options };
+        return {
+          success: true,
+          workbookFound: true,
+          moduleFound: true,
+          workbook: { name: workbookName, path: options.workbookPath || '' },
+          moduleName,
+          lineCount: 3,
+          hash: '33333333'
+        };
+      }
+    }
+  });
+
+  const readResult = await handlers['vba:module-code:by-workbook'](null, {
+    workbookName: 'Client.xlsm',
+    workbookPath: 'C:\\Client.xlsm',
+    moduleName: 'MacroFlowModule7'
+  });
+  assert.equal(readResult.success, true);
+  assert.equal(readResult.hash, '11111111');
+
+  const signatureResult = await handlers['vba:module-signature:by-workbook'](null, {
+    workbookName: 'Client.xlsm',
+    workbookPath: 'C:\\Client.xlsm',
+    moduleName: 'MacroFlowModule7'
+  });
+  assert.equal(signatureResult.success, true);
+  assert.equal(signatureResult.hash, '22222222');
+
+  const writeResult = await handlers['vba:module-code:set:by-workbook'](null, {
+    workbookName: 'Client.xlsm',
+    workbookPath: 'C:\\Client.xlsm',
+    moduleName: 'MacroFlowModule7',
+    code: 'Option Explicit',
+    createIfMissing: true
+  });
+  assert.equal(writeResult.success, true);
+  assert.equal(writeResult.hash, '33333333');
+
+  assert.deepEqual(capturedReadArgs, {
+    workbookName: 'Client.xlsm',
+    moduleName: 'MacroFlowModule7',
+    options: { workbookPath: 'C:\\Client.xlsm' }
+  });
+  assert.deepEqual(capturedSignatureArgs, {
+    workbookName: 'Client.xlsm',
+    moduleName: 'MacroFlowModule7',
+    options: { workbookPath: 'C:\\Client.xlsm' }
+  });
+  assert.deepEqual(capturedWriteArgs, {
+    workbookName: 'Client.xlsm',
+    moduleName: 'MacroFlowModule7',
+    code: 'Option Explicit',
+    options: { workbookPath: 'C:\\Client.xlsm', createIfMissing: true }
+  });
+});
+
+test('module code channels preserve workbook/module not found surfaces', async () => {
+  const { handlers } = loadHandlers({
+    excelOverrides: {
+      getModuleCodeByWorkbookName: () => ({
+        success: true,
+        workbookFound: false,
+        moduleFound: false,
+        workbook: null,
+        moduleName: 'MacroFlowModule2',
+        lineCount: 0,
+        hash: '811c9dc5',
+        code: '',
+        message: 'Workbook \"Missing.xlsm\" is not open.'
+      }),
+      getModuleSignatureByWorkbookName: () => ({
+        success: true,
+        workbookFound: true,
+        moduleFound: false,
+        workbook: { name: 'Client.xlsm', path: 'C:\\Client.xlsm' },
+        moduleName: 'MacroFlowModule2',
+        lineCount: 0,
+        hash: '811c9dc5',
+        message: 'Module \"MacroFlowModule2\" was not found.'
+      })
+    }
+  });
+
+  const readResult = await handlers['vba:module-code:by-workbook'](null, {
+    workbookName: 'Missing.xlsm',
+    workbookPath: 'C:\\Missing.xlsm',
+    moduleName: 'MacroFlowModule2'
+  });
+  assert.equal(readResult.success, true);
+  assert.equal(readResult.workbookFound, false);
+  assert.equal(readResult.moduleFound, false);
+
+  const signatureResult = await handlers['vba:module-signature:by-workbook'](null, {
+    workbookName: 'Client.xlsm',
+    workbookPath: 'C:\\Client.xlsm',
+    moduleName: 'MacroFlowModule2'
+  });
+  assert.equal(signatureResult.success, true);
+  assert.equal(signatureResult.workbookFound, true);
+  assert.equal(signatureResult.moduleFound, false);
+});
+
+test('module code channels are not short-circuited by polling pause', async () => {
+  let readCalls = 0;
+  const { handlers } = loadHandlers({
+    excelOverrides: {
+      getWorkbookInfo: () => ({ success: false, message: 'NO_EXCEL: Excel is not running.' }),
+      getModuleCodeByWorkbookName: () => {
+        readCalls += 1;
+        return {
+          success: true,
+          workbookFound: true,
+          moduleFound: true,
+          workbook: { name: 'Client.xlsm', path: 'C:\\Client.xlsm' },
+          moduleName: 'MacroFlowModule4',
+          lineCount: 1,
+          hash: 'abcd1234',
+          code: 'Option Explicit'
+        };
+      }
+    }
+  });
+
+  const firstResult = await handlers['workbook:info']();
+  assert.equal(firstResult.success, false);
+  assert.match(firstResult.message, /NO_EXCEL/);
+
+  const readResult = await handlers['vba:module-code:by-workbook'](null, {
+    workbookName: 'Client.xlsm',
+    workbookPath: 'C:\\Client.xlsm',
+    moduleName: 'MacroFlowModule4'
+  });
+  assert.equal(readResult.success, true);
+  assert.equal(readCalls, 1);
+});
+
+test('workbook context channels short-circuit while polling is paused', async () => {
+  let contextCalls = 0;
+  let listContextCalls = 0;
+
+  const { handlers } = loadHandlers({
+    excelOverrides: {
+      getWorkbookInfo: () => ({ success: false, message: 'NO_EXCEL: Excel is not running.' }),
+      getActiveWorkbookContext: () => {
+        contextCalls += 1;
+        return {
+          success: true,
+          workbook: { name: 'Book1.xlsx', path: 'C:\\Book1.xlsx', activeSheet: 'Sheet1', sheets: ['Sheet1'] },
+          modules: [{ name: 'Module1' }],
+          procedures: [{ name: 'RunA' }],
+          shortcutAudit: { success: true, shortcuts: [], unmapped: [] }
+        };
+      },
+      getOpenWorkbookListContext: () => {
+        listContextCalls += 1;
+        return {
+          success: true,
+          workbooks: [{ name: 'Book1.xlsx', path: 'C:\\Book1.xlsx' }],
+          allFilesModules: [{ name: 'Module1', workbookName: 'Book1.xlsx', workbookPath: 'C:\\Book1.xlsx' }]
+        };
+      }
+    }
+  });
+
+  const firstResult = await handlers['workbook:info']();
+  assert.equal(firstResult.success, false);
+  assert.match(firstResult.message, /NO_EXCEL/);
+
+  const contextResult = await handlers['workbook:context']();
+  assert.equal(contextResult.success, false);
+  assert.equal(contextResult.paused, true);
+  assert.deepEqual(contextResult.modules, []);
+  assert.equal(contextCalls, 0);
+
+  const listContextResult = await handlers['workbook:list-context']();
+  assert.equal(listContextResult.success, false);
+  assert.equal(listContextResult.paused, true);
+  assert.deepEqual(listContextResult.workbooks, []);
+  assert.equal(listContextCalls, 0);
 });
 
 test('excel:resolveInstance dedupes concurrent requests and reuses one helper call', async () => {

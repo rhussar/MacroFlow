@@ -9,6 +9,10 @@ import {
 } from '../../lib/shortcut-keybind';
 import { SHORTCUT_REFRESH_TTL_MS } from '../search/search-constants';
 
+function shouldClearShortcutState(status) {
+  return status === 'no_excel' || status === 'no_workbook' || status === 'multi_instance' || status === 'error';
+}
+
 export function useShortcutState({ searchData, setActionStatus, shortcutSaveInFlightRef }) {
   const [shortcutByMacroId, setShortcutByMacroId] = useState({});
   const [shortcutDraftByMacroId, setShortcutDraftByMacroId] = useState({});
@@ -21,8 +25,46 @@ export function useShortcutState({ searchData, setActionStatus, shortcutSaveInFl
   const shortcutSnapshotTimestampRef = useRef(0);
   const shortcutByMacroIdRef = useRef({});
   const shortcutDraftByMacroIdRef = useRef({});
+  const shortcutCacheBySnapshotRef = useRef(new Map());
   const shortcutSavingMacroIdRef = useRef(null);
   const shortcutLoadErrorRef = useRef('');
+
+  const applyShortcutAuditResult = useCallback((auditResult, macros, snapshotKey) => {
+    const rawShortcutMap = mapAuditShortcutsToMacroIds(auditResult, macros);
+    const shortcutMap = {};
+    Object.entries(rawShortcutMap).forEach(([macroId, value]) => {
+      const parsedLetter = parseShortcutLetter(value);
+      if (parsedLetter) {
+        shortcutMap[macroId] = parsedLetter;
+      }
+    });
+
+    const previousSavedMap = shortcutByMacroIdRef.current;
+    const previousDraftMap = shortcutDraftByMacroIdRef.current;
+    const nextDraftMap = {};
+    macros.forEach((macro) => {
+      const savedShortcut = previousSavedMap[macro.id] || '';
+      const fetchedShortcut = shortcutMap[macro.id] || '';
+      const hasDraft = Object.prototype.hasOwnProperty.call(previousDraftMap, macro.id);
+      const currentDraft = hasDraft ? previousDraftMap[macro.id] : fetchedShortcut;
+      const isDirtyDraft = hasDraft && currentDraft !== savedShortcut;
+      nextDraftMap[macro.id] = isDirtyDraft ? currentDraft : fetchedShortcut;
+    });
+
+    shortcutSnapshotRef.current = snapshotKey;
+    shortcutSnapshotTimestampRef.current = Date.now();
+    shortcutLoadErrorRef.current = '';
+    shortcutCacheBySnapshotRef.current.set(snapshotKey, {
+      shortcutMap,
+      draftMap: nextDraftMap,
+      timestamp: shortcutSnapshotTimestampRef.current
+    });
+
+    setShortcutByMacroId(shortcutMap);
+    setShortcutDraftByMacroId(nextDraftMap);
+    shortcutByMacroIdRef.current = shortcutMap;
+    shortcutDraftByMacroIdRef.current = nextDraftMap;
+  }, []);
 
   const loadMacroShortcuts = useCallback(async ({ force = false } = {}) => {
     if (searchData.status !== 'ready') {
@@ -36,6 +78,30 @@ export function useShortcutState({ searchData, setActionStatus, shortcutSaveInFl
     const snapshotAgeMs = Date.now() - shortcutSnapshotTimestampRef.current;
     const snapshotStillFresh = snapshotAgeMs < SHORTCUT_REFRESH_TTL_MS;
     if (!force && snapshotUnchanged && snapshotStillFresh) {
+      return;
+    }
+
+    const cachedSnapshot = shortcutCacheBySnapshotRef.current.get(snapshotKey);
+    if (!force && cachedSnapshot && (Date.now() - Number(cachedSnapshot.timestamp || 0)) < SHORTCUT_REFRESH_TTL_MS) {
+      shortcutSnapshotRef.current = snapshotKey;
+      shortcutSnapshotTimestampRef.current = Number(cachedSnapshot.timestamp || Date.now());
+      shortcutLoadErrorRef.current = '';
+      setShortcutByMacroId(cachedSnapshot.shortcutMap || {});
+      setShortcutDraftByMacroId(cachedSnapshot.draftMap || {});
+      shortcutByMacroIdRef.current = cachedSnapshot.shortcutMap || {};
+      shortcutDraftByMacroIdRef.current = cachedSnapshot.draftMap || {};
+      return;
+    }
+
+    const seededAudit = searchData?.shortcutAudit;
+    if (
+      !force &&
+      seededAudit &&
+      typeof seededAudit === 'object' &&
+      seededAudit.success !== false &&
+      Array.isArray(seededAudit.shortcuts)
+    ) {
+      applyShortcutAuditResult(seededAudit, macros, snapshotKey);
       return;
     }
 
@@ -73,34 +139,7 @@ export function useShortcutState({ searchData, setActionStatus, shortcutSaveInFl
         }
         return;
       }
-
-      const rawShortcutMap = mapAuditShortcutsToMacroIds(result, macros);
-      const shortcutMap = {};
-      Object.entries(rawShortcutMap).forEach(([macroId, value]) => {
-        const parsedLetter = parseShortcutLetter(value);
-        if (parsedLetter) {
-          shortcutMap[macroId] = parsedLetter;
-        }
-      });
-      const previousSavedMap = shortcutByMacroIdRef.current;
-      const previousDraftMap = shortcutDraftByMacroIdRef.current;
-      const nextDraftMap = {};
-      macros.forEach((macro) => {
-        const savedShortcut = previousSavedMap[macro.id] || '';
-        const fetchedShortcut = shortcutMap[macro.id] || '';
-        const hasDraft = Object.prototype.hasOwnProperty.call(previousDraftMap, macro.id);
-        const currentDraft = hasDraft ? previousDraftMap[macro.id] : fetchedShortcut;
-        const isDirtyDraft = hasDraft && currentDraft !== savedShortcut;
-        nextDraftMap[macro.id] = isDirtyDraft ? currentDraft : fetchedShortcut;
-      });
-
-      shortcutSnapshotRef.current = snapshotKey;
-      shortcutSnapshotTimestampRef.current = Date.now();
-      shortcutLoadErrorRef.current = '';
-      setShortcutByMacroId(shortcutMap);
-      setShortcutDraftByMacroId(nextDraftMap);
-      shortcutByMacroIdRef.current = shortcutMap;
-      shortcutDraftByMacroIdRef.current = nextDraftMap;
+      applyShortcutAuditResult(result, macros, snapshotKey);
     } catch (error) {
       if (force || Object.keys(shortcutByMacroIdRef.current).length === 0) {
         const backendMessage = error?.message ? String(error.message) : 'Unexpected error.';
@@ -114,7 +153,9 @@ export function useShortcutState({ searchData, setActionStatus, shortcutSaveInFl
       shortcutAuditInFlight.current = false;
     }
   }, [
+    applyShortcutAuditResult,
     searchData.macros,
+    searchData.shortcutAudit,
     searchData.status,
     searchData.workbook?.name,
     searchData.workbook?.path,
@@ -123,9 +164,13 @@ export function useShortcutState({ searchData, setActionStatus, shortcutSaveInFl
 
   useEffect(() => {
     if (searchData.status !== 'ready') {
+      if (!shouldClearShortcutState(searchData.status)) {
+        return;
+      }
       shortcutSnapshotRef.current = '';
       shortcutSnapshotTimestampRef.current = 0;
       shortcutLoadErrorRef.current = '';
+      shortcutCacheBySnapshotRef.current.clear();
       setShortcutByMacroId({});
       setShortcutDraftByMacroId({});
       setShortcutInputErrorByMacroId({});
@@ -139,6 +184,7 @@ export function useShortcutState({ searchData, setActionStatus, shortcutSaveInFl
   }, [
     loadMacroShortcuts,
     searchData.macros,
+    searchData.shortcutAudit,
     searchData.status,
     searchData.workbook?.name,
     searchData.workbook?.path

@@ -28,6 +28,26 @@ Inject VBA code into a module.
 
 Returns: `{ success: boolean, message: string }`
 
+### `vba.injectByWorkbook({ workbookName?: string, workbookPath?: string, moduleName: string, code: string, createIfMissing?: boolean })`
+Inject VBA code into a module in a specific open workbook.
+
+Returns: `{ success: boolean, workbookFound: boolean, workbook?: object, moduleName?: string, message: string }`
+
+### `vba.moduleCodeByWorkbook({ workbookName?: string, workbookPath?: string, moduleName: string })`
+Read module code in a specific open workbook.
+
+Returns: `{ success: boolean, workbookFound: boolean, moduleFound: boolean, workbook?: object, moduleName?: string, lineCount?: number, hash?: string, code?: string, message?: string }`
+
+### `vba.moduleSignatureByWorkbook({ workbookName?: string, workbookPath?: string, moduleName: string })`
+Read module signature (line count + hash) in a specific open workbook.
+
+Returns: `{ success: boolean, workbookFound: boolean, moduleFound: boolean, workbook?: object, moduleName?: string, lineCount?: number, hash?: string, message?: string }`
+
+### `vba.setModuleCodeByWorkbook({ workbookName?: string, workbookPath?: string, moduleName: string, code: string, createIfMissing?: boolean })`
+Set module code in a specific open workbook.
+
+Returns: `{ success: boolean, workbookFound: boolean, moduleFound: boolean, workbook?: object, moduleName?: string, lineCount?: number, hash?: string, message?: string }`
+
 ### `vba.run({ macroName: string })`
 Run a VBA macro.
 

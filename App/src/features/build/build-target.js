@@ -28,6 +28,34 @@ export function toWorkbookRequest(workbook) {
   };
 }
 
+export function resolveBuildLaunchMode(mode) {
+  const normalized = String(mode || '').trim().toLowerCase();
+  return normalized === 'existing_module' ? 'existing_module' : 'new_module';
+}
+
+export function shouldUseStrictWorkbook(launchMode) {
+  return resolveBuildLaunchMode(launchMode) === 'existing_module';
+}
+
+export function resolveExistingModuleName(modules = [], requestedName = '') {
+  const target = String(requestedName || '').trim();
+  if (!target) {
+    return '';
+  }
+
+  const source = Array.isArray(modules) ? modules : [];
+  const exactMatch = source.find((moduleItem) => String(moduleItem?.name || '').trim() === target);
+  if (exactMatch) {
+    return String(exactMatch?.name || '').trim();
+  }
+
+  const targetLower = target.toLowerCase();
+  const caseInsensitiveMatch = source.find(
+    (moduleItem) => String(moduleItem?.name || '').trim().toLowerCase() === targetLower
+  );
+  return caseInsensitiveMatch ? String(caseInsensitiveMatch?.name || '').trim() : '';
+}
+
 export function selectNextModuleName(modules = [], prefix = DEFAULT_MODULE_PREFIX) {
   const safePrefix = String(prefix || DEFAULT_MODULE_PREFIX).trim() || DEFAULT_MODULE_PREFIX;
   const names = new Set(

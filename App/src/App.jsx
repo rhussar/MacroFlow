@@ -10,7 +10,7 @@ import { MacroFlowLogo } from './components/icons';
 import { useSearchData } from './features/search/useSearchData';
 import { useMacroRun } from './features/run/useMacroRun';
 import { useShortcutState } from './features/shortcuts/useShortcutState';
-import { normalizeBuildWorkbook } from './features/build/build-target';
+import { normalizeBuildWorkbook, resolveBuildLaunchMode } from './features/build/build-target';
 
 /**
  * Main App Component
@@ -33,6 +33,11 @@ function App() {
   const [actionMessage, setActionMessage] = useState('');
   const [explorerContext, setExplorerContext] = useState(null);
   const [selectedWorkbookForBuild, setSelectedWorkbookForBuild] = useState(null);
+  const [buildLaunchContext, setBuildLaunchContext] = useState(() => ({
+    mode: 'new_module',
+    moduleName: '',
+    source: 'toolbar'
+  }));
   const loadSearchDataRef = useRef(null);
   const shortcutSaveInFlightRef = useRef(false);
 
@@ -137,13 +142,22 @@ function App() {
     setSelectedWorkbookForBuild(fallbackWorkbook);
   }, [searchData?.workbook]);
 
-  const openBuildMode = useCallback((workbook = null) => {
+  const openBuildMode = useCallback((workbook = null, launchOptions = {}) => {
     const normalizedWorkbook = normalizeBuildWorkbook(
       workbook || selectedWorkbookForBuildRef.current || searchWorkbookRef.current
     );
+    const launchMode = resolveBuildLaunchMode(launchOptions?.mode);
+    const launchModuleName = String(launchOptions?.moduleName || '').trim();
+    const launchSource = String(launchOptions?.source || '').trim() || 'toolbar';
+
     if (normalizedWorkbook) {
       setSelectedWorkbookForBuild(normalizedWorkbook);
     }
+    setBuildLaunchContext({
+      mode: launchMode,
+      moduleName: launchMode === 'existing_module' ? launchModuleName : '',
+      source: launchSource
+    });
     setMode('build');
   }, []);
 
@@ -164,14 +178,14 @@ function App() {
 
         if (isSearchInput || target.tagName !== 'INPUT') {
           e.preventDefault();
-          openBuildModeRef.current();
+          openBuildModeRef.current(null, { mode: 'new_module', source: 'hotkey' });
         }
       }
 
       // Alt+M for new macro (go to build mode)
       if (e.altKey && e.key === 'm') {
         e.preventDefault();
-        openBuildModeRef.current();
+        openBuildModeRef.current(null, { mode: 'new_module', source: 'hotkey' });
       }
 
       // Escape to close or go back
@@ -209,6 +223,16 @@ function App() {
     const workbookKey = String(workbook?.key || workbookPath || workbookName).trim();
     const moduleId = String(fileContext?.moduleId || fileContext?.module?.id || '').trim();
     const moduleName = String(fileContext?.moduleName || fileContext?.module?.name || '').trim();
+    const source = String(fileContext?.source || '').trim();
+
+    if (source === 'all-open-workbooks') {
+      openBuildMode(workbook, {
+        mode: 'existing_module',
+        moduleName,
+        source: 'all-files'
+      });
+      return;
+    }
 
     setExplorerContext(
       workbookKey || moduleId || moduleName
@@ -224,10 +248,10 @@ function App() {
         : null
     );
     setMode('explorer');
-  }, []);
+  }, [openBuildMode]);
 
   const goToBuild = useCallback((workbook = null) => {
-    openBuildMode(workbook);
+    openBuildMode(workbook, { mode: 'new_module', source: 'toolbar' });
   }, [openBuildMode]);
   const goToSearch = useCallback(() => {
     setExplorerContext(null);
@@ -270,6 +294,9 @@ function App() {
             onBack={goToSearch}
             onClose={handleClose}
             targetWorkbook={selectedWorkbookForBuild}
+            launchMode={buildLaunchContext.mode}
+            launchModuleName={buildLaunchContext.moduleName}
+            launchSource={buildLaunchContext.source}
             onRefreshSearchData={loadSearchData}
           />
         );

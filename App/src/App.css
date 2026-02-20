@@ -1260,11 +1260,12 @@ body {
 
 /* Build Mode - Full-width code view (chat closed) */
 .build-code-fullwidth {
-  flex: 1;
+  flex: 0 0 auto;
   display: flex;
   flex-direction: column;
   padding: 16px;
-  overflow: hidden;
+  overflow-y: auto;
+  overflow-x: hidden;
   -webkit-app-region: no-drag;
 }
 

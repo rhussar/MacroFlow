@@ -11,6 +11,9 @@ import {
   buildSessionMacroTarget,
   findAssignedShortcutLetterForMacro,
   hasShortcutConflictForMacro,
+  resolveBuildLaunchMode,
+  shouldUseStrictWorkbook,
+  resolveExistingModuleName,
   resolveBuildWorkbookTarget,
   shouldSyncOnBuildExit,
   resolveBuildExitAction
@@ -77,7 +80,15 @@ function normalizeExitIntent(intent) {
   return String(intent || '').trim().toLowerCase() === 'close' ? 'close' : 'back';
 }
 
-const BuildMode = ({ onBack, onClose, targetWorkbook, onRefreshSearchData }) => {
+const BuildMode = ({
+  onBack,
+  onClose,
+  targetWorkbook,
+  launchMode = 'new_module',
+  launchModuleName = '',
+  launchSource = '',
+  onRefreshSearchData
+}) => {
   const [prompt, setPrompt] = useState('');
   const [buildState, setBuildState] = useState('initializing');
   const [steps, setSteps] = useState(() => createInitializationSteps({ resolve: 'loading' }));
@@ -99,6 +110,15 @@ const BuildMode = ({ onBack, onClose, targetWorkbook, onRefreshSearchData }) => 
   const normalizedWorkbook = useMemo(
     () => normalizeBuildWorkbook(targetWorkbook),
     [targetWorkbook?.key, targetWorkbook?.name, targetWorkbook?.path]
+  );
+  const normalizedLaunchMode = useMemo(() => resolveBuildLaunchMode(launchMode), [launchMode]);
+  const strictLaunchMode = useMemo(
+    () => shouldUseStrictWorkbook(normalizedLaunchMode),
+    [normalizedLaunchMode]
+  );
+  const requestedLaunchModuleName = useMemo(
+    () => String(launchModuleName || '').trim(),
+    [launchModuleName]
   );
 
   const buildStateRef = useRef(buildState);
@@ -283,7 +303,9 @@ const BuildMode = ({ onBack, onClose, targetWorkbook, onRefreshSearchData }) => 
 
   attemptExitRef.current = attemptExit;
 
-  const bootstrapSession = useCallback(async ({ preferActiveWorkbook = false } = {}) => {
+  const bootstrapSession = useCallback(async () => {
+    const strictWorkbookMode = shouldUseStrictWorkbook(normalizedLaunchMode);
+    const requestedModuleName = requestedLaunchModuleName;
     const bootstrapId = activeBootstrapIdRef.current + 1;
     activeBootstrapIdRef.current = bootstrapId;
 
@@ -298,7 +320,12 @@ const BuildMode = ({ onBack, onClose, targetWorkbook, onRefreshSearchData }) => 
     setEditedCode(BUILD_MODE_SEED_CODE);
     setSavedMacroName('');
     setSteps(createInitializationSteps({ resolve: 'loading' }));
-    setLocation(buildLocation(normalizedWorkbook?.name, DEFAULT_MODULE_LABEL));
+    setLocation(
+      buildLocation(
+        normalizedWorkbook?.name,
+        strictWorkbookMode && requestedModuleName ? requestedModuleName : DEFAULT_MODULE_LABEL
+      )
+    );
     setSavedShortcutLetter('');
     setDraftShortcutLetter('');
     setShortcutInputError(false);
@@ -323,7 +350,7 @@ const BuildMode = ({ onBack, onClose, targetWorkbook, onRefreshSearchData }) => 
       let activeResolution = null;
       let selectedUnavailable = false;
 
-      const selectedCandidate = preferActiveWorkbook ? null : normalizeBuildWorkbook(normalizedWorkbook);
+      const selectedCandidate = normalizeBuildWorkbook(normalizedWorkbook);
       if (selectedCandidate) {
         const selectedModulesResult = await modulesByWorkbookApi(toWorkbookRequest(selectedCandidate));
         if (activeBootstrapIdRef.current !== bootstrapId) {
@@ -343,7 +370,7 @@ const BuildMode = ({ onBack, onClose, targetWorkbook, onRefreshSearchData }) => 
         }
       }
 
-      if (!selectedResolution) {
+      if (!selectedResolution && !strictWorkbookMode) {
         const workbookInfoResult = await workbookInfoApi();
         if (activeBootstrapIdRef.current !== bootstrapId) {
           return;
@@ -374,75 +401,134 @@ const BuildMode = ({ onBack, onClose, targetWorkbook, onRefreshSearchData }) => 
         };
       }
 
-      const resolvedWorkbook = resolveBuildWorkbookTarget({
-        selectedWorkbook: selectedResolution?.workbook,
-        selectedWorkbookFound: Boolean(selectedResolution),
-        activeWorkbook: activeResolution?.workbook
-      });
+      if (strictWorkbookMode) {
+        if (!selectedCandidate) {
+          throw new Error('No workbook was provided for the selected module.');
+        }
+        if (!selectedResolution || selectedUnavailable) {
+          const workbookLabel = selectedCandidate.path || selectedCandidate.name || 'selected workbook';
+          throw new Error(`Workbook "${workbookLabel}" is not open.`);
+        }
+        if (!requestedModuleName) {
+          throw new Error('No module was provided for Build Mode.');
+        }
+      }
+
+      const resolvedWorkbook = strictWorkbookMode
+        ? normalizeBuildWorkbook(selectedResolution?.workbook || selectedCandidate)
+        : resolveBuildWorkbookTarget({
+            selectedWorkbook: selectedResolution?.workbook,
+            selectedWorkbookFound: Boolean(selectedResolution),
+            activeWorkbook: activeResolution?.workbook
+          });
       if (!resolvedWorkbook) {
         throw new Error('No valid workbook is available for Build Mode.');
       }
 
       const resolvedModules = selectedResolution?.modules || activeResolution?.modules || [];
-      const resolveStepText = selectedUnavailable && activeResolution
-        ? `Located workbook: ${resolvedWorkbook.name} (active fallback)`
-        : `Located workbook: ${resolvedWorkbook.name}`;
+      const resolveStepText = strictWorkbookMode
+        ? `Located workbook: ${resolvedWorkbook.name}`
+        : selectedUnavailable && activeResolution
+          ? `Located workbook: ${resolvedWorkbook.name} (active fallback)`
+          : `Located workbook: ${resolvedWorkbook.name}`;
       setStepStatus('resolve', 'complete', resolveStepText);
 
-      const nextModuleName = selectNextModuleName(resolvedModules, MODULE_PREFIX);
-      setStepStatus('create', 'loading', `Creating module: ${nextModuleName}`);
-      setLocation(buildLocation(resolvedWorkbook.name, nextModuleName));
+      let sessionWorkbook = resolvedWorkbook;
+      let sessionModuleName = '';
+      let pulledCode = BUILD_MODE_SEED_CODE;
 
-      const injectResult = await injectByWorkbookApi({
-        workbookName: resolvedWorkbook.name,
-        workbookPath: resolvedWorkbook.path,
-        moduleName: nextModuleName,
-        code: BUILD_MODE_SEED_CODE,
-        createIfMissing: true
-      });
-      if (activeBootstrapIdRef.current !== bootstrapId) {
-        return;
-      }
-      if (!injectResult?.success) {
-        throw new Error(injectResult?.message || 'Unable to create the Build Mode module.');
-      }
-      if (injectResult?.workbookFound === false) {
-        const workbookLabel = resolvedWorkbook.path || resolvedWorkbook.name;
-        throw new Error(`Workbook "${workbookLabel}" is not open.`);
-      }
+      if (strictWorkbookMode) {
+        setStepStatus('create', 'loading', `Locating module: ${requestedModuleName}`);
 
-      const createdWorkbook =
-        normalizeBuildWorkbook(injectResult?.workbook || resolvedWorkbook) || resolvedWorkbook;
-      const createdModuleName = String(injectResult?.moduleName || nextModuleName).trim() || nextModuleName;
-      setStepStatus('create', 'complete', `Created: ${createdModuleName}`);
-      setLocation(buildLocation(createdWorkbook.name, createdModuleName));
+        const existingModuleName = resolveExistingModuleName(resolvedModules, requestedModuleName);
+        if (!existingModuleName) {
+          throw new Error(`Module "${requestedModuleName}" was not found in workbook "${resolvedWorkbook.name}".`);
+        }
 
-      const codeResult = await moduleCodeByWorkbookApi({
-        workbookName: createdWorkbook.name,
-        workbookPath: createdWorkbook.path,
-        moduleName: createdModuleName
-      });
-      if (activeBootstrapIdRef.current !== bootstrapId) {
-        return;
-      }
-      if (!codeResult?.success) {
-        throw new Error(codeResult?.message || 'Unable to load module code on entry.');
-      }
-      if (codeResult?.workbookFound === false || codeResult?.moduleFound === false) {
-        throw new Error('Unable to load module code on entry.');
-      }
+        setStepStatus('create', 'complete', `Located module: ${existingModuleName}`);
+        setLocation(buildLocation(resolvedWorkbook.name, existingModuleName));
 
-      const pulledCode = String(codeResult?.code || BUILD_MODE_SEED_CODE);
+        const codeResult = await moduleCodeByWorkbookApi({
+          workbookName: resolvedWorkbook.name,
+          workbookPath: resolvedWorkbook.path,
+          moduleName: existingModuleName
+        });
+        if (activeBootstrapIdRef.current !== bootstrapId) {
+          return;
+        }
+        if (!codeResult?.success) {
+          throw new Error(codeResult?.message || 'Unable to load selected module code.');
+        }
+        if (codeResult?.workbookFound === false) {
+          const workbookLabel = resolvedWorkbook.path || resolvedWorkbook.name || 'selected workbook';
+          throw new Error(`Workbook "${workbookLabel}" is not open.`);
+        }
+        if (codeResult?.moduleFound === false) {
+          throw new Error(`Module "${existingModuleName}" was not found in workbook "${resolvedWorkbook.name}".`);
+        }
+
+        pulledCode = String(codeResult?.code || BUILD_MODE_SEED_CODE);
+        sessionWorkbook = normalizeBuildWorkbook(codeResult?.workbook || resolvedWorkbook) || resolvedWorkbook;
+        sessionModuleName = String(codeResult?.moduleName || existingModuleName).trim() || existingModuleName;
+      } else {
+        const nextModuleName = selectNextModuleName(resolvedModules, MODULE_PREFIX);
+        setStepStatus('create', 'loading', `Creating module: ${nextModuleName}`);
+        setLocation(buildLocation(resolvedWorkbook.name, nextModuleName));
+
+        const injectResult = await injectByWorkbookApi({
+          workbookName: resolvedWorkbook.name,
+          workbookPath: resolvedWorkbook.path,
+          moduleName: nextModuleName,
+          code: BUILD_MODE_SEED_CODE,
+          createIfMissing: true
+        });
+        if (activeBootstrapIdRef.current !== bootstrapId) {
+          return;
+        }
+        if (!injectResult?.success) {
+          throw new Error(injectResult?.message || 'Unable to create the Build Mode module.');
+        }
+        if (injectResult?.workbookFound === false) {
+          const workbookLabel = resolvedWorkbook.path || resolvedWorkbook.name;
+          throw new Error(`Workbook "${workbookLabel}" is not open.`);
+        }
+
+        const createdWorkbook =
+          normalizeBuildWorkbook(injectResult?.workbook || resolvedWorkbook) || resolvedWorkbook;
+        const createdModuleName = String(injectResult?.moduleName || nextModuleName).trim() || nextModuleName;
+        setStepStatus('create', 'complete', `Created: ${createdModuleName}`);
+        setLocation(buildLocation(createdWorkbook.name, createdModuleName));
+
+        const codeResult = await moduleCodeByWorkbookApi({
+          workbookName: createdWorkbook.name,
+          workbookPath: createdWorkbook.path,
+          moduleName: createdModuleName
+        });
+        if (activeBootstrapIdRef.current !== bootstrapId) {
+          return;
+        }
+        if (!codeResult?.success) {
+          throw new Error(codeResult?.message || 'Unable to load module code on entry.');
+        }
+        if (codeResult?.workbookFound === false || codeResult?.moduleFound === false) {
+          throw new Error('Unable to load module code on entry.');
+        }
+
+        pulledCode = String(codeResult?.code || BUILD_MODE_SEED_CODE);
+        sessionWorkbook = normalizeBuildWorkbook(codeResult?.workbook || createdWorkbook) || createdWorkbook;
+        sessionModuleName = String(codeResult?.moduleName || createdModuleName).trim() || createdModuleName;
+      }
 
       const nextSession = {
-        workbook: createdWorkbook,
-        moduleName: createdModuleName,
+        workbook: sessionWorkbook,
+        moduleName: sessionModuleName,
         createdAt: Date.now()
       };
       sessionContextRef.current = nextSession;
       setSessionContext(nextSession);
       setEditedCode(pulledCode);
       setSavedMacroName(extractPrimaryMacroName(pulledCode));
+      setLocation(buildLocation(sessionWorkbook.name, sessionModuleName));
       setBuildState('ready');
       setIsBusy(false);
 
@@ -460,7 +546,15 @@ const BuildMode = ({ onBack, onClose, targetWorkbook, onRefreshSearchData }) => 
         setIsBusy(false);
       }
     }
-  }, [ensureBuildApis, normalizedWorkbook, onRefreshSearchData, setStepStatus, stopWithError]);
+  }, [
+    ensureBuildApis,
+    normalizedLaunchMode,
+    normalizedWorkbook,
+    onRefreshSearchData,
+    requestedLaunchModuleName,
+    setStepStatus,
+    stopWithError
+  ]);
 
   bootstrapSessionRef.current = bootstrapSession;
 
@@ -756,14 +850,20 @@ const BuildMode = ({ onBack, onClose, targetWorkbook, onRefreshSearchData }) => 
 
   useEffect(() => {
     const bootstrapTimerId = window.setTimeout(() => {
-      void bootstrapSessionRef.current({ preferActiveWorkbook: false });
+      void bootstrapSessionRef.current();
     }, 0);
 
     return () => {
       window.clearTimeout(bootstrapTimerId);
       activeBootstrapIdRef.current += 1;
     };
-  }, [normalizedWorkbook?.key, normalizedWorkbook?.name, normalizedWorkbook?.path]);
+  }, [
+    normalizedLaunchMode,
+    normalizedWorkbook?.key,
+    normalizedWorkbook?.name,
+    normalizedWorkbook?.path,
+    requestedLaunchModuleName
+  ]);
 
   // Keyboard shortcut handler uses refs so the listener is registered once.
   useEffect(() => {
@@ -924,7 +1024,9 @@ const BuildMode = ({ onBack, onClose, targetWorkbook, onRefreshSearchData }) => 
             </h1>
             <p className="build-empty-subtitle">
               {buildState === 'initializing'
-                ? 'Creating a workbook-bound module and loading entry sync...'
+                ? strictLaunchMode
+                  ? 'Locating the selected module and loading entry sync...'
+                  : 'Creating a workbook-bound module and loading entry sync...'
                 : 'Fix the error and retry build session initialization.'}
             </p>
             <div className="conversation-panel">

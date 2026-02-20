@@ -3,6 +3,9 @@ import test from 'node:test';
 import {
   BUILD_MODE_SEED_CODE,
   normalizeBuildWorkbook,
+  resolveBuildLaunchMode,
+  shouldUseStrictWorkbook,
+  resolveExistingModuleName,
   selectNextModuleName,
   extractPrimaryMacroName,
   buildWorkbookQualifiedRunTarget,
@@ -35,6 +38,33 @@ test('selectNextModuleName picks the first available MacroFlowModule index', () 
     ]),
     'MacroFlowModule2'
   );
+});
+
+test('resolveBuildLaunchMode normalizes supported launch modes with new_module default', () => {
+  assert.equal(resolveBuildLaunchMode('new_module'), 'new_module');
+  assert.equal(resolveBuildLaunchMode('existing_module'), 'existing_module');
+  assert.equal(resolveBuildLaunchMode('EXISTING_MODULE'), 'existing_module');
+  assert.equal(resolveBuildLaunchMode('anything-else'), 'new_module');
+});
+
+test('shouldUseStrictWorkbook is true only for existing module launch mode', () => {
+  assert.equal(shouldUseStrictWorkbook('existing_module'), true);
+  assert.equal(shouldUseStrictWorkbook('new_module'), false);
+  assert.equal(shouldUseStrictWorkbook(''), false);
+});
+
+test('resolveExistingModuleName performs case-insensitive module lookup and returns canonical name', () => {
+  const modules = [
+    { name: 'Module1' },
+    { name: 'FinanceTools' },
+    { name: 'cleanupDATA' }
+  ];
+
+  assert.equal(resolveExistingModuleName(modules, 'FinanceTools'), 'FinanceTools');
+  assert.equal(resolveExistingModuleName(modules, 'financetools'), 'FinanceTools');
+  assert.equal(resolveExistingModuleName(modules, 'CLEANUPdata'), 'cleanupDATA');
+  assert.equal(resolveExistingModuleName(modules, 'MissingModule'), '');
+  assert.equal(resolveExistingModuleName(modules, ''), '');
 });
 
 test('extractPrimaryMacroName returns the first Sub name', () => {

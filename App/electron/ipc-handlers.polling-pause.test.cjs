@@ -521,6 +521,123 @@ test('workbook context channels short-circuit while polling is paused', async ()
   assert.equal(listContextCalls, 0);
 });
 
+test('workbook:context dedupes concurrent in-flight calls', async () => {
+  let contextCalls = 0;
+  const { handlers } = loadHandlers({
+    excelOverrides: {
+      getActiveWorkbookContext: async () => {
+        contextCalls += 1;
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        return {
+          success: true,
+          workbook: { name: 'Book1.xlsx', path: 'C:\\Book1.xlsx', activeSheet: 'Sheet1', sheets: ['Sheet1'] },
+          modules: [{ name: 'Module1' }],
+          procedures: [{ name: 'RunA' }],
+          shortcutAudit: { success: true, shortcuts: [], unmapped: [] }
+        };
+      }
+    }
+  });
+
+  const [first, second] = await Promise.all([
+    handlers['workbook:context'](),
+    handlers['workbook:context']()
+  ]);
+
+  assert.equal(contextCalls, 1);
+  assert.equal(first.success, true);
+  assert.equal(second.success, true);
+  assert.equal(first.workbook?.name, 'Book1.xlsx');
+  assert.equal(second.workbook?.name, 'Book1.xlsx');
+});
+
+test('workbook:context burst cache reuses result for 1s and refreshes after expiry', async () => {
+  let contextCalls = 0;
+  const originalNow = Date.now;
+  let fakeNow = 10_000;
+  Date.now = () => fakeNow;
+
+  try {
+    const { handlers } = loadHandlers({
+      excelOverrides: {
+        getActiveWorkbookContext: () => {
+          contextCalls += 1;
+          return {
+            success: true,
+            workbook: { name: `Book${contextCalls}.xlsx`, path: `C:\\Book${contextCalls}.xlsx`, activeSheet: 'Sheet1', sheets: ['Sheet1'] },
+            modules: [{ name: `Module${contextCalls}` }],
+            procedures: [{ name: `Run${contextCalls}` }],
+            shortcutAudit: { success: true, shortcuts: [], unmapped: [] }
+          };
+        }
+      }
+    });
+
+    const first = await handlers['workbook:context']();
+    assert.equal(first.success, true);
+    assert.equal(contextCalls, 1);
+
+    fakeNow += 500;
+    const second = await handlers['workbook:context']();
+    assert.equal(second.success, true);
+    assert.equal(contextCalls, 1);
+    assert.equal(second.workbook?.name, first.workbook?.name);
+
+    fakeNow += 1001;
+    const third = await handlers['workbook:context']();
+    assert.equal(third.success, true);
+    assert.equal(contextCalls, 2);
+    assert.notEqual(third.workbook?.name, first.workbook?.name);
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test('workbook:context burst cache invalidates after reconnect and resolve success', async () => {
+  let contextCalls = 0;
+  const { handlers } = loadHandlers({
+    excelOverrides: {
+      getWorkbookInfo: () => ({
+        success: true,
+        name: 'Book2.xlsx',
+        path: 'C:\\Book2.xlsx',
+        activeSheet: 'Sheet1',
+        sheets: ['Sheet1']
+      }),
+      getActiveWorkbookContext: () => {
+        contextCalls += 1;
+        return {
+          success: true,
+          workbook: { name: `Book${contextCalls}.xlsx`, path: `C:\\Book${contextCalls}.xlsx`, activeSheet: 'Sheet1', sheets: ['Sheet1'] },
+          modules: [],
+          procedures: [],
+          shortcutAudit: { success: true, shortcuts: [], unmapped: [] }
+        };
+      }
+    }
+  });
+
+  const first = await handlers['workbook:context']();
+  assert.equal(first.success, true);
+  assert.equal(contextCalls, 1);
+
+  const cached = await handlers['workbook:context']();
+  assert.equal(cached.success, true);
+  assert.equal(contextCalls, 1);
+
+  const reconnect = await handlers['excel:reconnect']();
+  assert.equal(reconnect.success, true);
+  const afterReconnect = await handlers['workbook:context']();
+  assert.equal(afterReconnect.success, true);
+  assert.equal(contextCalls, 2);
+
+  const resolve = await handlers['excel:resolveInstance']();
+  assert.equal(resolve.resolved, true);
+  const afterResolve = await handlers['workbook:context']();
+  assert.equal(afterResolve.success, true);
+  assert.equal(contextCalls, 3);
+});
+
 test('excel:resolveInstance dedupes concurrent requests and reuses one helper call', async () => {
   let workbookInfoCalls = 0;
   let helperCalls = 0;

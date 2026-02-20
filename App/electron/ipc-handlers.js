@@ -344,6 +344,43 @@ function registerHandlers() {
     return result;
   };
 
+  const WORKBOOK_CONTEXT_BURST_CACHE_MS = 1000;
+  let workbookContextInFlight = null;
+  let workbookContextCachedAt = 0;
+  let workbookContextCachedResult = null;
+
+  const clearWorkbookContextBurstCache = () => {
+    workbookContextCachedAt = 0;
+    workbookContextCachedResult = null;
+  };
+
+  const getWorkbookContextWithBurstCache = async () => {
+    const now = Date.now();
+    if (
+      workbookContextCachedResult?.success &&
+      now - workbookContextCachedAt < WORKBOOK_CONTEXT_BURST_CACHE_MS
+    ) {
+      return workbookContextCachedResult;
+    }
+
+    if (workbookContextInFlight) {
+      return workbookContextInFlight;
+    }
+
+    workbookContextInFlight = (async () => {
+      const result = await withPollingPause('workbook:context', () => excel.getActiveWorkbookContext());
+      if (result?.success) {
+        workbookContextCachedAt = Date.now();
+        workbookContextCachedResult = result;
+      }
+      return result;
+    })().finally(() => {
+      workbookContextInFlight = null;
+    });
+
+    return workbookContextInFlight;
+  };
+
   let resolveInstanceInFlight = null;
 
   const toFiniteNumberOrUndefined = (value) => {
@@ -489,6 +526,7 @@ function registerHandlers() {
       () => withExcelFocus(() => excel.injectModule(moduleName, code))
     );
 
+    clearWorkbookContextBurstCache();
     logIpc('vba:inject', 'end', { success: result.success });
     return result;
   });
@@ -522,6 +560,7 @@ function registerHandlers() {
       )
     );
 
+    clearWorkbookContextBurstCache();
     logIpc('vba:inject:by-workbook', 'end', {
       success: result.success,
       workbookFound: result.workbookFound,
@@ -617,6 +656,7 @@ function registerHandlers() {
       })
     );
 
+    clearWorkbookContextBurstCache();
     logIpc('vba:module-code:set:by-workbook', 'end', {
       success: result.success,
       workbookFound: result.workbookFound,
@@ -643,6 +683,7 @@ function registerHandlers() {
       () => withExcelFocus(() => excel.runMacro(macroName))
     );
 
+    clearWorkbookContextBurstCache();
     logIpc('vba:run', 'end', { success: result.success, message: result.message });
     return result;
   });
@@ -728,6 +769,7 @@ function registerHandlers() {
       () => withExcelFocus(() => excel.setMacroShortcut(macroName, shortcutKey))
     );
 
+    clearWorkbookContextBurstCache();
     logIpc('vba:shortcut:set', 'end', { success: result.success });
     return result;
   });
@@ -746,6 +788,7 @@ function registerHandlers() {
       )
     );
 
+    clearWorkbookContextBurstCache();
     logIpc('vba:shortcut:set:by-workbook', 'end', {
       success: result.success,
       workbookFound: result.workbookFound
@@ -811,6 +854,7 @@ function registerHandlers() {
   ipcMain.handle('cell:write', async (_, { address, value }) => {
     logIpc('cell:write', 'start', { address });
     const result = await withComRelease(() => excel.writeCell(address, value));
+    clearWorkbookContextBurstCache();
     logIpc('cell:write', 'end', { success: result.success });
     return result;
   });
@@ -873,7 +917,7 @@ function registerHandlers() {
   ipcMain.handle('workbook:context', async () => {
     const startedAt = Date.now();
     logIpc('workbook:context', 'start');
-    const result = await withPollingPause('workbook:context', () => excel.getActiveWorkbookContext());
+    const result = await getWorkbookContextWithBurstCache();
     logIpc('workbook:context', 'end', {
       success: result.success,
       modules: result.modules?.length,
@@ -957,6 +1001,7 @@ function registerHandlers() {
 
       if (result?.resolved) {
         clearPollingPaused();
+        clearWorkbookContextBurstCache();
       }
 
       logIpc('excel:resolveInstance', 'end', {
@@ -989,6 +1034,7 @@ function registerHandlers() {
     });
     if (result?.success) {
       clearPollingPaused();
+      clearWorkbookContextBurstCache();
     }
     logIpc('excel:reconnect', 'end', { success: result.success });
     return result;

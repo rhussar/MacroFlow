@@ -1,7 +1,7 @@
 import React from 'react';
 import appIcon from '../../assets/app-icon.png';
-import excelLogo from '../../assets/excel-logo.png';
-import folderLogo from '../../assets/folder-logo.png';
+import excelLogo from '../../assets/excel-logo-32.png';
+import folderLogo from '../../assets/folder-logo-32.png';
 
 // MacroFlow Logo (app icon)
 export const MacroFlowLogo = ({ className = '', size = 20 }) => (

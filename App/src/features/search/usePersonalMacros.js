@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { normalizeMacros } from '../../lib/search-data.js';
-import { PERSONAL_REFRESH_TTL_MS } from './search-constants.js';
+import { PERSONAL_INITIAL_DEFER_MS, PERSONAL_REFRESH_TTL_MS } from './search-constants.js';
 
 export const PERSONAL_WORKBOOK_NAME = 'PERSONAL.XLSB';
 
@@ -31,6 +31,14 @@ export function shouldUsePersonalCache({
   return Number.isFinite(ageMs) && ageMs >= 0 && ageMs < ttlMs;
 }
 
+export function shouldDeferPersonalInitialFetch({
+  status,
+  previousStatus,
+  hasDeferredInitialFetch
+}) {
+  return status === 'ready' && previousStatus !== 'ready' && !hasDeferredInitialFetch;
+}
+
 export function usePersonalMacros(searchData, workbookListSignature = '') {
   const [personalState, setPersonalState] = useState(INITIAL_PERSONAL_MACROS_STATE);
   const [refreshTick, setRefreshTick] = useState(0);
@@ -41,6 +49,8 @@ export function usePersonalMacros(searchData, workbookListSignature = '') {
     data: null
   });
   const cacheTtlTimerRef = useRef(null);
+  const previousStatusRef = useRef('idle');
+  const hasDeferredInitialFetchRef = useRef(false);
 
   useEffect(() => {
     if (cacheTtlTimerRef.current) {
@@ -48,7 +58,11 @@ export function usePersonalMacros(searchData, workbookListSignature = '') {
       cacheTtlTimerRef.current = null;
     }
 
-    if (searchData?.status !== 'ready') {
+    const currentStatus = String(searchData?.status || 'idle');
+    const previousStatus = previousStatusRef.current;
+    previousStatusRef.current = currentStatus;
+
+    if (currentStatus !== 'ready') {
       requestSequence.current += 1;
       cacheRef.current = {
         fetchedAt: 0,
@@ -57,6 +71,28 @@ export function usePersonalMacros(searchData, workbookListSignature = '') {
       };
       setPersonalState(INITIAL_PERSONAL_MACROS_STATE);
       return;
+    }
+
+    if (shouldDeferPersonalInitialFetch({
+      status: currentStatus,
+      previousStatus,
+      hasDeferredInitialFetch: hasDeferredInitialFetchRef.current
+    })) {
+      hasDeferredInitialFetchRef.current = true;
+      setPersonalState((previous) => ({
+        ...previous,
+        status: 'loading',
+        error: null
+      }));
+      cacheTtlTimerRef.current = window.setTimeout(() => {
+        setRefreshTick((previous) => previous + 1);
+      }, PERSONAL_INITIAL_DEFER_MS);
+      return () => {
+        if (cacheTtlTimerRef.current) {
+          clearTimeout(cacheTtlTimerRef.current);
+          cacheTtlTimerRef.current = null;
+        }
+      };
     }
 
     const proceduresByWorkbookApi = window.excel?.vba?.proceduresByWorkbook;

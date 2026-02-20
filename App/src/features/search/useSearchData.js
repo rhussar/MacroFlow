@@ -8,6 +8,7 @@ import {
 import {
   INITIAL_SEARCH_DATA,
   SEARCH_FOCUS_REFRESH_COOLDOWN_MS,
+  SEARCH_MODE_ENTRY_QUIET_MS,
   SEARCH_HELPER_EVENT_COOLDOWN_MS,
   SEARCH_HELPER_EVENT_DEBOUNCE_MS,
   SEARCH_FULL_REFRESH_STALE_MS,
@@ -37,6 +38,30 @@ export function shouldAttemptPausedReconnect({
   return now - lastResumeAttemptAt >= cooldownMs;
 }
 
+export function shouldSkipForegroundRefresh({
+  trigger,
+  now,
+  modeEntryAt,
+  lastForegroundRefreshAt,
+  quietWindowMs = SEARCH_MODE_ENTRY_QUIET_MS,
+  minGapMs = SEARCH_FOCUS_REFRESH_COOLDOWN_MS
+}) {
+  const isForegroundTrigger = trigger === 'focus' || trigger === 'visibility' || trigger === 'helper';
+  if (!isForegroundTrigger) {
+    return false;
+  }
+
+  if (now - modeEntryAt < quietWindowMs) {
+    return true;
+  }
+
+  if (now - lastForegroundRefreshAt < minGapMs) {
+    return true;
+  }
+
+  return false;
+}
+
 export function useSearchData({ mode, runState, macroRunInFlightRef, shortcutSaveInFlightRef }) {
   const [searchData, setSearchData] = useState(INITIAL_SEARCH_DATA);
   const searchRequestSequence = useRef(0);
@@ -46,7 +71,8 @@ export function useSearchData({ mode, runState, macroRunInFlightRef, shortcutSav
   const pollingPausedReasonRef = useRef('');
   const resumeAttemptInFlightRef = useRef(false);
   const lastResumeAttemptAtRef = useRef(0);
-  const lastFocusRefreshAttemptAt = useRef(0);
+  const modeEntryAtRef = useRef(0);
+  const lastForegroundRefreshAtRef = useRef(0);
   const helperRefreshDebounceTimerRef = useRef(null);
   const helperRefreshInFlightRef = useRef(false);
   const lastHelperRefreshAtRef = useRef(0);
@@ -287,10 +313,17 @@ export function useSearchData({ mode, runState, macroRunInFlightRef, shortcutSav
     }
 
     const now = Date.now();
-    if (now - lastFocusRefreshAttemptAt.current < SEARCH_FOCUS_REFRESH_COOLDOWN_MS) {
+    if (shouldSkipForegroundRefresh({
+      trigger,
+      now,
+      modeEntryAt: modeEntryAtRef.current,
+      lastForegroundRefreshAt: lastForegroundRefreshAtRef.current
+    })) {
       return;
     }
-    lastFocusRefreshAttemptAt.current = now;
+    if (trigger === 'focus' || trigger === 'visibility' || trigger === 'helper') {
+      lastForegroundRefreshAtRef.current = now;
+    }
 
     if (pollingPausedRef.current) {
       if (!shouldAttemptPausedReconnect({
@@ -371,6 +404,9 @@ export function useSearchData({ mode, runState, macroRunInFlightRef, shortcutSav
     if ((mode !== 'search' && mode !== 'explorer') || runState === 'running') {
       return undefined;
     }
+
+    modeEntryAtRef.current = Date.now();
+    lastForegroundRefreshAtRef.current = 0;
 
     // Entering Search should always perform one full refresh.
     loadSearchData({ silent: true });

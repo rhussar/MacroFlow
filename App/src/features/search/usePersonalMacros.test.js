@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { shouldUsePersonalCache } from './usePersonalMacros.js';
+import {
+  shouldDeferPersonalInitialFetch,
+  shouldUsePersonalCache
+} from './usePersonalMacros.js';
 
 test('shouldUsePersonalCache returns true for matching signature within TTL', () => {
   const now = 20_000;
@@ -42,3 +45,25 @@ test('shouldUsePersonalCache returns false when TTL expires', () => {
   assert.equal(result, false);
 });
 
+test('shouldDeferPersonalInitialFetch defers only on first transition to ready', () => {
+  const deferFirstReady = shouldDeferPersonalInitialFetch({
+    status: 'ready',
+    previousStatus: 'idle',
+    hasDeferredInitialFetch: false
+  });
+  assert.equal(deferFirstReady, true);
+
+  const noDeferAfterAlreadyDeferred = shouldDeferPersonalInitialFetch({
+    status: 'ready',
+    previousStatus: 'idle',
+    hasDeferredInitialFetch: true
+  });
+  assert.equal(noDeferAfterAlreadyDeferred, false);
+
+  const noDeferWhenAlreadyReady = shouldDeferPersonalInitialFetch({
+    status: 'ready',
+    previousStatus: 'ready',
+    hasDeferredInitialFetch: false
+  });
+  assert.equal(noDeferWhenAlreadyReady, false);
+});

@@ -28,26 +28,6 @@ import {
   shouldCommitModuleRename
 } from '../features/search/module-actions';
 
-// Placeholder generated VBA code until AI codegen is wired in.
-const mockGeneratedCode = `Sub CleanData()
-    Dim ws As Worksheet
-    Set ws = ActiveSheet
-
-    ' 1. Remove Empty Rows
-    On Error Resume Next
-    ws.Columns("A:A").SpecialCells(xlCellTypeBlanks).EntireRow.Delete
-
-    ' 2. Trim Whitespace
-    For Each cell In ws.Range("B1:B150")
-        cell.Value = Trim(cell.Value)
-    Next cell
-
-    ' 3. Fix Date Format
-    ws.Columns("C:C").NumberFormat = "mm/dd/yyyy"
-
-    MsgBox "Cleanup Complete!"
-End Sub`;
-
 const DEFAULT_MODULE_LABEL = 'New Module';
 const MODULE_PREFIX = 'MacroFlowModule';
 const RESTART_REQUIRED_MESSAGE =
@@ -84,6 +64,31 @@ function normalizeExitIntent(intent) {
   return String(intent || '').trim().toLowerCase() === 'close' ? 'close' : 'back';
 }
 
+function mapAiGenerationMessage(result, fallbackMessage = '') {
+  const reason = String(result?.reason || '').trim();
+  const backendMessage = String(result?.message || '').trim();
+  if (backendMessage) {
+    return backendMessage;
+  }
+
+  switch (reason) {
+    case 'AI_AUTH_FAILED':
+      return 'OpenAI authentication failed.';
+    case 'AI_RATE_LIMITED':
+      return 'OpenAI rate limit reached. Please try again shortly.';
+    case 'AI_TIMEOUT':
+      return 'OpenAI request timed out. Please retry.';
+    case 'AI_NETWORK_ERROR':
+      return 'Network error while contacting OpenAI.';
+    case 'AI_INVALID_PROMPT':
+      return 'Prompt is required to generate VBA.';
+    case 'AI_INVALID_RESPONSE':
+      return 'OpenAI returned invalid VBA output.';
+    default:
+      return fallbackMessage || 'Unable to generate VBA.';
+  }
+}
+
 const BuildMode = ({
   onBack,
   onClose,
@@ -110,6 +115,7 @@ const BuildMode = ({
   const [draftShortcutLetter, setDraftShortcutLetter] = useState('');
   const [shortcutInputError, setShortcutInputError] = useState(false);
   const [shortcutSaving, setShortcutSaving] = useState(false);
+  const [hasPendingChanges, setHasPendingChanges] = useState(false);
   const [moduleRenameDraft, setModuleRenameDraft] = useState('');
   const [moduleRenameActive, setModuleRenameActive] = useState(false);
 
@@ -155,6 +161,12 @@ const BuildMode = ({
   savedShortcutLetterRef.current = savedShortcutLetter;
   draftShortcutLetterRef.current = draftShortcutLetter;
   shortcutSavingRef.current = shortcutSaving;
+
+  const setDirtyState = useCallback((value) => {
+    const nextValue = Boolean(value);
+    dirtyLocalRef.current = nextValue;
+    setHasPendingChanges(nextValue);
+  }, []);
 
   const setStepStatus = useCallback((stepKey, status, textOverride = null) => {
     setSteps((previous) =>
@@ -268,12 +280,12 @@ const BuildMode = ({
     setSessionContext(updatedSession);
     setLocation(buildLocation(savedWorkbook.name, savedModuleName));
 
-    dirtyLocalRef.current = false;
+    setDirtyState(false);
 
     if (typeof onRefreshSearchData === 'function') {
       await onRefreshSearchData({ silent: true });
     }
-  }, [onRefreshSearchData]);
+  }, [onRefreshSearchData, setDirtyState]);
 
   const attemptExit = useCallback(async (intent = 'back') => {
     if (exitInFlightRef.current) {
@@ -340,7 +352,7 @@ const BuildMode = ({
     setShortcutInputError(false);
     setShortcutSaving(false);
 
-    dirtyLocalRef.current = false;
+    setDirtyState(false);
 
     const apiCheck = ensureBuildApis();
     if (!apiCheck.ok) {
@@ -562,15 +574,16 @@ const BuildMode = ({
     onRefreshSearchData,
     requestedLaunchModuleName,
     setStepStatus,
-    stopWithError
+    stopWithError,
+    setDirtyState
   ]);
 
   bootstrapSessionRef.current = bootstrapSession;
 
   const markLocalDirty = useCallback(() => {
-    dirtyLocalRef.current = true;
+    setDirtyState(true);
     setRunOutcome('idle');
-  }, []);
+  }, [setDirtyState]);
 
   const handleCodeChange = useCallback((newCode) => {
     const nextCode = String(newCode || '');
@@ -579,11 +592,34 @@ const BuildMode = ({
     markLocalDirty();
   }, [markLocalDirty]);
 
-  const handleSave = useCallback(() => {
-    if (!dirtyLocalRef.current) {
+  const handleSave = useCallback(async () => {
+    if (isBusyRef.current || !dirtyLocalRef.current) {
       return;
     }
-  }, []);
+    if (!sessionContextRef.current) {
+      return;
+    }
+
+    setErrorInfo(null);
+    setIsBusy(true);
+    isBusyRef.current = true;
+
+    try {
+      await persistUnsyncedChanges();
+      setSavedMacroName(extractPrimaryMacroName(editedCodeRef.current));
+      setRunOutcome('idle');
+    } catch (error) {
+      const message = String(error?.message || 'Unable to save changes.');
+      setRunOutcome('error');
+      setErrorInfo({
+        title: `Save failed: ${message}`,
+        line: null
+      });
+    } finally {
+      setIsBusy(false);
+      isBusyRef.current = false;
+    }
+  }, [persistUnsyncedChanges]);
 
   const handleShortcutDraftChange = useCallback((value) => {
     const normalizedDraft = normalizeShortcutLetterDraft(value);
@@ -699,9 +735,18 @@ const BuildMode = ({
 
   const toggleChat = useCallback(() => setChatOpen((previous) => !previous), []);
 
-  const handleSubmit = useCallback(() => {
+  const handleSubmit = useCallback(async () => {
     const submittedPrompt = String(promptRef.current || '').trim();
     if (isBusyRef.current || !submittedPrompt || !sessionContextRef.current) {
+      return;
+    }
+
+    const generateVbaApi = window.excel?.ai?.generateVba;
+    if (typeof generateVbaApi !== 'function') {
+      setErrorInfo({
+        title: 'Generation failed: AI generation API is unavailable.',
+        line: null
+      });
       return;
     }
 
@@ -709,11 +754,40 @@ const BuildMode = ({
     setPrompt('');
     setRunOutcome('idle');
     setErrorInfo(null);
+    setIsBusy(true);
+    isBusyRef.current = true;
 
-    const generatedCode = String(mockGeneratedCode);
-    setEditedCode(generatedCode);
-    setSavedMacroName(extractPrimaryMacroName(generatedCode));
-    markLocalDirty();
+    try {
+      const session = sessionContextRef.current;
+      const result = await generateVbaApi({
+        prompt: submittedPrompt,
+        workbookName: String(session?.workbook?.name || '').trim(),
+        moduleName: String(session?.moduleName || '').trim(),
+        currentCode: String(editedCodeRef.current || '')
+      });
+
+      if (!result?.success) {
+        throw new Error(mapAiGenerationMessage(result));
+      }
+
+      const generatedCode = String(result?.code || '').trim();
+      if (!generatedCode) {
+        throw new Error('OpenAI returned empty VBA output.');
+      }
+
+      setEditedCode(generatedCode);
+      setSavedMacroName(extractPrimaryMacroName(generatedCode));
+      markLocalDirty();
+    } catch (error) {
+      const message = mapAiGenerationMessage(null, String(error?.message || 'Unable to generate VBA.'));
+      setErrorInfo({
+        title: `Generation failed: ${message}`,
+        line: null
+      });
+    } finally {
+      setIsBusy(false);
+      isBusyRef.current = false;
+    }
   }, [markLocalDirty]);
 
   const cancelModuleRename = useCallback(() => {
@@ -1008,7 +1082,7 @@ const BuildMode = ({
     const handleKeyDown = (event) => {
       if (event.ctrlKey && event.key === 's' && !chatOpenRef.current && sessionContextRef.current) {
         event.preventDefault();
-        handleSave();
+        void handleSave();
         return;
       }
 
@@ -1054,6 +1128,7 @@ const BuildMode = ({
   const showCodePanel = Boolean(sessionContext);
   const shortcutInputDisabled =
     !showCodePanel || !sessionMacroTarget || isBusy || shortcutSaving;
+  const primaryActionLabel = hasPendingChanges ? 'Save changes' : 'Run macro';
   const codeStatus =
     runOutcome === 'success'
       ? 'success'
@@ -1193,7 +1268,7 @@ const BuildMode = ({
             onKeyDown={(event) => {
               if (event.key === 'Enter' && showCodePanel && prompt.trim()) {
                 event.preventDefault();
-                handleSubmit();
+                void handleSubmit();
               }
             }}
           />
@@ -1315,12 +1390,16 @@ const BuildMode = ({
               className="build-run-action"
               onClick={() => {
                 if (!isBusy) {
+                  if (hasPendingChanges) {
+                    void handleSave();
+                    return;
+                  }
                   void handleRunMacro();
                 }
               }}
               disabled={isBusy}
             >
-              Run macro
+              {primaryActionLabel}
             </button>
             <div
               className={`shortcut-binding build-shortcut-binding ${shortcutSaving ? 'saving' : ''}`}
@@ -1397,7 +1476,7 @@ const BuildMode = ({
                 onClick={() => {
                   const action = resolveBuildExitAction('exit_without_save');
                   if (action === 'exit_without_save') {
-                    dirtyLocalRef.current = false;
+                    setDirtyState(false);
                     setExitDialog(null);
                     finalizeExit(exitDialog.intent);
                   }

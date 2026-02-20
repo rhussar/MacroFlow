@@ -133,6 +133,18 @@ contextBridge.exposeInMainWorld('excel', {
   },
 
   // ==========================================================================
+  // AI OPERATIONS
+  // ==========================================================================
+  ai: {
+    /**
+     * Generate VBA module code using OpenAI.
+     * @param {{ prompt: string, workbookName?: string, moduleName?: string, currentCode?: string }} args
+     * @returns {Promise<{ success: boolean, code?: string, model?: string, usage?: { promptTokens?: number, completionTokens?: number, totalTokens?: number }, reason?: string, message?: string }>}
+     */
+    generateVba: (args) => ipcRenderer.invoke('ai:generate-vba', args)
+  },
+
+  // ==========================================================================
   // CELL OPERATIONS
   // ==========================================================================
   cell: {

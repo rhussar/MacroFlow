@@ -15,6 +15,7 @@
 
 const { ipcMain, app, BrowserWindow } = require('electron');
 const excel = require('./excel-bridge');
+const { generateVba } = require('./openai-client');
 const {
   logger,
   checkExcelModalState,
@@ -753,6 +754,39 @@ function registerHandlers() {
 
     clearWorkbookContextBurstCache();
     logIpc('vba:run', 'end', { success: result.success, message: result.message });
+    return result;
+  });
+
+  /**
+   * Generate VBA code from natural language prompt (OpenAI).
+   * Channel: 'ai:generate-vba'
+   * Args: { prompt: string, workbookName?: string, moduleName?: string, currentCode?: string }
+   */
+  ipcMain.handle('ai:generate-vba', async (_, {
+    prompt = '',
+    workbookName = '',
+    moduleName = '',
+    currentCode = ''
+  } = {}) => {
+    logIpc('ai:generate-vba', 'start', {
+      workbookName,
+      moduleName,
+      promptChars: String(prompt || '').length,
+      currentCodeChars: String(currentCode || '').length
+    });
+
+    const result = await Promise.resolve(generateVba({
+      prompt,
+      workbookName,
+      moduleName,
+      currentCode
+    }));
+
+    logIpc('ai:generate-vba', 'end', {
+      success: result.success,
+      reason: result.reason,
+      model: result.model
+    });
     return result;
   });
 

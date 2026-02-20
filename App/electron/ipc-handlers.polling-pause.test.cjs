@@ -5,7 +5,7 @@ const Module = require('node:module');
 
 const IPC_HANDLERS_PATH = path.resolve(__dirname, 'ipc-handlers.js');
 
-function loadHandlers({ excelOverrides = {}, appOverrides = {} } = {}) {
+function loadHandlers({ excelOverrides = {}, appOverrides = {}, openAiOverrides = {} } = {}) {
   const originalLoad = Module._load;
   const handlers = {};
   const appEvents = {};
@@ -151,6 +151,15 @@ function loadHandlers({ excelOverrides = {}, appOverrides = {} } = {}) {
     checkRibbonStatus: async () => ({})
   };
 
+  const openAiStub = {
+    generateVba: async () => ({
+      success: true,
+      code: 'Option Explicit\nSub RunA()\nEnd Sub',
+      model: 'gpt-4.1-mini'
+    }),
+    ...openAiOverrides
+  };
+
   Module._load = function patchedLoad(request, parent, isMain) {
     if (request === 'electron') {
       return electronStub;
@@ -160,6 +169,9 @@ function loadHandlers({ excelOverrides = {}, appOverrides = {} } = {}) {
     }
     if (request === './diagnostics') {
       return diagnosticsStub;
+    }
+    if (request === './openai-client') {
+      return openAiStub;
     }
     return originalLoad.call(this, request, parent, isMain);
   };
@@ -172,6 +184,7 @@ function loadHandlers({ excelOverrides = {}, appOverrides = {} } = {}) {
   return {
     handlers,
     excelStub,
+    openAiStub,
     getQuitCalls: () => quitCalls,
     getClearComCacheCalls: () => clearComCacheCalls,
     triggerAppEvent: (event) => {
@@ -955,6 +968,62 @@ test('workbook:context burst cache invalidates after module rename/delete succes
   const afterDelete = await handlers['workbook:context']();
   assert.equal(afterDelete.success, true);
   assert.equal(contextCalls, 3);
+});
+
+test('ai:generate-vba forwards payload to OpenAI client and returns success shape', async () => {
+  const calls = [];
+  const { handlers } = loadHandlers({
+    openAiOverrides: {
+      generateVba: async (args) => {
+        calls.push(args);
+        return {
+          success: true,
+          code: 'Option Explicit\nPublic Sub RunA()\nEnd Sub',
+          model: 'gpt-4.1-mini',
+          usage: { promptTokens: 10, completionTokens: 12, totalTokens: 22 }
+        };
+      }
+    }
+  });
+
+  const result = await handlers['ai:generate-vba'](null, {
+    prompt: 'Generate a macro that formats dates',
+    workbookName: 'Book1.xlsm',
+    moduleName: 'Module1',
+    currentCode: 'Option Explicit'
+  });
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].prompt, 'Generate a macro that formats dates');
+  assert.equal(calls[0].workbookName, 'Book1.xlsm');
+  assert.equal(calls[0].moduleName, 'Module1');
+  assert.equal(result.success, true);
+  assert.match(result.code, /Sub RunA/i);
+  assert.equal(result.model, 'gpt-4.1-mini');
+  assert.equal(result.usage.totalTokens, 22);
+});
+
+test('ai:generate-vba propagates failure reason and message', async () => {
+  const { handlers } = loadHandlers({
+    openAiOverrides: {
+      generateVba: async () => ({
+        success: false,
+        reason: 'AI_RATE_LIMITED',
+        message: 'OpenAI rate limit reached. Please wait and try again.'
+      })
+    }
+  });
+
+  const result = await handlers['ai:generate-vba'](null, {
+    prompt: 'x',
+    workbookName: 'Book1.xlsm',
+    moduleName: 'Module1',
+    currentCode: ''
+  });
+
+  assert.equal(result.success, false);
+  assert.equal(result.reason, 'AI_RATE_LIMITED');
+  assert.match(result.message, /rate limit/i);
 });
 
 test('excel:resolveInstance dedupes concurrent requests and reuses one helper call', async () => {

@@ -596,3 +596,198 @@ test('module code operations release COM handles for workbook/code module paths'
   assert.ok(released.includes(vbProject), 'VBProject should be released');
   assert.ok(released.includes(codeModule), 'CodeModule should be released');
 });
+
+test('renameModuleByWorkbookName renames only standard modules and blocks duplicates/invalid names', () => {
+  const standardComponent = {
+    Name: 'ModuleOne',
+    Type: 1
+  };
+  const existingComponent = {
+    Name: 'ModuleTwo',
+    Type: 1
+  };
+  const classComponent = {
+    Name: 'ClassOne',
+    Type: 2
+  };
+  const components = [standardComponent, existingComponent, classComponent];
+  const vbComponents = {
+    get Count() {
+      return components.length;
+    },
+    Item: (index) => components[index - 1],
+    Remove: () => {}
+  };
+  const vbProject = { VBComponents: vbComponents };
+  const workbook = {
+    Name: 'Client.xlsm',
+    FullName: 'C:\\Client.xlsm',
+    VBProject: vbProject
+  };
+  const excelApp = {
+    Workbooks: {
+      Count: 1,
+      Item: () => workbook
+    }
+  };
+
+  const { bridge } = loadExcelBridge({
+    processIds: [11001],
+    objectFactory: () => excelApp
+  });
+
+  const renamed = bridge.renameModuleByWorkbookName(
+    'Client.xlsm',
+    'ModuleOne',
+    'RenamedModule',
+    { workbookPath: 'C:\\Client.xlsm' }
+  );
+  assert.equal(renamed.success, true);
+  assert.equal(renamed.workbookFound, true);
+  assert.equal(renamed.moduleFound, true);
+  assert.equal(renamed.renamed, true);
+  assert.equal(standardComponent.Name, 'RenamedModule');
+
+  const duplicate = bridge.renameModuleByWorkbookName(
+    'Client.xlsm',
+    'RenamedModule',
+    'ModuleTwo',
+    { workbookPath: 'C:\\Client.xlsm' }
+  );
+  assert.equal(duplicate.success, false);
+  assert.equal(duplicate.renamed, false);
+
+  const invalidName = bridge.renameModuleByWorkbookName(
+    'Client.xlsm',
+    'RenamedModule',
+    '1-invalid',
+    { workbookPath: 'C:\\Client.xlsm' }
+  );
+  assert.equal(invalidName.success, false);
+  assert.equal(invalidName.renamed, false);
+
+  const nonStandard = bridge.renameModuleByWorkbookName(
+    'Client.xlsm',
+    'ClassOne',
+    'ClassRenamed',
+    { workbookPath: 'C:\\Client.xlsm' }
+  );
+  assert.equal(nonStandard.success, false);
+  assert.equal(nonStandard.moduleFound, true);
+  assert.equal(nonStandard.renamed, false);
+});
+
+test('deleteModuleByWorkbookName deletes standard modules and blocks non-standard modules', () => {
+  const standardComponent = {
+    Name: 'DeleteMe',
+    Type: 1
+  };
+  const classComponent = {
+    Name: 'ClassKeep',
+    Type: 2
+  };
+  const components = [standardComponent, classComponent];
+  const vbComponents = {
+    get Count() {
+      return components.length;
+    },
+    Item: (index) => components[index - 1],
+    Remove: (component) => {
+      const index = components.indexOf(component);
+      if (index >= 0) {
+        components.splice(index, 1);
+      }
+    }
+  };
+  const vbProject = { VBComponents: vbComponents };
+  const workbook = {
+    Name: 'Client.xlsm',
+    FullName: 'C:\\Client.xlsm',
+    VBProject: vbProject
+  };
+  const excelApp = {
+    Workbooks: {
+      Count: 1,
+      Item: () => workbook
+    }
+  };
+
+  const { bridge } = loadExcelBridge({
+    processIds: [11002],
+    objectFactory: () => excelApp
+  });
+
+  const deleted = bridge.deleteModuleByWorkbookName(
+    'Client.xlsm',
+    'DeleteMe',
+    { workbookPath: 'C:\\Client.xlsm' }
+  );
+  assert.equal(deleted.success, true);
+  assert.equal(deleted.deleted, true);
+  assert.equal(components.some((component) => component.Name === 'DeleteMe'), false);
+
+  const nonStandard = bridge.deleteModuleByWorkbookName(
+    'Client.xlsm',
+    'ClassKeep',
+    { workbookPath: 'C:\\Client.xlsm' }
+  );
+  assert.equal(nonStandard.success, false);
+  assert.equal(nonStandard.deleted, false);
+  assert.equal(nonStandard.moduleFound, true);
+});
+
+test('module rename/delete operations release COM handles', () => {
+  const standardComponent = {
+    Name: 'ModuleOne',
+    Type: 1
+  };
+  const components = [standardComponent];
+  const vbComponents = {
+    get Count() {
+      return components.length;
+    },
+    Item: (index) => components[index - 1],
+    Remove: () => {}
+  };
+  const vbProject = { VBComponents: vbComponents };
+  const workbook = {
+    Name: 'Client.xlsm',
+    FullName: 'C:\\Client.xlsm',
+    VBProject: vbProject
+  };
+  const excelApp = {
+    Workbooks: {
+      Count: 1,
+      Item: () => workbook
+    }
+  };
+
+  const { bridge, releaseCalls } = loadExcelBridge({
+    processIds: [11003],
+    objectFactory: () => excelApp
+  });
+
+  const renameBefore = releaseCalls.length;
+  const renameResult = bridge.renameModuleByWorkbookName(
+    'Client.xlsm',
+    'ModuleOne',
+    'ModuleRenamed',
+    { workbookPath: 'C:\\Client.xlsm' }
+  );
+  assert.equal(renameResult.success, true);
+  assert.ok(releaseCalls.length > renameBefore);
+
+  const deleteBefore = releaseCalls.length;
+  const deleteResult = bridge.deleteModuleByWorkbookName(
+    'Client.xlsm',
+    'ModuleRenamed',
+    { workbookPath: 'C:\\Client.xlsm' }
+  );
+  assert.equal(deleteResult.success, true);
+  assert.ok(releaseCalls.length > deleteBefore);
+
+  const released = releaseCalls.flat();
+  assert.ok(released.includes(excelApp), 'Excel app should be released');
+  assert.ok(released.includes(workbook), 'Workbook should be released');
+  assert.ok(released.includes(vbProject), 'VBProject should be released');
+});

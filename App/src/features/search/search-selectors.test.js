@@ -52,19 +52,76 @@ test('selectPersonalGlobalMacros returns personal rows and query filtering', () 
   assert.equal(rows[0].macro.id, 'p1');
 });
 
-test('selectPersonalGlobalSectionModel maps workbook-missing to empty-state messaging', () => {
+test('selectPersonalGlobalSectionModel maps workbook-missing-open-state to open CTA', () => {
   const section = selectPersonalGlobalSectionModel({
     activeWorkbookName: 'ClientModel.xlsm',
     rows: [],
     status: 'ready',
     workbookFound: false,
+    fileExists: true,
+    totalMacros: 0,
     error: null
   });
 
   assert.equal(section.hidden, false);
   assert.equal(section.count, 0);
   assert.equal(section.isEmpty, true);
-  assert.equal(section.emptyMessage, 'PERSONAL.XLSB is not open.');
+  assert.equal(section.emptyMessage, 'PERSONAL.xlsb not open');
+  assert.equal(section.action, 'open_file');
+});
+
+test('selectPersonalGlobalSectionModel maps PERSONAL missing to create-file CTA', () => {
+  const section = selectPersonalGlobalSectionModel({
+    activeWorkbookName: 'ClientModel.xlsm',
+    rows: [],
+    status: 'ready',
+    workbookFound: false,
+    fileExists: false,
+    totalMacros: 0,
+    error: null
+  });
+
+  assert.equal(section.hidden, false);
+  assert.equal(section.count, 0);
+  assert.equal(section.isEmpty, true);
+  assert.equal(section.emptyMessage, 'PERSONAL.xlsb not found');
+  assert.equal(section.action, 'create_file');
+});
+
+test('selectPersonalGlobalSectionModel maps no-macros-in-open-personal to build CTA', () => {
+  const section = selectPersonalGlobalSectionModel({
+    activeWorkbookName: 'ClientModel.xlsm',
+    rows: [],
+    status: 'ready',
+    workbookFound: true,
+    fileExists: true,
+    totalMacros: 0,
+    error: null
+  });
+
+  assert.equal(section.hidden, false);
+  assert.equal(section.count, 0);
+  assert.equal(section.isEmpty, true);
+  assert.equal(section.emptyMessage, 'No macros found');
+  assert.equal(section.action, 'create_global_macro');
+});
+
+test('selectPersonalGlobalSectionModel query-empty with known macros shows no CTA', () => {
+  const section = selectPersonalGlobalSectionModel({
+    activeWorkbookName: 'ClientModel.xlsm',
+    rows: [],
+    totalMacros: 2,
+    status: 'ready',
+    workbookFound: true,
+    fileExists: true,
+    error: null
+  });
+
+  assert.equal(section.hidden, false);
+  assert.equal(section.count, 0);
+  assert.equal(section.isEmpty, true);
+  assert.equal(section.emptyMessage, 'No global macros match this search.');
+  assert.equal(section.action, null);
 });
 
 test('selectPersonalGlobalSectionModel hides section when active workbook is PERSONAL.XLSB', () => {

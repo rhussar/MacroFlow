@@ -51,6 +51,25 @@ function loadHandlers({ excelOverrides = {}, appOverrides = {} } = {}) {
       lineCount: 1,
       hash: 'deadbeef'
     }),
+    renameModuleByWorkbookName: () => ({
+      success: true,
+      workbookFound: true,
+      moduleFound: true,
+      renamed: true,
+      workbook: { name: 'Book1.xlsx', path: 'C:\\Book1.xlsx' },
+      previousModuleName: 'Module1',
+      moduleName: 'Module2',
+      message: 'ok'
+    }),
+    deleteModuleByWorkbookName: () => ({
+      success: true,
+      workbookFound: true,
+      moduleFound: true,
+      deleted: true,
+      workbook: { name: 'Book1.xlsx', path: 'C:\\Book1.xlsx' },
+      moduleName: 'Module1',
+      message: 'ok'
+    }),
     getWorkbookInfo: () => ({ success: true, name: 'Book1' }),
     listModules: () => ({ success: true, modules: [] }),
     listProcedures: () => ({ success: true, procedures: [] }),
@@ -63,6 +82,31 @@ function loadHandlers({ excelOverrides = {}, appOverrides = {} } = {}) {
       shortcutAudit: { success: true, shortcuts: [], unmapped: [] }
     }),
     getOpenWorkbookListContext: () => ({ success: true, workbooks: [], allFilesModules: [] }),
+    getPersonalWorkbookStatus: () => ({
+      success: true,
+      workbookFound: false,
+      workbook: null,
+      fileExists: false,
+      workbookPath: 'C:\\Users\\Test\\AppData\\Roaming\\Microsoft\\Excel\\XLSTART\\PERSONAL.XLSB'
+    }),
+    openPersonalWorkbook: () => ({
+      success: true,
+      workbookFound: true,
+      opened: true,
+      alreadyOpen: false,
+      workbook: { name: 'PERSONAL.XLSB', path: 'C:\\Users\\Test\\AppData\\Roaming\\Microsoft\\Excel\\XLSTART\\PERSONAL.XLSB' },
+      fileExists: true,
+      workbookPath: 'C:\\Users\\Test\\AppData\\Roaming\\Microsoft\\Excel\\XLSTART\\PERSONAL.XLSB'
+    }),
+    createPersonalWorkbook: () => ({
+      success: true,
+      created: true,
+      opened: true,
+      workbookFound: true,
+      workbook: { name: 'PERSONAL.XLSB', path: 'C:\\Users\\Test\\AppData\\Roaming\\Microsoft\\Excel\\XLSTART\\PERSONAL.XLSB' },
+      fileExists: true,
+      workbookPath: 'C:\\Users\\Test\\AppData\\Roaming\\Microsoft\\Excel\\XLSTART\\PERSONAL.XLSB'
+    }),
     auditShortcuts: () => ({ success: true, shortcuts: [], unmapped: [] }),
     auditShortcutsByWorkbookName: () => ({ success: true, shortcuts: [], unmapped: [], workbookFound: true }),
     _focusHelper: {
@@ -442,6 +486,69 @@ test('module code channels preserve workbook/module not found surfaces', async (
   assert.equal(signatureResult.moduleFound, false);
 });
 
+test('module rename/delete channels forward workbook args and payloads to bridge', async () => {
+  let capturedRenameArgs = null;
+  let capturedDeleteArgs = null;
+
+  const { handlers } = loadHandlers({
+    excelOverrides: {
+      renameModuleByWorkbookName: (workbookName, moduleName, nextModuleName, options = {}) => {
+        capturedRenameArgs = { workbookName, moduleName, nextModuleName, options };
+        return {
+          success: true,
+          workbookFound: true,
+          moduleFound: true,
+          renamed: true,
+          workbook: { name: workbookName, path: options.workbookPath || '' },
+          previousModuleName: moduleName,
+          moduleName: nextModuleName
+        };
+      },
+      deleteModuleByWorkbookName: (workbookName, moduleName, options = {}) => {
+        capturedDeleteArgs = { workbookName, moduleName, options };
+        return {
+          success: true,
+          workbookFound: true,
+          moduleFound: true,
+          deleted: true,
+          workbook: { name: workbookName, path: options.workbookPath || '' },
+          moduleName
+        };
+      }
+    }
+  });
+
+  const renameResult = await handlers['vba:module:rename:by-workbook'](null, {
+    workbookName: 'Client.xlsm',
+    workbookPath: 'C:\\Client.xlsm',
+    moduleName: 'OldModule',
+    nextModuleName: 'NewModule'
+  });
+  assert.equal(renameResult.success, true);
+  assert.equal(renameResult.renamed, true);
+
+  const deleteResult = await handlers['vba:module:delete:by-workbook'](null, {
+    workbookName: 'Client.xlsm',
+    workbookPath: 'C:\\Client.xlsm',
+    moduleName: 'DeleteMe'
+  });
+  assert.equal(deleteResult.success, true);
+  assert.equal(deleteResult.deleted, true);
+
+  assert.deepEqual(capturedRenameArgs, {
+    workbookName: 'Client.xlsm',
+    moduleName: 'OldModule',
+    nextModuleName: 'NewModule',
+    options: { workbookPath: 'C:\\Client.xlsm' }
+  });
+
+  assert.deepEqual(capturedDeleteArgs, {
+    workbookName: 'Client.xlsm',
+    moduleName: 'DeleteMe',
+    options: { workbookPath: 'C:\\Client.xlsm' }
+  });
+});
+
 test('module code channels are not short-circuited by polling pause', async () => {
   let readCalls = 0;
   const { handlers } = loadHandlers({
@@ -635,6 +742,218 @@ test('workbook:context burst cache invalidates after reconnect and resolve succe
   assert.equal(resolve.resolved, true);
   const afterResolve = await handlers['workbook:context']();
   assert.equal(afterResolve.success, true);
+  assert.equal(contextCalls, 3);
+});
+
+test('personal channels route to bridge and return payloads', async () => {
+  let statusCalls = 0;
+  let openCalls = 0;
+  let createCalls = 0;
+
+  const { handlers } = loadHandlers({
+    excelOverrides: {
+      getPersonalWorkbookStatus: () => {
+        statusCalls += 1;
+        return {
+          success: true,
+          workbookFound: false,
+          workbook: null,
+          fileExists: false,
+          workbookPath: 'C:\\XLSTART\\PERSONAL.XLSB'
+        };
+      },
+      openPersonalWorkbook: () => {
+        openCalls += 1;
+        return {
+          success: true,
+          workbookFound: true,
+          opened: true,
+          alreadyOpen: false,
+          workbook: { name: 'PERSONAL.XLSB', path: 'C:\\XLSTART\\PERSONAL.XLSB' },
+          fileExists: true,
+          workbookPath: 'C:\\XLSTART\\PERSONAL.XLSB'
+        };
+      },
+      createPersonalWorkbook: () => {
+        createCalls += 1;
+        return {
+          success: true,
+          created: true,
+          opened: true,
+          workbookFound: true,
+          workbook: { name: 'PERSONAL.XLSB', path: 'C:\\XLSTART\\PERSONAL.XLSB' },
+          fileExists: true,
+          workbookPath: 'C:\\XLSTART\\PERSONAL.XLSB'
+        };
+      }
+    }
+  });
+
+  const statusResult = await handlers['personal:status']();
+  assert.equal(statusResult.success, true);
+  assert.equal(statusResult.fileExists, false);
+  assert.equal(statusCalls, 1);
+
+  const openResult = await handlers['personal:open']();
+  assert.equal(openResult.success, true);
+  assert.equal(openResult.opened, true);
+  assert.equal(openCalls, 1);
+
+  const createResult = await handlers['personal:create']();
+  assert.equal(createResult.success, true);
+  assert.equal(createResult.created, true);
+  assert.equal(createCalls, 1);
+});
+
+test('workbook:context burst cache invalidates after personal:open success', async () => {
+  let contextCalls = 0;
+  const { handlers } = loadHandlers({
+    excelOverrides: {
+      getActiveWorkbookContext: () => {
+        contextCalls += 1;
+        return {
+          success: true,
+          workbook: { name: `Book${contextCalls}.xlsx`, path: `C:\\Book${contextCalls}.xlsx`, activeSheet: 'Sheet1', sheets: ['Sheet1'] },
+          modules: [],
+          procedures: [],
+          shortcutAudit: { success: true, shortcuts: [], unmapped: [] }
+        };
+      },
+      openPersonalWorkbook: () => ({
+        success: true,
+        workbookFound: true,
+        opened: true,
+        alreadyOpen: false,
+        workbook: { name: 'PERSONAL.XLSB', path: 'C:\\XLSTART\\PERSONAL.XLSB' },
+        fileExists: true,
+        workbookPath: 'C:\\XLSTART\\PERSONAL.XLSB'
+      })
+    }
+  });
+
+  const first = await handlers['workbook:context']();
+  assert.equal(first.success, true);
+  assert.equal(contextCalls, 1);
+
+  const cached = await handlers['workbook:context']();
+  assert.equal(cached.success, true);
+  assert.equal(contextCalls, 1);
+
+  const openResult = await handlers['personal:open']();
+  assert.equal(openResult.success, true);
+
+  const afterOpen = await handlers['workbook:context']();
+  assert.equal(afterOpen.success, true);
+  assert.equal(contextCalls, 2);
+});
+
+test('workbook:context burst cache invalidates after personal:create success', async () => {
+  let contextCalls = 0;
+  const { handlers } = loadHandlers({
+    excelOverrides: {
+      getActiveWorkbookContext: () => {
+        contextCalls += 1;
+        return {
+          success: true,
+          workbook: { name: `Book${contextCalls}.xlsx`, path: `C:\\Book${contextCalls}.xlsx`, activeSheet: 'Sheet1', sheets: ['Sheet1'] },
+          modules: [],
+          procedures: [],
+          shortcutAudit: { success: true, shortcuts: [], unmapped: [] }
+        };
+      },
+      createPersonalWorkbook: () => ({
+        success: true,
+        created: true,
+        opened: true,
+        workbookFound: true,
+        workbook: { name: 'PERSONAL.XLSB', path: 'C:\\XLSTART\\PERSONAL.XLSB' },
+        fileExists: true,
+        workbookPath: 'C:\\XLSTART\\PERSONAL.XLSB'
+      })
+    }
+  });
+
+  const first = await handlers['workbook:context']();
+  assert.equal(first.success, true);
+  assert.equal(contextCalls, 1);
+
+  const cached = await handlers['workbook:context']();
+  assert.equal(cached.success, true);
+  assert.equal(contextCalls, 1);
+
+  const createResult = await handlers['personal:create']();
+  assert.equal(createResult.success, true);
+
+  const afterCreate = await handlers['workbook:context']();
+  assert.equal(afterCreate.success, true);
+  assert.equal(contextCalls, 2);
+});
+
+test('workbook:context burst cache invalidates after module rename/delete success', async () => {
+  let contextCalls = 0;
+  const { handlers } = loadHandlers({
+    excelOverrides: {
+      getActiveWorkbookContext: () => {
+        contextCalls += 1;
+        return {
+          success: true,
+          workbook: { name: `Book${contextCalls}.xlsx`, path: `C:\\Book${contextCalls}.xlsx`, activeSheet: 'Sheet1', sheets: ['Sheet1'] },
+          modules: [],
+          procedures: [],
+          shortcutAudit: { success: true, shortcuts: [], unmapped: [] }
+        };
+      },
+      renameModuleByWorkbookName: () => ({
+        success: true,
+        workbookFound: true,
+        moduleFound: true,
+        renamed: true,
+        workbook: { name: 'Book1.xlsx', path: 'C:\\Book1.xlsx' },
+        previousModuleName: 'OldModule',
+        moduleName: 'NewModule'
+      }),
+      deleteModuleByWorkbookName: () => ({
+        success: true,
+        workbookFound: true,
+        moduleFound: true,
+        deleted: true,
+        workbook: { name: 'Book1.xlsx', path: 'C:\\Book1.xlsx' },
+        moduleName: 'DeleteMe'
+      })
+    }
+  });
+
+  const first = await handlers['workbook:context']();
+  assert.equal(first.success, true);
+  assert.equal(contextCalls, 1);
+
+  const cached = await handlers['workbook:context']();
+  assert.equal(cached.success, true);
+  assert.equal(contextCalls, 1);
+
+  const renameResult = await handlers['vba:module:rename:by-workbook'](null, {
+    workbookName: 'Book1.xlsx',
+    workbookPath: 'C:\\Book1.xlsx',
+    moduleName: 'OldModule',
+    nextModuleName: 'NewModule'
+  });
+  assert.equal(renameResult.success, true);
+  assert.equal(renameResult.renamed, true);
+
+  const afterRename = await handlers['workbook:context']();
+  assert.equal(afterRename.success, true);
+  assert.equal(contextCalls, 2);
+
+  const deleteResult = await handlers['vba:module:delete:by-workbook'](null, {
+    workbookName: 'Book1.xlsx',
+    workbookPath: 'C:\\Book1.xlsx',
+    moduleName: 'DeleteMe'
+  });
+  assert.equal(deleteResult.success, true);
+  assert.equal(deleteResult.deleted, true);
+
+  const afterDelete = await handlers['workbook:context']();
+  assert.equal(afterDelete.success, true);
   assert.equal(contextCalls, 3);
 });
 

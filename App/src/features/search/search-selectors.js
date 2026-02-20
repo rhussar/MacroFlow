@@ -103,8 +103,10 @@ export function selectPersonalGlobalSectionModel({
   workbookName,
   activeWorkbookName,
   rows,
+  totalMacros = 0,
   status = 'idle',
   workbookFound = false,
+  fileExists = false,
   error = null
 }) {
   const normalizedActiveWorkbook = toWorkbookName(workbookName || activeWorkbookName);
@@ -124,6 +126,7 @@ export function selectPersonalGlobalSectionModel({
   }
 
   let emptyMessage = '';
+  let action = null;
   if (isEmpty) {
     if (status === 'loading') {
       emptyMessage = 'Loading PERSONAL.XLSB macros...';
@@ -131,10 +134,19 @@ export function selectPersonalGlobalSectionModel({
       emptyMessage = error?.message
         ? String(error.message)
         : 'Could not load PERSONAL.XLSB macros.';
+    } else if (Number(totalMacros) > 0) {
+      emptyMessage = 'No global macros match this search.';
     } else if (!workbookFound) {
-      emptyMessage = 'PERSONAL.XLSB is not open.';
+      if (!fileExists) {
+        emptyMessage = 'PERSONAL.xlsb not found';
+        action = 'create_file';
+      } else {
+        emptyMessage = 'PERSONAL.xlsb not open';
+        action = 'open_file';
+      }
     } else {
-      emptyMessage = 'No global macros found in PERSONAL.XLSB.';
+      emptyMessage = 'No macros found';
+      action = 'create_global_macro';
     }
   }
 
@@ -142,6 +154,7 @@ export function selectPersonalGlobalSectionModel({
     hidden: false,
     count,
     isEmpty,
-    emptyMessage
+    emptyMessage,
+    action
   };
 }

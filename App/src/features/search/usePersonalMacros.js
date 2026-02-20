@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { normalizeMacros } from '../../lib/search-data.js';
 import { PERSONAL_INITIAL_DEFER_MS, PERSONAL_REFRESH_TTL_MS } from './search-constants.js';
 
@@ -8,6 +8,9 @@ const INITIAL_PERSONAL_MACROS_STATE = {
   status: 'idle',
   macros: [],
   workbookFound: false,
+  workbook: null,
+  fileExists: false,
+  workbookPath: '',
   error: null
 };
 
@@ -51,6 +54,9 @@ export function usePersonalMacros(searchData, workbookListSignature = '') {
   const cacheTtlTimerRef = useRef(null);
   const previousStatusRef = useRef('idle');
   const hasDeferredInitialFetchRef = useRef(false);
+  const refresh = useCallback(() => {
+    setRefreshTick((previous) => previous + 1);
+  }, []);
 
   useEffect(() => {
     if (cacheTtlTimerRef.current) {
@@ -96,12 +102,16 @@ export function usePersonalMacros(searchData, workbookListSignature = '') {
     }
 
     const proceduresByWorkbookApi = window.excel?.vba?.proceduresByWorkbook;
-    if (!proceduresByWorkbookApi) {
+    const personalStatusApi = window.excel?.personal?.status;
+    if (!proceduresByWorkbookApi || !personalStatusApi) {
       setPersonalState({
         status: 'error',
         macros: [],
         workbookFound: false,
-        error: { message: 'PERSONAL.XLSB macro API is unavailable.' }
+        workbook: null,
+        fileExists: false,
+        workbookPath: '',
+        error: { message: 'PERSONAL.XLSB APIs are unavailable.' }
       });
       return;
     }
@@ -143,28 +153,69 @@ export function usePersonalMacros(searchData, workbookListSignature = '') {
 
     (async () => {
       try {
-        const result = await proceduresByWorkbookApi({ workbookName: PERSONAL_WORKBOOK_NAME });
+        const statusResult = await personalStatusApi();
         if (cancelled || requestId !== requestSequence.current) {
           return;
         }
 
-        if (!result?.success) {
-          const message = String(result?.message || result?.error || 'Unable to load PERSONAL.XLSB macros.');
+        if (!statusResult?.success) {
+          const message = String(statusResult?.message || statusResult?.error || 'Unable to load PERSONAL.XLSB status.');
           setPersonalState({
             status: 'error',
             macros: [],
             workbookFound: false,
+            workbook: null,
+            fileExists: false,
+            workbookPath: '',
             error: { message }
           });
           return;
         }
 
-        const workbookFound = result?.workbookFound !== false;
-        const macros = workbookFound ? normalizeMacros(result?.procedures) : [];
+        let workbookFound = statusResult?.workbookFound !== false;
+        const workbook = statusResult?.workbook || null;
+        const workbookPath = String(statusResult?.workbookPath || workbook?.path || '').trim();
+        const fileExists = statusResult?.fileExists === true || workbookFound;
+        let macros = [];
+
+        if (workbookFound) {
+          const proceduresResult = await proceduresByWorkbookApi({
+            workbookName: PERSONAL_WORKBOOK_NAME,
+            workbookPath
+          });
+          if (cancelled || requestId !== requestSequence.current) {
+            return;
+          }
+
+          if (!proceduresResult?.success) {
+            const message = String(proceduresResult?.message || proceduresResult?.error || 'Unable to load PERSONAL.XLSB macros.');
+            setPersonalState({
+              status: 'error',
+              macros: [],
+              workbookFound: false,
+              workbook: null,
+              fileExists,
+              workbookPath,
+              error: { message }
+            });
+            return;
+          }
+
+          if (proceduresResult?.workbookFound === false) {
+            workbookFound = false;
+            macros = [];
+          } else {
+            macros = normalizeMacros(proceduresResult?.procedures);
+          }
+        }
+
         const nextState = {
           status: 'ready',
           macros,
           workbookFound,
+          workbook,
+          fileExists,
+          workbookPath,
           error: null
         };
         cacheRef.current = {
@@ -181,6 +232,10 @@ export function usePersonalMacros(searchData, workbookListSignature = '') {
         setPersonalState((previous) => ({
           ...previous,
           status: 'error',
+          workbookFound: false,
+          workbook: null,
+          fileExists: false,
+          workbookPath: '',
           error: { message }
         }));
       }
@@ -199,5 +254,8 @@ export function usePersonalMacros(searchData, workbookListSignature = '') {
     workbookListSignature
   ]);
 
-  return personalState;
+  return {
+    ...personalState,
+    refresh
+  };
 }

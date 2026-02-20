@@ -668,6 +668,74 @@ function registerHandlers() {
   });
 
   /**
+   * Rename a VBA module in a specific open workbook.
+   * Channel: 'vba:module:rename:by-workbook'
+   * Args: { workbookName?: string, workbookPath?: string, moduleName: string, nextModuleName: string }
+   */
+  ipcMain.handle('vba:module:rename:by-workbook', async (_, {
+    workbookName,
+    workbookPath,
+    moduleName = '',
+    nextModuleName = ''
+  } = {}) => {
+    logIpc('vba:module:rename:by-workbook', 'start', {
+      workbookName,
+      workbookPath,
+      moduleName,
+      nextModuleName
+    });
+
+    const result = await withComRelease(
+      () => excel.renameModuleByWorkbookName(workbookName, moduleName, nextModuleName, { workbookPath })
+    );
+
+    if (result?.success && result?.renamed) {
+      clearWorkbookContextBurstCache();
+    }
+    logIpc('vba:module:rename:by-workbook', 'end', {
+      success: result.success,
+      workbookFound: result.workbookFound,
+      moduleFound: result.moduleFound,
+      renamed: result.renamed,
+      moduleName: result.moduleName
+    });
+    return result;
+  });
+
+  /**
+   * Delete a VBA module in a specific open workbook.
+   * Channel: 'vba:module:delete:by-workbook'
+   * Args: { workbookName?: string, workbookPath?: string, moduleName: string }
+   */
+  ipcMain.handle('vba:module:delete:by-workbook', async (_, {
+    workbookName,
+    workbookPath,
+    moduleName = ''
+  } = {}) => {
+    logIpc('vba:module:delete:by-workbook', 'start', {
+      workbookName,
+      workbookPath,
+      moduleName
+    });
+
+    const result = await withComRelease(
+      () => excel.deleteModuleByWorkbookName(workbookName, moduleName, { workbookPath })
+    );
+
+    if (result?.success && result?.deleted) {
+      clearWorkbookContextBurstCache();
+    }
+    logIpc('vba:module:delete:by-workbook', 'end', {
+      success: result.success,
+      workbookFound: result.workbookFound,
+      moduleFound: result.moduleFound,
+      deleted: result.deleted,
+      moduleName: result.moduleName
+    });
+    return result;
+  });
+
+  /**
    * Run a VBA macro
    * Channel: 'vba:run'
    * Args: { macroName: string }
@@ -944,6 +1012,62 @@ function registerHandlers() {
       workbookCount: result.workbooks?.length,
       moduleCount: result.allFilesModules?.length,
       durationMs: Date.now() - startedAt
+    });
+    return result;
+  });
+
+  /**
+   * Get PERSONAL.XLSB status from XLSTART + open workbook state.
+   * Channel: 'personal:status'
+   * Returns: { success, workbookFound, workbook, fileExists, workbookPath, message? }
+   */
+  ipcMain.handle('personal:status', async () => {
+    logIpc('personal:status', 'start');
+    const result = await withComRelease(() => excel.getPersonalWorkbookStatus());
+    logIpc('personal:status', 'end', {
+      success: result.success,
+      workbookFound: result.workbookFound,
+      fileExists: result.fileExists
+    });
+    return result;
+  });
+
+  /**
+   * Open PERSONAL.XLSB from XLSTART.
+   * Channel: 'personal:open'
+   * Returns: { success, workbookFound, opened, alreadyOpen, workbook, fileExists, workbookPath, message? }
+   */
+  ipcMain.handle('personal:open', async () => {
+    logIpc('personal:open', 'start');
+    const result = await withComRelease(() => excel.openPersonalWorkbook());
+    if (result?.success) {
+      clearPollingPaused();
+      clearWorkbookContextBurstCache();
+    }
+    logIpc('personal:open', 'end', {
+      success: result.success,
+      opened: result.opened,
+      alreadyOpen: result.alreadyOpen
+    });
+    return result;
+  });
+
+  /**
+   * Create PERSONAL.XLSB in XLSTART, then open it.
+   * Channel: 'personal:create'
+   * Returns: { success, created, opened, workbookFound, workbook, fileExists, workbookPath, message? }
+   */
+  ipcMain.handle('personal:create', async () => {
+    logIpc('personal:create', 'start');
+    const result = await withComRelease(() => excel.createPersonalWorkbook());
+    if (result?.success) {
+      clearPollingPaused();
+      clearWorkbookContextBurstCache();
+    }
+    logIpc('personal:create', 'end', {
+      success: result.success,
+      created: result.created,
+      opened: result.opened
     });
     return result;
   });

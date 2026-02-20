@@ -284,6 +284,7 @@ function App() {
             shortcutSaveInFlightRef={shortcutSaveInFlightRef}
             selectedWorkbookForBuild={selectedWorkbookForBuild}
             onSelectedWorkbookForBuildChange={handleSelectedWorkbookForBuildChange}
+            onRefreshSearchData={loadSearchData}
             onClose={handleClose}
           />
         );
@@ -310,6 +311,8 @@ function App() {
             shortcutByMacroId={shortcutByMacroId}
             explorerContext={explorerContext}
             onExplorerContextConsumed={handleExplorerContextConsumed}
+            onActionStatus={setActionStatus}
+            onRefreshSearchData={loadSearchData}
           />
         );
 
@@ -321,7 +324,7 @@ function App() {
   // Check if we should show the default footer
   const showDefaultFooter = mode === 'search' || mode === 'explorer';
   const showBottomActionBanner = (
-    mode === 'search' &&
+    (mode === 'search' || mode === 'explorer') &&
     showDefaultFooter &&
     (actionState === 'running' || actionState === 'success' || actionState === 'error') &&
     Boolean(actionMessage)

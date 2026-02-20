@@ -6,6 +6,8 @@
  */
 
 const { execSync } = require('node:child_process');
+const fs = require('node:fs');
+const path = require('node:path');
 const winax = require('winax');
 const logger = require('./logger');
 
@@ -30,6 +32,10 @@ const VBA_COMPONENT_NAME = {
   [VBA_COMPONENT_TYPE.FORM]: 'UserForm',
   [VBA_COMPONENT_TYPE.DOCUMENT]: 'Document'
 };
+
+const PERSONAL_WORKBOOK_NAME = 'PERSONAL.XLSB';
+const XLSB_FILE_FORMAT = 50;
+const VBA_MODULE_NAME_PATTERN = /^[A-Za-z][A-Za-z0-9_]*$/;
 
 class ExcelBridge {
   constructor() {
@@ -275,6 +281,23 @@ class ExcelBridge {
     };
   }
 
+  _getPersonalWorkbookPath() {
+    const appData = String(process.env.APPDATA || '').trim();
+    if (!appData) {
+      throw new Error('APPDATA environment variable is not available.');
+    }
+
+    return path.join(appData, 'Microsoft', 'Excel', 'XLSTART', PERSONAL_WORKBOOK_NAME);
+  }
+
+  _ensureDirectoryExists(filePath) {
+    const directory = path.dirname(String(filePath || '').trim());
+    if (!directory) {
+      throw new Error('Unable to resolve PERSONAL.XLSB directory.');
+    }
+    fs.mkdirSync(directory, { recursive: true });
+  }
+
   _describeWorkbookWithActiveSheet(workbook) {
     let activeSheet = '';
     let activeSheetRef = null;
@@ -438,6 +461,14 @@ class ExcelBridge {
 
   _componentTypeName(typeId) {
     return VBA_COMPONENT_NAME[typeId] || `Unknown (${typeId})`;
+  }
+
+  _isStandardModuleComponent(component) {
+    return Number(component?.Type) === VBA_COMPONENT_TYPE.STANDARD_MODULE;
+  }
+
+  _isValidVbaModuleName(name) {
+    return VBA_MODULE_NAME_PATTERN.test(String(name || '').trim());
   }
 
   _listModulesForWorkbook(workbook, vbProject) {
@@ -1318,6 +1349,285 @@ class ExcelBridge {
   }
 
   /**
+   * Return PERSONAL.XLSB status based on XLSTART path and open workbook state.
+   * @returns {{
+   *   success: boolean,
+   *   workbookFound: boolean,
+   *   workbook: { name: string, path: string } | null,
+   *   fileExists: boolean,
+   *   workbookPath: string,
+   *   message?: string
+   * }}
+   */
+  getPersonalWorkbookStatus(options = {}) {
+    const { activate = true } = options;
+    let workbookPath = '';
+    let fileExists = false;
+
+    try {
+      workbookPath = this._getPersonalWorkbookPath();
+      fileExists = fs.existsSync(workbookPath);
+    } catch (error) {
+      return {
+        success: false,
+        workbookFound: false,
+        workbook: null,
+        fileExists: false,
+        workbookPath: '',
+        message: error.message
+      };
+    }
+
+    try {
+      return this._withExcelApp((excel) => {
+        const workbook = this._findOpenWorkbook(excel, {
+          workbookName: PERSONAL_WORKBOOK_NAME,
+          workbookPath
+        });
+
+        if (!workbook) {
+          return {
+            success: true,
+            workbookFound: false,
+            workbook: null,
+            fileExists,
+            workbookPath,
+            message: fileExists
+              ? 'PERSONAL.XLSB is not open.'
+              : 'PERSONAL.XLSB was not found in XLSTART.'
+          };
+        }
+
+        try {
+          return {
+            success: true,
+            workbookFound: true,
+            workbook: this._describeWorkbook(workbook),
+            fileExists: true,
+            workbookPath
+          };
+        } finally {
+          this._safeRelease(workbook);
+        }
+      }, { activate });
+    } catch (error) {
+      return {
+        success: false,
+        workbookFound: false,
+        workbook: null,
+        fileExists,
+        workbookPath,
+        message: error.message
+      };
+    }
+  }
+
+  /**
+   * Open PERSONAL.XLSB from XLSTART in the currently connected Excel instance.
+   * @returns {{
+   *   success: boolean,
+   *   workbookFound: boolean,
+   *   opened: boolean,
+   *   alreadyOpen: boolean,
+   *   workbook: { name: string, path: string } | null,
+   *   fileExists: boolean,
+   *   workbookPath: string,
+   *   message?: string
+   * }}
+   */
+  openPersonalWorkbook(options = {}) {
+    const { activate = true } = options;
+    let workbookPath = '';
+    let fileExists = false;
+
+    try {
+      workbookPath = this._getPersonalWorkbookPath();
+      fileExists = fs.existsSync(workbookPath);
+    } catch (error) {
+      return {
+        success: false,
+        workbookFound: false,
+        opened: false,
+        alreadyOpen: false,
+        workbook: null,
+        fileExists: false,
+        workbookPath: '',
+        message: error.message
+      };
+    }
+
+    if (!fileExists) {
+      return {
+        success: false,
+        workbookFound: false,
+        opened: false,
+        alreadyOpen: false,
+        workbook: null,
+        fileExists: false,
+        workbookPath,
+        message: 'PERSONAL.XLSB was not found in XLSTART.'
+      };
+    }
+
+    try {
+      return this._withExcelApp((excel) => {
+        let workbook = this._findOpenWorkbook(excel, {
+          workbookName: PERSONAL_WORKBOOK_NAME,
+          workbookPath
+        });
+
+        if (workbook) {
+          try {
+            workbook.Activate();
+          } catch {
+            // Ignore activation failures.
+          }
+
+          try {
+            return {
+              success: true,
+              workbookFound: true,
+              opened: false,
+              alreadyOpen: true,
+              workbook: this._describeWorkbook(workbook),
+              fileExists: true,
+              workbookPath,
+              message: 'PERSONAL.XLSB is already open.'
+            };
+          } finally {
+            this._safeRelease(workbook);
+          }
+        }
+
+        workbook = excel.Workbooks.Open(workbookPath);
+        try {
+          try {
+            workbook.Activate();
+          } catch {
+            // Ignore activation failures.
+          }
+
+          return {
+            success: true,
+            workbookFound: true,
+            opened: true,
+            alreadyOpen: false,
+            workbook: this._describeWorkbook(workbook),
+            fileExists: true,
+            workbookPath,
+            message: 'Opened PERSONAL.XLSB.'
+          };
+        } finally {
+          this._safeRelease(workbook);
+        }
+      }, { activate });
+    } catch (error) {
+      return {
+        success: false,
+        workbookFound: false,
+        opened: false,
+        alreadyOpen: false,
+        workbook: null,
+        fileExists,
+        workbookPath,
+        message: error.message
+      };
+    }
+  }
+
+  /**
+   * Create PERSONAL.XLSB in XLSTART and open it in Excel.
+   * @returns {{
+   *   success: boolean,
+   *   created: boolean,
+   *   opened: boolean,
+   *   workbookFound: boolean,
+   *   workbook: { name: string, path: string } | null,
+   *   fileExists: boolean,
+   *   workbookPath: string,
+   *   message?: string
+   * }}
+   */
+  createPersonalWorkbook(options = {}) {
+    const { activate = true } = options;
+    let workbookPath = '';
+    let fileExists = false;
+
+    try {
+      workbookPath = this._getPersonalWorkbookPath();
+      this._ensureDirectoryExists(workbookPath);
+      fileExists = fs.existsSync(workbookPath);
+    } catch (error) {
+      return {
+        success: false,
+        created: false,
+        opened: false,
+        workbookFound: false,
+        workbook: null,
+        fileExists: false,
+        workbookPath: '',
+        message: error.message
+      };
+    }
+
+    if (fileExists) {
+      const openResult = this.openPersonalWorkbook({ activate });
+      return {
+        ...openResult,
+        created: false
+      };
+    }
+
+    try {
+      return this._withExcelApp((excel) => {
+        let workbook = null;
+        const previousDisplayAlerts = excel.DisplayAlerts;
+
+        try {
+          excel.DisplayAlerts = false;
+          workbook = excel.Workbooks.Add();
+          workbook.SaveAs(workbookPath, XLSB_FILE_FORMAT);
+
+          try {
+            workbook.Activate();
+          } catch {
+            // Ignore activation failures.
+          }
+
+          return {
+            success: true,
+            created: true,
+            opened: true,
+            workbookFound: true,
+            workbook: this._describeWorkbook(workbook),
+            fileExists: true,
+            workbookPath,
+            message: 'Created and opened PERSONAL.XLSB.'
+          };
+        } finally {
+          try {
+            excel.DisplayAlerts = previousDisplayAlerts;
+          } catch {
+            // Ignore alert restore failures.
+          }
+          this._safeRelease(workbook);
+        }
+      }, { activate });
+    } catch (error) {
+      return {
+        success: false,
+        created: false,
+        opened: false,
+        workbookFound: false,
+        workbook: null,
+        fileExists,
+        workbookPath,
+        message: error.message
+      };
+    }
+  }
+
+  /**
    * List worksheets in the active workbook with basic UsedRange stats.
    * @returns {{ success: boolean, workbook?: { name: string, path: string }, sheets: Array }}
    */
@@ -2082,6 +2392,316 @@ class ExcelBridge {
         moduleName: normalizedModuleName,
         lineCount: 0,
         hash: this._hashFnv1aHex(''),
+        message: error.message
+      };
+    }
+  }
+
+  /**
+   * Rename a standard VBA module in a specific open workbook.
+   * @param {string} workbookName
+   * @param {string} moduleName
+   * @param {string} nextModuleName
+   * @param {{ activate?: boolean, workbookPath?: string }} options
+   * @returns {{
+   *   success: boolean,
+   *   workbookFound: boolean,
+   *   moduleFound: boolean,
+   *   renamed: boolean,
+   *   workbook?: { name: string, path: string } | null,
+   *   previousModuleName?: string,
+   *   moduleName?: string,
+   *   message?: string
+   * }}
+   */
+  renameModuleByWorkbookName(workbookName, moduleName, nextModuleName, options = {}) {
+    const { activate = true, workbookPath = '' } = options;
+    const normalizedWorkbookName = String(workbookName || '').trim();
+    const normalizedWorkbookPath = String(workbookPath || '').trim();
+    const normalizedModuleName = String(moduleName || '').trim();
+    const normalizedNextModuleName = String(nextModuleName || '').trim();
+
+    if (!normalizedWorkbookName && !normalizedWorkbookPath) {
+      return {
+        success: false,
+        workbookFound: false,
+        moduleFound: false,
+        renamed: false,
+        workbook: null,
+        previousModuleName: normalizedModuleName,
+        moduleName: normalizedNextModuleName,
+        message: 'Workbook name or workbook path is required.'
+      };
+    }
+
+    if (!normalizedModuleName) {
+      return {
+        success: false,
+        workbookFound: false,
+        moduleFound: false,
+        renamed: false,
+        workbook: null,
+        previousModuleName: '',
+        moduleName: normalizedNextModuleName,
+        message: 'Module name is required.'
+      };
+    }
+
+    if (!normalizedNextModuleName) {
+      return {
+        success: false,
+        workbookFound: false,
+        moduleFound: false,
+        renamed: false,
+        workbook: null,
+        previousModuleName: normalizedModuleName,
+        moduleName: '',
+        message: 'New module name is required.'
+      };
+    }
+
+    if (!this._isValidVbaModuleName(normalizedNextModuleName)) {
+      return {
+        success: false,
+        workbookFound: false,
+        moduleFound: false,
+        renamed: false,
+        workbook: null,
+        previousModuleName: normalizedModuleName,
+        moduleName: normalizedNextModuleName,
+        message: 'Invalid module name. Use letters, numbers, and underscores, and start with a letter.'
+      };
+    }
+
+    const sourceNameLower = normalizedModuleName.toLowerCase();
+    const targetNameLower = normalizedNextModuleName.toLowerCase();
+
+    try {
+      return this._withExcelApp((excel) => {
+        const workbook = this._findOpenWorkbook(excel, {
+          workbookName: normalizedWorkbookName,
+          workbookPath: normalizedWorkbookPath
+        });
+
+        if (!workbook) {
+          const workbookLabel = normalizedWorkbookPath || normalizedWorkbookName;
+          return {
+            success: true,
+            workbookFound: false,
+            moduleFound: false,
+            renamed: false,
+            workbook: null,
+            previousModuleName: normalizedModuleName,
+            moduleName: normalizedNextModuleName,
+            message: `Workbook "${workbookLabel}" is not open.`
+          };
+        }
+
+        const workbookSummary = this._describeWorkbook(workbook);
+        if (sourceNameLower === targetNameLower) {
+          return {
+            success: true,
+            workbookFound: true,
+            moduleFound: true,
+            renamed: false,
+            workbook: workbookSummary,
+            previousModuleName: normalizedModuleName,
+            moduleName: normalizedModuleName,
+            message: 'Module name is unchanged.'
+          };
+        }
+        let vbProject = null;
+        let sourceComponent = null;
+        let targetComponent = null;
+        try {
+          vbProject = this._getVBProjectForWorkbook(workbook);
+          sourceComponent = this._findComponentByName(vbProject, normalizedModuleName);
+          if (!sourceComponent) {
+            return {
+              success: true,
+              workbookFound: true,
+              moduleFound: false,
+              renamed: false,
+              workbook: workbookSummary,
+              previousModuleName: normalizedModuleName,
+              moduleName: normalizedNextModuleName,
+              message: `Module "${normalizedModuleName}" was not found.`
+            };
+          }
+
+          if (!this._isStandardModuleComponent(sourceComponent)) {
+            return {
+              success: false,
+              workbookFound: true,
+              moduleFound: true,
+              renamed: false,
+              workbook: workbookSummary,
+              previousModuleName: normalizedModuleName,
+              moduleName: normalizedNextModuleName,
+              message: `Only standard modules can be renamed. "${normalizedModuleName}" is not a standard module.`
+            };
+          }
+
+          targetComponent = this._findComponentByName(vbProject, normalizedNextModuleName);
+          if (targetComponent) {
+            return {
+              success: false,
+              workbookFound: true,
+              moduleFound: true,
+              renamed: false,
+              workbook: workbookSummary,
+              previousModuleName: normalizedModuleName,
+              moduleName: normalizedNextModuleName,
+              message: `Module "${normalizedNextModuleName}" already exists.`
+            };
+          }
+
+          sourceComponent.Name = normalizedNextModuleName;
+          return {
+            success: true,
+            workbookFound: true,
+            moduleFound: true,
+            renamed: true,
+            workbook: workbookSummary,
+            previousModuleName: normalizedModuleName,
+            moduleName: normalizedNextModuleName,
+            message: `Renamed module "${normalizedModuleName}" to "${normalizedNextModuleName}".`
+          };
+        } finally {
+          this._safeRelease(targetComponent, sourceComponent, vbProject, workbook);
+        }
+      }, { activate });
+    } catch (error) {
+      return {
+        success: false,
+        workbookFound: false,
+        moduleFound: false,
+        renamed: false,
+        workbook: null,
+        previousModuleName: normalizedModuleName,
+        moduleName: normalizedNextModuleName,
+        message: error.message
+      };
+    }
+  }
+
+  /**
+   * Delete a standard VBA module in a specific open workbook.
+   * @param {string} workbookName
+   * @param {string} moduleName
+   * @param {{ activate?: boolean, workbookPath?: string }} options
+   * @returns {{
+   *   success: boolean,
+   *   workbookFound: boolean,
+   *   moduleFound: boolean,
+   *   deleted: boolean,
+   *   workbook?: { name: string, path: string } | null,
+   *   moduleName?: string,
+   *   message?: string
+   * }}
+   */
+  deleteModuleByWorkbookName(workbookName, moduleName, options = {}) {
+    const { activate = true, workbookPath = '' } = options;
+    const normalizedWorkbookName = String(workbookName || '').trim();
+    const normalizedWorkbookPath = String(workbookPath || '').trim();
+    const normalizedModuleName = String(moduleName || '').trim();
+
+    if (!normalizedWorkbookName && !normalizedWorkbookPath) {
+      return {
+        success: false,
+        workbookFound: false,
+        moduleFound: false,
+        deleted: false,
+        workbook: null,
+        moduleName: normalizedModuleName,
+        message: 'Workbook name or workbook path is required.'
+      };
+    }
+
+    if (!normalizedModuleName) {
+      return {
+        success: false,
+        workbookFound: false,
+        moduleFound: false,
+        deleted: false,
+        workbook: null,
+        moduleName: '',
+        message: 'Module name is required.'
+      };
+    }
+
+    try {
+      return this._withExcelApp((excel) => {
+        const workbook = this._findOpenWorkbook(excel, {
+          workbookName: normalizedWorkbookName,
+          workbookPath: normalizedWorkbookPath
+        });
+
+        if (!workbook) {
+          const workbookLabel = normalizedWorkbookPath || normalizedWorkbookName;
+          return {
+            success: true,
+            workbookFound: false,
+            moduleFound: false,
+            deleted: false,
+            workbook: null,
+            moduleName: normalizedModuleName,
+            message: `Workbook "${workbookLabel}" is not open.`
+          };
+        }
+
+        const workbookSummary = this._describeWorkbook(workbook);
+        let vbProject = null;
+        let sourceComponent = null;
+        try {
+          vbProject = this._getVBProjectForWorkbook(workbook);
+          sourceComponent = this._findComponentByName(vbProject, normalizedModuleName);
+          if (!sourceComponent) {
+            return {
+              success: true,
+              workbookFound: true,
+              moduleFound: false,
+              deleted: false,
+              workbook: workbookSummary,
+              moduleName: normalizedModuleName,
+              message: `Module "${normalizedModuleName}" was not found.`
+            };
+          }
+
+          if (!this._isStandardModuleComponent(sourceComponent)) {
+            return {
+              success: false,
+              workbookFound: true,
+              moduleFound: true,
+              deleted: false,
+              workbook: workbookSummary,
+              moduleName: normalizedModuleName,
+              message: `Only standard modules can be deleted. "${normalizedModuleName}" is not a standard module.`
+            };
+          }
+
+          vbProject.VBComponents.Remove(sourceComponent);
+          return {
+            success: true,
+            workbookFound: true,
+            moduleFound: true,
+            deleted: true,
+            workbook: workbookSummary,
+            moduleName: normalizedModuleName,
+            message: `Deleted module "${normalizedModuleName}".`
+          };
+        } finally {
+          this._safeRelease(sourceComponent, vbProject, workbook);
+        }
+      }, { activate });
+    } catch (error) {
+      return {
+        success: false,
+        workbookFound: false,
+        moduleFound: false,
+        deleted: false,
+        workbook: null,
+        moduleName: normalizedModuleName,
         message: error.message
       };
     }

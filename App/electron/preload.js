@@ -57,6 +57,20 @@ contextBridge.exposeInMainWorld('excel', {
     setModuleCodeByWorkbook: (args) => ipcRenderer.invoke('vba:module-code:set:by-workbook', args),
 
     /**
+     * Rename a VBA module in a specific open workbook.
+     * @param {{ workbookName?: string, workbookPath?: string, moduleName: string, nextModuleName: string }} args
+     * @returns {Promise<{ success: boolean, workbookFound: boolean, moduleFound: boolean, renamed: boolean, workbook?: object, previousModuleName?: string, moduleName?: string, message?: string }>}
+     */
+    renameModuleByWorkbook: (args) => ipcRenderer.invoke('vba:module:rename:by-workbook', args),
+
+    /**
+     * Delete a VBA module in a specific open workbook.
+     * @param {{ workbookName?: string, workbookPath?: string, moduleName: string }} args
+     * @returns {Promise<{ success: boolean, workbookFound: boolean, moduleFound: boolean, deleted: boolean, workbook?: object, moduleName?: string, message?: string }>}
+     */
+    deleteModuleByWorkbook: (args) => ipcRenderer.invoke('vba:module:delete:by-workbook', args),
+
+    /**
      * Run a VBA macro
      * @param {{ macroName: string }} args
      * @returns {Promise<{ success: boolean, message: string }>}
@@ -205,6 +219,29 @@ contextBridge.exposeInMainWorld('excel', {
      * @returns {Promise<{ success: boolean, sheet?: object, structuralContext?: object, dataContext?: object }>}
      */
     metadataClosed: (args) => ipcRenderer.invoke('workbook:metadata:closed', args),
+  },
+
+  // ==========================================================================
+  // PERSONAL.XLSB OPERATIONS
+  // ==========================================================================
+  personal: {
+    /**
+     * Get PERSONAL.XLSB status from XLSTART + open workbook state.
+     * @returns {Promise<{ success: boolean, workbookFound: boolean, workbook?: { name: string, path: string } | null, fileExists: boolean, workbookPath?: string, message?: string }>}
+     */
+    status: () => ipcRenderer.invoke('personal:status'),
+
+    /**
+     * Open PERSONAL.XLSB from XLSTART.
+     * @returns {Promise<{ success: boolean, workbookFound: boolean, opened: boolean, alreadyOpen: boolean, workbook?: { name: string, path: string } | null, fileExists: boolean, workbookPath?: string, message?: string }>}
+     */
+    open: () => ipcRenderer.invoke('personal:open'),
+
+    /**
+     * Create PERSONAL.XLSB in XLSTART and open it.
+     * @returns {Promise<{ success: boolean, created: boolean, opened: boolean, workbookFound: boolean, workbook?: { name: string, path: string } | null, fileExists: boolean, workbookPath?: string, message?: string }>}
+     */
+    create: () => ipcRenderer.invoke('personal:create')
   },
 
   // ==========================================================================

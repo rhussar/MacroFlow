@@ -19,6 +19,12 @@ import {
 import { getSearchStatusView } from '../features/search/search-selectors';
 import { usePersonalMacros } from '../features/search/usePersonalMacros';
 import { resolveInitialModuleNode, useExplorerWorkbookData } from '../features/search/useExplorerWorkbookData';
+import {
+  buildWorkbookModuleRequest,
+  canShowModuleContextActions,
+  isValidVbaModuleName,
+  shouldCommitModuleRename
+} from '../features/search/module-actions';
 
 const defaultSearchData = {
   status: 'idle',
@@ -34,13 +40,21 @@ const FileExplorer = ({
   searchData = defaultSearchData,
   shortcutByMacroId = {},
   explorerContext = null,
-  onExplorerContextConsumed
+  onExplorerContextConsumed,
+  onActionStatus,
+  onRefreshSearchData
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedNode, setSelectedNode] = useState(null);
   const [expandedIds, setExpandedIds] = useState(new Set());
+  const [moduleContextMenu, setModuleContextMenu] = useState(null);
+  const [moduleRenameState, setModuleRenameState] = useState(null);
+  const [moduleDeleteTarget, setModuleDeleteTarget] = useState(null);
+  const [moduleActionInFlight, setModuleActionInFlight] = useState(false);
   const hasInitializedRef = useRef(false);
   const consumedContextRef = useRef('');
+  const moduleContextMenuRef = useRef(null);
+  const renameCommitInFlightRef = useRef(false);
   const resolvedSearchData = useExplorerWorkbookData(searchData, explorerContext);
   const status = resolvedSearchData?.status || 'idle';
   const personalState = usePersonalMacros(resolvedSearchData);
@@ -149,6 +163,211 @@ const FileExplorer = ({
     });
   }, []);
 
+  const closeModuleContextMenu = useCallback(() => {
+    setModuleContextMenu(null);
+  }, []);
+
+  const refreshExplorerData = useCallback(async () => {
+    if (typeof onRefreshSearchData === 'function') {
+      await Promise.resolve(onRefreshSearchData({ silent: true }));
+    }
+  }, [onRefreshSearchData]);
+
+  const handleOpenModuleContextMenu = useCallback((event, node) => {
+    event.preventDefault();
+    event.stopPropagation();
+
+    const moduleItem = node?.data || null;
+    if (!canShowModuleContextActions(moduleItem)) {
+      setModuleContextMenu(null);
+      return;
+    }
+
+    setSelectedNode(node);
+    setModuleContextMenu({
+      x: Number(event.clientX) || 0,
+      y: Number(event.clientY) || 0,
+      nodeId: String(node?.id || ''),
+      module: moduleItem
+    });
+  }, []);
+
+  const handleStartRenameModule = useCallback((target) => {
+    const moduleItem = target?.module || null;
+    if (!moduleItem) {
+      return;
+    }
+    setModuleRenameState({
+      nodeId: String(target?.nodeId || ''),
+      module: moduleItem,
+      draft: String(moduleItem?.name || '')
+    });
+    setModuleContextMenu(null);
+  }, []);
+
+  const handleRenameDraftChange = useCallback((nextDraft) => {
+    setModuleRenameState((previous) => {
+      if (!previous) {
+        return previous;
+      }
+      return {
+        ...previous,
+        draft: String(nextDraft || '')
+      };
+    });
+  }, []);
+
+  const handleCancelRenameModule = useCallback(() => {
+    setModuleRenameState(null);
+  }, []);
+
+  const handleCommitRenameModule = useCallback(async () => {
+    if (renameCommitInFlightRef.current) {
+      return;
+    }
+
+    const currentRename = moduleRenameState;
+    if (!currentRename?.module) {
+      return;
+    }
+
+    const currentName = String(currentRename.module.name || '').trim();
+    const nextName = String(currentRename.draft || '').trim();
+    if (!shouldCommitModuleRename({ currentName, nextName })) {
+      setModuleRenameState(null);
+      return;
+    }
+
+    if (!isValidVbaModuleName(nextName)) {
+      onActionStatus?.('error', 'Invalid module name. Use letters, numbers, and underscores, and start with a letter.');
+      return;
+    }
+
+    const renameApi = window.excel?.vba?.renameModuleByWorkbook;
+    if (typeof renameApi !== 'function') {
+      onActionStatus?.('error', 'Module rename API is unavailable.');
+      return;
+    }
+
+    const request = buildWorkbookModuleRequest(currentRename.module, resolvedSearchData?.workbook);
+    if (!request.workbookName && !request.workbookPath) {
+      onActionStatus?.('error', 'Unable to resolve workbook for this module.');
+      return;
+    }
+
+    renameCommitInFlightRef.current = true;
+    setModuleActionInFlight(true);
+    onActionStatus?.('running', `Renaming module "${currentName}"...`);
+    try {
+      const result = await renameApi({
+        ...request,
+        nextModuleName: nextName
+      });
+      if (!result?.success) {
+        const message = String(result?.message || 'Unable to rename module.');
+        onActionStatus?.('error', message);
+        return;
+      }
+
+      setModuleRenameState(null);
+      await refreshExplorerData();
+      onActionStatus?.('success', String(result?.message || `Renamed module "${currentName}" to "${nextName}".`));
+    } catch (error) {
+      const message = error?.message ? String(error.message) : 'Unable to rename module.';
+      onActionStatus?.('error', message);
+    } finally {
+      setModuleActionInFlight(false);
+      renameCommitInFlightRef.current = false;
+    }
+  }, [moduleRenameState, onActionStatus, refreshExplorerData, resolvedSearchData?.workbook]);
+
+  const handleRequestDeleteModule = useCallback((target) => {
+    setModuleDeleteTarget(target?.module || null);
+    setModuleContextMenu(null);
+  }, []);
+
+  const handleCancelDeleteModule = useCallback(() => {
+    setModuleDeleteTarget(null);
+  }, []);
+
+  const handleConfirmDeleteModule = useCallback(async () => {
+    if (!moduleDeleteTarget || moduleActionInFlight) {
+      return;
+    }
+
+    const deleteApi = window.excel?.vba?.deleteModuleByWorkbook;
+    if (typeof deleteApi !== 'function') {
+      onActionStatus?.('error', 'Module delete API is unavailable.');
+      return;
+    }
+
+    const request = buildWorkbookModuleRequest(moduleDeleteTarget, resolvedSearchData?.workbook);
+    if (!request.workbookName && !request.workbookPath) {
+      onActionStatus?.('error', 'Unable to resolve workbook for this module.');
+      return;
+    }
+
+    const moduleName = String(moduleDeleteTarget?.name || '').trim();
+    setModuleActionInFlight(true);
+    onActionStatus?.('running', `Deleting module "${moduleName}"...`);
+    try {
+      const result = await deleteApi(request);
+      if (!result?.success) {
+        const message = String(result?.message || 'Unable to delete module.');
+        onActionStatus?.('error', message);
+        return;
+      }
+
+      setModuleDeleteTarget(null);
+      setModuleRenameState((previous) => (
+        previous?.module?.name === moduleName ? null : previous
+      ));
+      await refreshExplorerData();
+      onActionStatus?.('success', String(result?.message || `Deleted module "${moduleName}".`));
+    } catch (error) {
+      const message = error?.message ? String(error.message) : 'Unable to delete module.';
+      onActionStatus?.('error', message);
+    } finally {
+      setModuleActionInFlight(false);
+    }
+  }, [moduleActionInFlight, moduleDeleteTarget, onActionStatus, refreshExplorerData, resolvedSearchData?.workbook]);
+
+  useEffect(() => {
+    if (!moduleContextMenu) {
+      return;
+    }
+
+    const handlePointerDown = (event) => {
+      if (moduleContextMenuRef.current && !moduleContextMenuRef.current.contains(event.target)) {
+        setModuleContextMenu(null);
+      }
+    };
+
+    const handleEscape = (event) => {
+      if (event.key === 'Escape') {
+        setModuleContextMenu(null);
+      }
+    };
+
+    document.addEventListener('mousedown', handlePointerDown);
+    window.addEventListener('keydown', handleEscape);
+    window.addEventListener('scroll', closeModuleContextMenu, true);
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      window.removeEventListener('keydown', handleEscape);
+      window.removeEventListener('scroll', closeModuleContextMenu, true);
+    };
+  }, [closeModuleContextMenu, moduleContextMenu]);
+
+  useEffect(() => {
+    if (status === 'ready') {
+      return;
+    }
+    setModuleContextMenu(null);
+    setModuleRenameState(null);
+    setModuleDeleteTarget(null);
+  }, [status]);
+
   // --- Render helpers ---
 
   const renderNonReadyState = () => {
@@ -170,13 +389,24 @@ const FileExplorer = ({
     const isSelected = selectedNode?.id === node.id;
     const hasChildren = node.children.length > 0;
     const paddingLeft = 8 + depth * 16;
+    const isRenaming = node.nodeType === 'module' && moduleRenameState?.nodeId === node.id;
 
     return (
       <React.Fragment key={node.id}>
         <div
           className={`tree-node tree-node--${node.nodeType} ${isSelected ? 'tree-node--selected' : ''}`}
           style={{ paddingLeft }}
-          onClick={() => setSelectedNode(node)}
+          onClick={() => {
+            if (!isRenaming) {
+              setSelectedNode(node);
+            }
+          }}
+          onContextMenu={(event) => {
+            if (node.nodeType !== 'module') {
+              return;
+            }
+            handleOpenModuleContextMenu(event, node);
+          }}
         >
           <span
             className={`tree-node__chevron ${hasChildren ? '' : 'tree-node__chevron--hidden'}`}
@@ -199,7 +429,34 @@ const FileExplorer = ({
             {node.nodeType === 'macro' && <ReturnIcon size={14} />}
           </span>
 
-          <span className="tree-node__label">{node.label}</span>
+          <span className="tree-node__label">
+            {isRenaming ? (
+              <input
+                type="text"
+                className="module-inline-rename-input"
+                value={moduleRenameState?.draft || ''}
+                autoFocus
+                spellCheck={false}
+                maxLength={80}
+                onChange={(event) => handleRenameDraftChange(event.target.value)}
+                onClick={(event) => event.stopPropagation()}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    event.preventDefault();
+                    void handleCommitRenameModule();
+                  } else if (event.key === 'Escape') {
+                    event.preventDefault();
+                    handleCancelRenameModule();
+                  }
+                }}
+                onBlur={() => {
+                  void handleCommitRenameModule();
+                }}
+              />
+            ) : (
+              node.label
+            )}
+          </span>
         </div>
 
         {hasChildren && isExpanded && node.children.map((child) => renderTreeNode(child, depth + 1))}
@@ -283,6 +540,60 @@ const FileExplorer = ({
                 <p className="search-status-message">Select an item to view details.</p>
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {moduleContextMenu && (
+        <div
+          ref={moduleContextMenuRef}
+          className="module-context-menu"
+          style={{ left: `${moduleContextMenu.x}px`, top: `${moduleContextMenu.y}px` }}
+        >
+          <button
+            type="button"
+            className="module-context-menu-item"
+            onClick={() => handleStartRenameModule(moduleContextMenu)}
+            disabled={moduleActionInFlight}
+          >
+            Rename
+          </button>
+          <button
+            type="button"
+            className="module-context-menu-item danger"
+            onClick={() => handleRequestDeleteModule(moduleContextMenu)}
+            disabled={moduleActionInFlight}
+          >
+            Delete
+          </button>
+        </div>
+      )}
+
+      {moduleDeleteTarget && (
+        <div className="module-action-overlay" role="dialog" aria-modal="true" aria-label="Delete module confirmation">
+          <div className="module-action-dialog">
+            <h3 className="module-action-title">Delete module?</h3>
+            <p className="module-action-message">
+              {`Delete "${moduleDeleteTarget.name}" from "${moduleDeleteTarget.workbookName || resolvedSearchData?.workbook?.name || 'workbook'}"?`}
+            </p>
+            <div className="module-action-buttons">
+              <button
+                type="button"
+                className="module-action-btn"
+                onClick={handleCancelDeleteModule}
+                disabled={moduleActionInFlight}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="module-action-btn danger"
+                onClick={() => { void handleConfirmDeleteModule(); }}
+                disabled={moduleActionInFlight}
+              >
+                Delete
+              </button>
+            </div>
           </div>
         </div>
       )}

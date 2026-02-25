@@ -136,11 +136,47 @@ class ExcelBridge {
       throw new Error('NO_EXCEL: Excel is not running. Please open Excel first.');
     }
 
+    let excel = null;
     try {
-      const excel = new winax.Object('Excel.Application', { activate });
+      excel = new winax.Object('Excel.Application', { activate });
       if (!excel) {
         throw new Error('Excel application not found');
       }
+
+      // Verify Excel has at least one open window. A windowless EXCEL.EXE is
+      // a ghost process that is shutting down — attaching to it would keep it
+      // alive and lock the .xlam add-in file.
+      let windowsProxy = null;
+      try {
+        windowsProxy = excel.Windows;
+        const windowCount = windowsProxy ? Number(windowsProxy.Count) : 0;
+        if (windowCount < 1) {
+          // Actively tell the ghost Excel to quit. Just releasing our COM
+          // reference is not always enough — Excel may have entered a zombie
+          // state (e.g. xlam loaded from XLSTART) that prevents clean exit.
+          try {
+            excel.DisplayAlerts = false;
+            excel.Quit();
+          } catch {
+            // Best-effort; the instance may already be partially torn down.
+          }
+          this._safeRelease(windowsProxy, excel);
+          windowsProxy = null;
+          excel = null;
+          // Force immediate GC to release any transient COM proxies created
+          // during the attach + quit sequence.
+          if (typeof global.gc === 'function') {
+            try { global.gc(); } catch { /* best-effort */ }
+          }
+          throw new Error(
+            'NO_EXCEL: Excel process found but has no open windows. ' +
+            'It may be shutting down. Please reopen Excel.'
+          );
+        }
+      } finally {
+        this._safeRelease(windowsProxy);
+      }
+
       const afterAttachProcessIds = this._listExcelProcessIds();
       logger.debug('[ExcelBridge] COM attach succeeded', {
         attempt,
@@ -156,6 +192,10 @@ class ExcelBridge {
       }
       return excel;
     } catch (error) {
+      // Ensure the COM reference is released if any validation step threw.
+      this._safeRelease(excel);
+      excel = null;
+
       const remainingProcessIds = this._listExcelProcessIds();
       logger.warn('[ExcelBridge] COM attach failed', {
         attempt,
@@ -165,6 +205,9 @@ class ExcelBridge {
       });
       if (remainingProcessIds.length === 0) {
         throw new Error('NO_EXCEL: Excel is not running. Please open Excel first.');
+      }
+      if (String(error?.message || '').includes('NO_EXCEL')) {
+        throw error;
       }
       if (remainingProcessIds.length > 1) {
         throw new Error(
@@ -768,6 +811,7 @@ class ExcelBridge {
     const signature = this._buildCodeSignature(code);
     let component = null;
     let codeModule = null;
+    let componentsProxy = null;
 
     try {
       component = this._findComponentByName(vbProject, normalizedModuleName);
@@ -785,7 +829,8 @@ class ExcelBridge {
       }
 
       if (!component) {
-        component = vbProject.VBComponents.Add(VBA_COMPONENT_TYPE.STANDARD_MODULE);
+        componentsProxy = vbProject.VBComponents;
+        component = componentsProxy.Add(VBA_COMPONENT_TYPE.STANDARD_MODULE);
         component.Name = normalizedModuleName;
       }
 
@@ -806,7 +851,7 @@ class ExcelBridge {
         hash: signature.hash
       };
     } finally {
-      this._safeRelease(codeModule, component);
+      this._safeRelease(codeModule, component, componentsProxy);
     }
   }
 
@@ -832,6 +877,7 @@ class ExcelBridge {
     let existing = null;
     let newModule = null;
     let codeModule = null;
+    let componentsProxy = null;
 
     try {
       existing = this._findComponentByName(vbProject, moduleName);
@@ -849,12 +895,13 @@ class ExcelBridge {
         return;
       }
 
-      newModule = vbProject.VBComponents.Add(VBA_COMPONENT_TYPE.STANDARD_MODULE);
+      componentsProxy = vbProject.VBComponents;
+      newModule = componentsProxy.Add(VBA_COMPONENT_TYPE.STANDARD_MODULE);
       newModule.Name = moduleName;
       codeModule = newModule.CodeModule;
       codeModule.AddFromString(code);
     } finally {
-      this._safeRelease(codeModule, existing, newModule, vbProject);
+      this._safeRelease(codeModule, existing, newModule, componentsProxy, vbProject);
     }
   }
 
@@ -922,6 +969,8 @@ class ExcelBridge {
       let workbook = null;
       let previousWorkbook = null;
       let workbookWindow = null;
+      let workbooksProxy = null;
+      let windowsProxy = null;
 
       try {
         previousWorkbook = excel.ActiveWorkbook;
@@ -929,9 +978,11 @@ class ExcelBridge {
         excel.DisplayAlerts = false;
         excel.EnableEvents = false;
 
-        workbook = excel.Workbooks.Open(path, 0, true);
+        workbooksProxy = excel.Workbooks;
+        workbook = workbooksProxy.Open(path, 0, true);
         try {
-          workbookWindow = workbook.Windows.Item(1);
+          windowsProxy = workbook.Windows;
+          workbookWindow = windowsProxy.Item(1);
           workbookWindow.Visible = false;
         } catch (error) {
           // Ignore if window visibility cannot be changed.
@@ -960,7 +1011,7 @@ class ExcelBridge {
             // Ignore activation errors.
           }
         }
-        this._safeRelease(workbookWindow, workbook, previousWorkbook);
+        this._safeRelease(workbookWindow, windowsProxy, workbook, previousWorkbook, workbooksProxy);
       }
     });
   }
@@ -1340,6 +1391,7 @@ class ExcelBridge {
       return this._withActiveWorkbook(({ workbook }) => {
         let activeSheet = '';
         let activeSheetRef = null;
+        let sheetsCollection = null;
         const sheetRefs = [];
         const sheets = [];
 
@@ -1350,13 +1402,15 @@ class ExcelBridge {
           } catch (error) {
             activeSheet = '';
           }
-          for (let i = 1; i <= workbook.Sheets.Count; i++) {
-            const sheet = workbook.Sheets.Item(i);
+          sheetsCollection = workbook.Sheets;
+          const sheetCount = sheetsCollection ? Number(sheetsCollection.Count) : 0;
+          for (let i = 1; i <= sheetCount; i++) {
+            const sheet = sheetsCollection.Item(i);
             sheetRefs.push(sheet);
             sheets.push(sheet.Name);
           }
         } finally {
-          this._safeRelease(activeSheetRef, ...sheetRefs);
+          this._safeRelease(activeSheetRef, ...sheetRefs, sheetsCollection);
         }
 
         return {
@@ -1380,17 +1434,19 @@ class ExcelBridge {
     try {
       return this._withExcelApp((excel) => {
         const workbooks = [];
-        const count = excel.Workbooks.Count;
         const workbookRefs = [];
+        let workbookCollection = null;
 
         try {
+          workbookCollection = excel.Workbooks;
+          const count = workbookCollection ? Number(workbookCollection.Count) : 0;
           for (let i = 1; i <= count; i++) {
-            const workbook = excel.Workbooks.Item(i);
+            const workbook = workbookCollection.Item(i);
             workbookRefs.push(workbook);
             workbooks.push(this._describeWorkbook(workbook));
           }
         } finally {
-          this._safeRelease(...workbookRefs);
+          this._safeRelease(...workbookRefs, workbookCollection);
         }
 
         return { success: true, workbooks };
@@ -1554,7 +1610,14 @@ class ExcelBridge {
           }
         }
 
-        workbook = excel.Workbooks.Open(workbookPath);
+        let workbooksProxy = null;
+        try {
+          workbooksProxy = excel.Workbooks;
+          workbook = workbooksProxy.Open(workbookPath);
+        } catch (openError) {
+          this._safeRelease(workbooksProxy);
+          throw openError;
+        }
         try {
           try {
             workbook.Activate();
@@ -1573,7 +1636,7 @@ class ExcelBridge {
             message: 'Opened PERSONAL.XLSB.'
           };
         } finally {
-          this._safeRelease(workbook);
+          this._safeRelease(workbook, workbooksProxy);
         }
       }, { activate });
     } catch (error) {
@@ -1636,11 +1699,13 @@ class ExcelBridge {
     try {
       return this._withExcelApp((excel) => {
         let workbook = null;
+        let workbooksProxy = null;
         const previousDisplayAlerts = excel.DisplayAlerts;
 
         try {
           excel.DisplayAlerts = false;
-          workbook = excel.Workbooks.Add();
+          workbooksProxy = excel.Workbooks;
+          workbook = workbooksProxy.Add();
           workbook.SaveAs(workbookPath, XLSB_FILE_FORMAT);
 
           try {
@@ -1665,7 +1730,7 @@ class ExcelBridge {
           } catch {
             // Ignore alert restore failures.
           }
-          this._safeRelease(workbook);
+          this._safeRelease(workbook, workbooksProxy);
         }
       }, { activate });
     } catch (error) {
@@ -1700,6 +1765,8 @@ class ExcelBridge {
         const sheets = [];
         const sheetRefs = [];
         const rangeRefs = [];
+        const rowRefs = [];
+        const colRefs = [];
         let workbookSheets = null;
 
         try {
@@ -1709,10 +1776,16 @@ class ExcelBridge {
             const sheet = workbookSheets.Item(i);
             sheetRefs.push(sheet);
             let usedRange = null;
+            let usedRows = null;
+            let usedCols = null;
             try {
               usedRange = sheet.UsedRange;
               if (usedRange) {
                 rangeRefs.push(usedRange);
+                usedRows = usedRange.Rows;
+                usedCols = usedRange.Columns;
+                rowRefs.push(usedRows);
+                colRefs.push(usedCols);
               }
             } catch (error) {
               usedRange = null;
@@ -1725,14 +1798,14 @@ class ExcelBridge {
               usedRange: usedRange
                 ? {
                     address: String(usedRange.Address),
-                    rows: Number(usedRange.Rows.Count),
-                    columns: Number(usedRange.Columns.Count)
+                    rows: Number(usedRows.Count),
+                    columns: Number(usedCols.Count)
                   }
                 : null
             });
           }
         } finally {
-          this._safeRelease(activeSheetRef, ...rangeRefs, ...sheetRefs, workbookSheets);
+          this._safeRelease(activeSheetRef, ...colRefs, ...rowRefs, ...rangeRefs, ...sheetRefs, workbookSheets);
         }
 
         return {
@@ -1754,9 +1827,14 @@ class ExcelBridge {
   getWorksheetMetadata(options = {}) {
     try {
       return this._withActiveWorkbook(({ excel, workbook }) => {
-        const sheet = options.sheetName
-          ? workbook.Sheets.Item(options.sheetName)
-          : workbook.ActiveSheet;
+        let sheetsProxy = null;
+        let sheet = null;
+        if (options.sheetName) {
+          sheetsProxy = workbook.Sheets;
+          sheet = sheetsProxy.Item(options.sheetName);
+        } else {
+          sheet = workbook.ActiveSheet;
+        }
 
         try {
           const metadata = this._collectWorksheetMetadata({
@@ -1772,6 +1850,7 @@ class ExcelBridge {
             ...metadata
           };
         } finally {
+          this._safeRelease(sheetsProxy);
           this._safeRelease(sheet);
         }
       });
@@ -1792,9 +1871,14 @@ class ExcelBridge {
 
     try {
       return this._withWorkbookAtPath(options.path, (workbook, excel) => {
-        const sheet = options.sheetName
-          ? workbook.Sheets.Item(options.sheetName)
-          : workbook.ActiveSheet;
+        let sheetsProxy = null;
+        let sheet = null;
+        if (options.sheetName) {
+          sheetsProxy = workbook.Sheets;
+          sheet = sheetsProxy.Item(options.sheetName);
+        } else {
+          sheet = workbook.ActiveSheet;
+        }
         try {
           const metadata = this._collectWorksheetMetadata({
             excel,
@@ -1808,7 +1892,7 @@ class ExcelBridge {
             ...metadata
           };
         } finally {
-          this._safeRelease(sheet);
+          this._safeRelease(sheet, sheetsProxy);
         }
       });
     } catch (error) {
@@ -1958,11 +2042,17 @@ class ExcelBridge {
   readCell(address) {
     try {
       return this._withExcelApp((excel) => {
-        const range = excel.ActiveSheet.Range(address);
+        let activeSheet = null;
         try {
-          return { success: true, address, value: this._normalizeValue(range.Value2) };
+          activeSheet = excel.ActiveSheet;
+          const range = activeSheet.Range(address);
+          try {
+            return { success: true, address, value: this._normalizeValue(range.Value2) };
+          } finally {
+            this._safeRelease(range);
+          }
         } finally {
-          this._safeRelease(range);
+          this._safeRelease(activeSheet);
         }
       });
     } catch (error) {
@@ -1979,12 +2069,18 @@ class ExcelBridge {
   writeCell(address, value) {
     try {
       return this._withExcelApp((excel) => {
-        const range = excel.ActiveSheet.Range(address);
+        let activeSheet = null;
         try {
-          range.Value2 = value;
-          return { success: true, address };
+          activeSheet = excel.ActiveSheet;
+          const range = activeSheet.Range(address);
+          try {
+            range.Value2 = value;
+            return { success: true, address };
+          } finally {
+            this._safeRelease(range);
+          }
         } finally {
-          this._safeRelease(range);
+          this._safeRelease(activeSheet);
         }
       });
     } catch (error) {
@@ -2031,6 +2127,7 @@ class ExcelBridge {
     try {
       return this._withExcelApp((excel) => {
         const selection = excel.Selection;
+        let interior = null;
 
         try {
           if (!selection) {
@@ -2042,15 +2139,16 @@ class ExcelBridge {
             return { success: false, message: `Unknown color: ${colorName}` };
           }
 
+          interior = selection.Interior;
           if (colorName === 'None') {
-            selection.Interior.ColorIndex = -4142;
+            interior.ColorIndex = -4142;
           } else {
-            selection.Interior.Color = colorValue;
+            interior.Color = colorValue;
           }
 
           return { success: true, color: colorName };
         } finally {
-          this._safeRelease(selection);
+          this._safeRelease(interior, selection);
         }
       });
     } catch (error) {
@@ -2708,6 +2806,7 @@ class ExcelBridge {
         const workbookSummary = this._describeWorkbook(workbook);
         let vbProject = null;
         let sourceComponent = null;
+        let componentsProxy = null;
         try {
           vbProject = this._getVBProjectForWorkbook(workbook);
           sourceComponent = this._findComponentByName(vbProject, normalizedModuleName);
@@ -2735,7 +2834,8 @@ class ExcelBridge {
             };
           }
 
-          vbProject.VBComponents.Remove(sourceComponent);
+          componentsProxy = vbProject.VBComponents;
+          componentsProxy.Remove(sourceComponent);
           return {
             success: true,
             workbookFound: true,
@@ -2746,7 +2846,7 @@ class ExcelBridge {
             message: `Deleted module "${normalizedModuleName}".`
           };
         } finally {
-          this._safeRelease(sourceComponent, vbProject, workbook);
+          this._safeRelease(sourceComponent, componentsProxy, vbProject, workbook);
         }
       }, { activate });
     } catch (error) {
@@ -2799,13 +2899,15 @@ class ExcelBridge {
 
     let newModule = null;
     let codeModule = null;
+    let componentsProxy = null;
     try {
-      newModule = vbProject.VBComponents.Add(VBA_COMPONENT_TYPE.STANDARD_MODULE);
+      componentsProxy = vbProject.VBComponents;
+      newModule = componentsProxy.Add(VBA_COMPONENT_TYPE.STANDARD_MODULE);
       newModule.Name = normalizedModuleName;
       codeModule = newModule.CodeModule;
       codeModule.InsertLines(codeModule.CountOfLines + 1, normalizedCode);
     } finally {
-      this._safeRelease(codeModule, newModule);
+      this._safeRelease(codeModule, newModule, componentsProxy);
     }
 
     return {
@@ -2940,7 +3042,7 @@ class ExcelBridge {
         const component = components.Item(i);
         if (component.Name === moduleName) {
           try {
-            vbProject.VBComponents.Remove(component);
+            components.Remove(component);
           } finally {
             this._safeRelease(component);
           }

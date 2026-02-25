@@ -5,24 +5,28 @@
 /* CSS Variables */
 :root {
   /* Background Colors */
-  --bg-primary: #1e1e1e;
-  --bg-secondary: #252525;
-  --bg-panel: #2d2d2d;
-  --bg-input: #333333;
-  --bg-hover: #3a3a3a;
-  --bg-selected: #404040;
+  --bg-primary: rgba(26, 26, 26, 0.86);
+  --bg-secondary: rgba(36, 36, 36, 0.86);
+  --bg-panel: rgba(46, 46, 46, 0.92);
+  --bg-input: rgba(52, 52, 52, 0.9);
+  --bg-hover: rgba(66, 66, 66, 0.94);
+  --bg-selected: rgba(78, 78, 78, 0.96);
+  --bg-panel-solid: #2e2e2e;
+  --bg-hover-solid: #414141;
+  --bg-selected-solid: #4a4a4a;
+  --bg-danger-hover-solid: #4a2e2e;
 
   /* Border Colors */
-  --border-default: #3d3d3d;
-  --border-light: #4a4a4a;
+  --border-default: rgba(255, 255, 255, 0.18);
+  --border-light: rgba(255, 255, 255, 0.28);
   --border-success: #4ade80;
   --border-error: #f87171;
 
   /* Text Colors */
   --text-primary: #ffffff;
-  --text-secondary: #a0a0a0;
-  --text-muted: #666666;
-  --text-placeholder: #888888;
+  --text-secondary: #d3d3d3;
+  --text-muted: #bababa;
+  --text-placeholder: #c6c6c6;
 
   /* Accent Colors */
   --accent-green: #4ade80;
@@ -60,7 +64,7 @@ body {
   font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
   font-size: 13px;
   color: var(--text-primary);
-  background: var(--bg-primary);
+  background: transparent;
   overflow: hidden;
   -webkit-font-smoothing: antialiased;
 }
@@ -72,7 +76,7 @@ body {
   padding: 0;
   width: 100%;
   height: 100%;
-  background: var(--bg-primary);
+  background: transparent;
   border: none;
   outline: none;
   box-shadow: none;
@@ -97,6 +101,8 @@ body {
   border: none;
   outline: none;
   box-shadow: none;
+  backdrop-filter: blur(8px) saturate(1.04);
+  -webkit-backdrop-filter: blur(8px) saturate(1.04);
   -webkit-app-region: drag;
 }
 
@@ -254,6 +260,7 @@ body {
   flex: 1;
   display: flex;
   flex-direction: column;
+  background: var(--bg-secondary);
   overflow-y: auto;
   overflow-x: hidden;
   -webkit-app-region: no-drag;
@@ -464,7 +471,7 @@ body {
   width: calc(100% - 32px);
   min-width: 0;
   max-width: none;
-  background: var(--bg-panel);
+  background: var(--bg-panel-solid);
   border: 1px solid var(--border-default);
   border-radius: 6px;
   box-shadow: 0 10px 24px rgba(0, 0, 0, 0.45);
@@ -503,11 +510,11 @@ body {
 }
 
 .macro-workbook-option:hover {
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--bg-hover-solid);
 }
 
 .macro-workbook-option.selected {
-  background: rgba(255, 255, 255, 0.14);
+  background: var(--bg-selected-solid);
 }
 
 .macro-workbook-option-icon {
@@ -686,7 +693,7 @@ body {
 .module-action-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.45);
+  background: rgba(0, 0, 0, 0.35);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1095,7 +1102,7 @@ body {
   bottom: 56px;
   left: 16px;
   width: 200px;
-  background: var(--bg-panel);
+  background: var(--bg-panel-solid);
   border: 1px solid var(--border-default);
   border-radius: var(--border-radius-sm);
   box-shadow: 0 10px 40px rgba(0, 0, 0, 0.4);
@@ -1122,7 +1129,7 @@ body {
 }
 
 .settings-menu-item:hover {
-  background: var(--bg-hover);
+  background: var(--bg-hover-solid);
 }
 
 .settings-menu-item.danger {
@@ -1130,7 +1137,7 @@ body {
 }
 
 .settings-menu-item.danger:hover {
-  background: rgba(248, 113, 113, 0.1);
+  background: var(--bg-danger-hover-solid);
 }
 
 .settings-menu-icon {
@@ -1694,7 +1701,7 @@ body {
 .build-exit-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.55);
+  background: rgba(0, 0, 0, 0.4);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1833,7 +1840,16 @@ body {
 }
 
 .settings-menu {
-  animation: fadeIn 0.15s ease-out;
+  animation: settingsMenuSlideIn 0.15s ease-out;
+}
+
+@keyframes settingsMenuSlideIn {
+  from {
+    transform: translateY(4px);
+  }
+  to {
+    transform: translateY(0);
+  }
 }
 
 /* ============================================

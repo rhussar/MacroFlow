@@ -197,15 +197,41 @@ function registerHandlers() {
     }, pollMs);
   });
 
+  // Cooldown to prevent rapid re-attachment to a dying Excel process.
+  let lastNoExcelAt = 0;
+  const NO_EXCEL_COOLDOWN_MS = 3000;
+
   const withComRelease = async (operation) => {
     if (isAppQuitting) {
       logger.warn('IPC', 'Excel operation blocked because app is shutting down');
       return buildShutdownResult();
     }
 
+    // If we recently got a NO_EXCEL error, skip COM operations briefly
+    // to avoid re-attaching to a dying process and creating ghost instances.
+    const elapsed = Date.now() - lastNoExcelAt;
+    if (lastNoExcelAt > 0 && elapsed < NO_EXCEL_COOLDOWN_MS) {
+      return { success: false, message: 'NO_EXCEL: Waiting for Excel to restart.' };
+    }
+
     activeExcelOperations += 1;
     try {
-      return await Promise.resolve(operation());
+      const result = await Promise.resolve(operation());
+      // Successful operation clears the cooldown.
+      if (result && result.success !== false) {
+        lastNoExcelAt = 0;
+      }
+      return result;
+    } catch (err) {
+      if (String(err?.message || '').includes('NO_EXCEL')) {
+        lastNoExcelAt = Date.now();
+        // Force immediate GC to release any transient COM proxies from
+        // the failed operation before they can keep a ghost Excel alive.
+        if (typeof global.gc === 'function') {
+          try { global.gc(); } catch { /* best-effort */ }
+        }
+      }
+      throw err;
     } finally {
       activeExcelOperations = Math.max(0, activeExcelOperations - 1);
       try {
@@ -506,6 +532,46 @@ function registerHandlers() {
         remaining: drain.remaining,
         waitedMs: drain.waitedMs
       });
+
+      // Force V8 GC to release any lingering COM proxy wrappers.
+      // Double-GC: first pass finalizes weak refs, second collects survivors.
+      if (typeof global.gc === 'function') {
+        try {
+          global.gc();
+          await new Promise((resolve) => setTimeout(resolve, 100));
+          global.gc();
+          logger.info('Lifecycle', 'V8 GC forced before quit');
+        } catch (err) {
+          logger.warn('Lifecycle', 'V8 GC force failed', { error: err.message });
+        }
+      }
+
+      // If Excel is running but has no visible windows (ghost), tell it to quit.
+      try {
+        const pids = excel.getExcelProcessIds?.() || [];
+        if (pids.length > 0) {
+          const winax = require('winax');
+          let ghostExcel = null;
+          let windowsProxy = null;
+          try {
+            ghostExcel = new winax.Object('Excel.Application', { activate: true });
+            windowsProxy = ghostExcel.Windows;
+            const windowCount = windowsProxy ? Number(windowsProxy.Count) : 0;
+            if (windowCount < 1) {
+              logger.info('Lifecycle', 'ghost Excel detected at app:close, sending Quit');
+              try {
+                ghostExcel.DisplayAlerts = false;
+                ghostExcel.Quit();
+              } catch { /* best-effort */ }
+            }
+          } catch { /* Excel not reachable — nothing to clean up */ }
+          finally {
+            try { winax.release(windowsProxy); } catch { /* ignore */ }
+            try { winax.release(ghostExcel); } catch { /* ignore */ }
+          }
+        }
+      } catch { /* ignore ghost cleanup errors */ }
+
       app.quit();
     })();
   });

@@ -10,6 +10,7 @@ const excel = require('./excel-bridge');
 const logger = require('./logger');
 
 const execFileAsync = promisify(execFile);
+const WINDOW_STARTUP_BG = '#00000000';
 
 const WINDOW_BASELINE = {
   displayWidth: 1920,
@@ -37,6 +38,18 @@ if (process.platform === 'win32') {
   app.setAppUserModelId('com.macroflow.desktop');
 }
 
+// Expose V8 garbage collection in the main process so we can force COM proxy
+// cleanup on shutdown.  app.commandLine.appendSwitch only affects the renderer,
+// so we use v8.setFlagsFromString + vm.runInNewContext for the main process.
+try {
+  const v8 = require('node:v8');
+  v8.setFlagsFromString('--expose_gc');
+  const { runInNewContext } = require('node:vm');
+  global.gc = runInNewContext('gc');
+} catch {
+  // Best-effort; if this fails, shutdown GC is simply skipped.
+}
+
 // Determine if running in development mode
 const isDev = process.env.NODE_ENV === 'development';
 
@@ -51,6 +64,7 @@ let lastExcelDisplayId = null;
 let hasInitialContextPlacement = false;
 let helperForegroundEventTimer = null;
 let lastHelperForegroundState = { excelActive: null, excelHwnd: null };
+const GLASS_WINDOW_OPACITY = 1;
 
 function isSquirrelFirstRunLaunch() {
   if (process.platform !== 'win32') {
@@ -613,6 +627,47 @@ if (!gotLock) {
       logger.warn('[Excel] failed to set shutdown latch', { error: error.message });
     }
     stopExcelWindowMonitor();
+
+    // If Excel is running but has no visible windows (ghost), tell it to quit.
+    // This handles the case where a COM reference kept a closing Excel alive.
+    try {
+      const pids = excel.getExcelProcessIds?.() || [];
+      if (pids.length > 0) {
+        const winax = require('winax');
+        let ghostExcel = null;
+        let windowsProxy = null;
+        try {
+          ghostExcel = new winax.Object('Excel.Application', { activate: true });
+          windowsProxy = ghostExcel.Windows;
+          const windowCount = windowsProxy ? Number(windowsProxy.Count) : 0;
+          if (windowCount < 1) {
+            logger.info('[Lifecycle] ghost Excel detected at quit, sending Quit command');
+            try {
+              ghostExcel.DisplayAlerts = false;
+              ghostExcel.Quit();
+            } catch {
+              // Best-effort.
+            }
+          }
+        } catch {
+          // Excel not reachable via COM — nothing to clean up.
+        } finally {
+          try { winax.release(windowsProxy); } catch { /* ignore */ }
+          try { winax.release(ghostExcel); } catch { /* ignore */ }
+        }
+      }
+    } catch {
+      // Ignore ghost cleanup errors entirely.
+    }
+
+    // Force V8 GC to release any lingering COM proxy wrappers before exit.
+    if (typeof global.gc === 'function') {
+      try {
+        global.gc();
+      } catch {
+        // Best-effort.
+      }
+    }
   });
 }
 
@@ -651,6 +706,25 @@ function registerWindowHandlers() {
   });
 }
 
+function applyWindowGlassEffect(win) {
+  if (!win || win.isDestroyed()) {
+    return;
+  }
+
+  if (typeof win.setOpacity === 'function') {
+    win.setOpacity(GLASS_WINDOW_OPACITY);
+  }
+
+  // Apply subtle native background blur while keeping renderer styling in control.
+  if (process.platform === 'win32' && typeof win.setBackgroundMaterial === 'function') {
+    try {
+      win.setBackgroundMaterial('mica');
+    } catch (error) {
+      logger.warn('[Window] failed to apply native material', { error: error.message });
+    }
+  }
+}
+
 // Window creation function
 function createWindow() {
   const launchDisplay = resolveTargetDisplay(null, { preferExcel: true, preferCursor: true });
@@ -668,14 +742,16 @@ function createWindow() {
     minWidth: WINDOW_BASELINE.minWidth,
     minHeight: WINDOW_BASELINE.minHeight,
     frame: false,
-    transparent: false,
+    show: false,
+    transparent: true,
+    roundedCorners: true,
     hasShadow: false,
-    roundedCorners: false,
     alwaysOnTop: false,
     resizable: true,
     movable: true,
     skipTaskbar: false,
-    backgroundColor: '#1e1e1e',
+    // Keep native window background transparent; UI shell provides tint.
+    backgroundColor: WINDOW_STARTUP_BG,
     title: 'MacroFlow',
     icon: iconPath,
     webPreferences: {
@@ -686,6 +762,7 @@ function createWindow() {
   });
 
   mainWindow.__macroflowHelperManagedTopmost = false;
+  applyWindowGlassEffect(mainWindow);
   mainWindow.webContents.setZoomFactor(layout.scale);
   attachAdaptiveWindowListeners(mainWindow);
 
@@ -697,6 +774,15 @@ function createWindow() {
   } else {
     mainWindow.loadFile(path.join(__dirname, '../dist/index.html'));
   }
+
+  mainWindow.once('ready-to-show', () => {
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      return;
+    }
+    applyWindowGlassEffect(mainWindow);
+    mainWindow.show();
+    mainWindow.focus();
+  });
 
   mainWindow.webContents.on('did-finish-load', () => {
     applyAdaptiveLayout(mainWindow, 'did-finish-load', { preferExcel: true, preferCursor: true });

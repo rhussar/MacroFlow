@@ -121,23 +121,25 @@ function mapGenerateError(error, statusCode = 0) {
   };
 }
 
-function buildUserPrompt({ prompt, workbookName, moduleName, currentCode }) {
+function buildUserPrompt({ prompt, workbookName, moduleName, currentCode, includeCurrentCode }) {
   const workbookLabel = toSafeString(workbookName) || 'Unknown Workbook';
   const moduleLabel = toSafeString(moduleName) || 'Unknown Module';
   const trimmedPrompt = truncate(String(prompt || ''), MAX_PROMPT_CHARS);
-  const trimmedCurrentCode = truncate(String(currentCode || ''), MAX_CURRENT_CODE_CHARS);
-  const currentCodeBlock = trimmedCurrentCode ? trimmedCurrentCode : "'(no existing code provided)'";
-
-  return [
+  const lines = [
     `Workbook: ${workbookLabel}`,
     `Module: ${moduleLabel}`,
     '',
     'Task:',
-    trimmedPrompt,
-    '',
-    'Current module code:',
-    currentCodeBlock
-  ].join('\n');
+    trimmedPrompt
+  ];
+
+  if (includeCurrentCode) {
+    const trimmedCurrentCode = truncate(String(currentCode || ''), MAX_CURRENT_CODE_CHARS);
+    const currentCodeBlock = trimmedCurrentCode ? trimmedCurrentCode : "'(no existing code provided)'";
+    lines.push('', 'Current module code:', currentCodeBlock);
+  }
+
+  return lines.join('\n');
 }
 
 function createRequestId() {
@@ -178,7 +180,8 @@ async function generateVba(
     prompt = '',
     workbookName = '',
     moduleName = '',
-    currentCode = ''
+    currentCode = '',
+    includeCurrentCode = false
   } = {},
   dependencies = {}
 ) {
@@ -218,7 +221,8 @@ async function generateVba(
           prompt: promptText,
           workbookName,
           moduleName,
-          currentCode
+          currentCode,
+          includeCurrentCode: Boolean(includeCurrentCode)
         })
       }
     ]
@@ -228,7 +232,8 @@ async function generateVba(
     requestId,
     model: OPENAI_MODEL,
     promptChars: promptText.length,
-    currentCodeChars: String(currentCode || '').length
+    includeCurrentCode: Boolean(includeCurrentCode),
+    currentCodeChars: Boolean(includeCurrentCode) ? String(currentCode || '').length : 0
   });
 
   const requestImpl = typeof dependencies.requestImpl === 'function'

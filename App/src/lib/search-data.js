@@ -131,6 +131,14 @@ export function mapSearchError(message) {
   const rawMessage = toSafeString(message);
   const normalizedMessage = rawMessage.toUpperCase();
 
+  if (normalizedMessage.includes('NO_VISIBLE_WINDOWS')) {
+    return {
+      status: 'excel_background',
+      code: 'NO_VISIBLE_WINDOWS',
+      message: 'Excel is running without a visible workbook window. MacroFlow will retry automatically.'
+    };
+  }
+
   if (normalizedMessage.includes('NO_EXCEL')) {
     return {
       status: 'no_excel',

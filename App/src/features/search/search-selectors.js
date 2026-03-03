@@ -19,6 +19,10 @@ const SEARCH_STATUS_COPY = {
     title: 'No active workbook',
     message: 'Open or create a workbook. MacroFlow will retry automatically.'
   },
+  excel_background: {
+    title: 'Excel background process detected',
+    message: 'Excel is running without a visible workbook window. MacroFlow will retry automatically.'
+  },
   multi_instance: {
     title: 'Multiple Excel instances detected',
     message: 'Click on your Excel workbook, then come back. MacroFlow will reconnect automatically.'

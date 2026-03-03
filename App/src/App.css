@@ -154,6 +154,7 @@ body {
 .search-input-wrapper {
   flex: 1;
   position: relative;
+  -webkit-app-region: no-drag;
 }
 
 .search-input {
@@ -981,7 +982,7 @@ body {
   justify-content: space-between;
   background: var(--bg-secondary);
   border-top: 1px solid var(--border-default);
-  -webkit-app-region: no-drag;
+  -webkit-app-region: drag;
 }
 
 .footer-left {
@@ -1001,6 +1002,7 @@ body {
   height: 20px;
   cursor: pointer;
   transition: transform 0.15s;
+  -webkit-app-region: no-drag;
 }
 
 .logo:hover {
@@ -1596,6 +1598,19 @@ body {
   color: var(--text-primary);
   padding-bottom: 12px;
   border-bottom: 1px solid var(--border-default);
+}
+
+.build-ai-context-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.build-ai-context-toggle input[type='checkbox'] {
+  width: 14px;
+  height: 14px;
 }
 
 .status-steps {

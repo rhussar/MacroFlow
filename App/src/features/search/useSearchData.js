@@ -12,30 +12,71 @@ import {
   SEARCH_HELPER_EVENT_COOLDOWN_MS,
   SEARCH_HELPER_EVENT_DEBOUNCE_MS,
   SEARCH_FULL_REFRESH_STALE_MS,
-  SEARCH_PERIODIC_REFRESH_MS
+  SEARCH_PERIODIC_REFRESH_MS,
+  SEARCH_PAUSED_RECONNECT_TICK_MS,
+  SEARCH_PAUSED_RECONNECT_INITIAL_DELAY_MS,
+  SEARCH_PAUSED_RECONNECT_MULTIPLIER,
+  SEARCH_PAUSED_RECONNECT_MAX_DELAY_MS
 } from './search-constants.js';
 
 export function isTerminalConnectionStatus(status) {
-  return status === 'no_excel' || status === 'no_workbook';
+  return status === 'no_excel' || status === 'no_workbook' || status === 'excel_background';
+}
+
+export function inferPauseReasonCodeFromResult(result, fallback = 'NO_EXCEL') {
+  const normalizedFallback = String(fallback || '').trim().toUpperCase() || 'NO_EXCEL';
+  const reasonCandidate = String(result?.reasonCode || result?.code || '').trim().toUpperCase();
+  if (reasonCandidate === 'NO_EXCEL' || reasonCandidate === 'NO_WORKBOOK' || reasonCandidate === 'NO_VISIBLE_WINDOWS') {
+    return reasonCandidate;
+  }
+
+  const message = String(result?.message || result?.error || '').trim().toUpperCase();
+  if (message.includes('NO_VISIBLE_WINDOWS')) {
+    return 'NO_VISIBLE_WINDOWS';
+  }
+  if (message.includes('NO_WORKBOOK')) {
+    return 'NO_WORKBOOK';
+  }
+  if (message.includes('NO_EXCEL')) {
+    return 'NO_EXCEL';
+  }
+  return normalizedFallback;
+}
+
+export function getNextPausedReconnectDelayMs({
+  currentDelayMs,
+  initialDelayMs = SEARCH_PAUSED_RECONNECT_INITIAL_DELAY_MS,
+  multiplier = SEARCH_PAUSED_RECONNECT_MULTIPLIER,
+  maxDelayMs = SEARCH_PAUSED_RECONNECT_MAX_DELAY_MS
+}) {
+  const normalizedInitial = Number(initialDelayMs);
+  const normalizedMax = Number(maxDelayMs);
+  const normalizedMultiplier = Number(multiplier);
+  const normalizedCurrent = Number(currentDelayMs);
+
+  const baseDelay = Number.isFinite(normalizedCurrent) && normalizedCurrent > 0
+    ? normalizedCurrent
+    : normalizedInitial;
+  const nextDelay = Math.max(
+    normalizedInitial,
+    Math.round(baseDelay * normalizedMultiplier)
+  );
+  return Math.min(nextDelay, normalizedMax);
 }
 
 export function shouldAttemptPausedReconnect({
   isPaused,
-  trigger,
   now,
-  lastResumeAttemptAt,
+  nextAttemptAt = 0,
   inFlight,
   cooldownMs = SEARCH_FOCUS_REFRESH_COOLDOWN_MS
 }) {
+  void cooldownMs;
   if (!isPaused || inFlight) {
     return false;
   }
 
-  if (trigger !== 'focus' && trigger !== 'visibility') {
-    return false;
-  }
-
-  return now - lastResumeAttemptAt >= cooldownMs;
+  return now >= Number(nextAttemptAt || 0);
 }
 
 export function shouldSkipForegroundRefresh({
@@ -71,6 +112,8 @@ export function useSearchData({ mode, runState, macroRunInFlightRef, shortcutSav
   const pollingPausedReasonRef = useRef('');
   const resumeAttemptInFlightRef = useRef(false);
   const lastResumeAttemptAtRef = useRef(0);
+  const pausedReconnectDelayMsRef = useRef(SEARCH_PAUSED_RECONNECT_INITIAL_DELAY_MS);
+  const pausedReconnectNextAttemptAtRef = useRef(0);
   const modeEntryAtRef = useRef(0);
   const lastForegroundRefreshAtRef = useRef(0);
   const helperRefreshDebounceTimerRef = useRef(null);
@@ -79,6 +122,38 @@ export function useSearchData({ mode, runState, macroRunInFlightRef, shortcutSav
   const lastFullSearchRefreshAt = useRef(0);
   const lastWorkbookSignature = useRef('');
   const resolveInstanceAttempted = useRef(false);
+
+  const resetPausedReconnectBackoff = () => {
+    pausedReconnectDelayMsRef.current = SEARCH_PAUSED_RECONNECT_INITIAL_DELAY_MS;
+    pausedReconnectNextAttemptAtRef.current = 0;
+  };
+
+  const schedulePausedReconnectBackoff = (now = Date.now()) => {
+    const nextDelayMs = getNextPausedReconnectDelayMs({
+      currentDelayMs: pausedReconnectDelayMsRef.current
+    });
+    pausedReconnectDelayMsRef.current = nextDelayMs;
+    pausedReconnectNextAttemptAtRef.current = now + nextDelayMs;
+  };
+
+  const setPausedState = (reasonCode = 'NO_EXCEL') => {
+    const normalizedReason = String(reasonCode || '').trim().toUpperCase() || 'NO_EXCEL';
+    const wasPaused = pollingPausedRef.current;
+    const previousReason = String(pollingPausedReasonRef.current || '').trim().toUpperCase();
+
+    pollingPausedRef.current = true;
+    pollingPausedReasonRef.current = normalizedReason;
+    if (!wasPaused || previousReason !== normalizedReason) {
+      pausedReconnectDelayMsRef.current = SEARCH_PAUSED_RECONNECT_INITIAL_DELAY_MS;
+      pausedReconnectNextAttemptAtRef.current = Date.now() + SEARCH_PAUSED_RECONNECT_INITIAL_DELAY_MS;
+    }
+  };
+
+  const clearPausedState = () => {
+    pollingPausedRef.current = false;
+    pollingPausedReasonRef.current = '';
+    resetPausedReconnectBackoff();
+  };
 
   const loadSearchData = useCallback(async ({ silent = false } = {}) => {
     if (searchLoadInFlight.current) {
@@ -164,9 +239,8 @@ export function useSearchData({ mode, runState, macroRunInFlightRef, shortcutSav
         if (requestId !== searchRequestSequence.current) {
           return;
         }
-        if (isTerminalConnectionStatus(mappedError.status) && !pollingPausedRef.current) {
-          pollingPausedRef.current = true;
-          pollingPausedReasonRef.current = String(mappedError.code || '').toUpperCase() || 'NO_EXCEL';
+        if (isTerminalConnectionStatus(mappedError.status)) {
+          setPausedState(mappedError.code);
         }
 
         lastWorkbookSignature.current = '';
@@ -239,9 +313,8 @@ export function useSearchData({ mode, runState, macroRunInFlightRef, shortcutSav
         }
 
         if (failedResults.length > 0) {
-          if (isTerminalConnectionStatus(mappedError.status) && !pollingPausedRef.current) {
-            pollingPausedRef.current = true;
-            pollingPausedReasonRef.current = String(mappedError.code || '').toUpperCase() || 'NO_EXCEL';
+          if (isTerminalConnectionStatus(mappedError.status)) {
+            setPausedState(mappedError.code);
           }
 
           lastWorkbookSignature.current = '';
@@ -270,8 +343,7 @@ export function useSearchData({ mode, runState, macroRunInFlightRef, shortcutSav
       lastWorkbookSignature.current = `${workbook?.path || ''}::${workbook?.name || ''}`;
       lastFullSearchRefreshAt.current = Date.now();
       resolveInstanceAttempted.current = false;
-      pollingPausedRef.current = false;
-      pollingPausedReasonRef.current = '';
+      clearPausedState();
 
       setSearchData({
         status: 'ready',
@@ -286,9 +358,8 @@ export function useSearchData({ mode, runState, macroRunInFlightRef, shortcutSav
         return;
       }
       const mappedError = mapSearchError(error?.message);
-      if (isTerminalConnectionStatus(mappedError.status) && !pollingPausedRef.current) {
-        pollingPausedRef.current = true;
-        pollingPausedReasonRef.current = String(mappedError.code || '').toUpperCase() || 'NO_EXCEL';
+      if (isTerminalConnectionStatus(mappedError.status)) {
+        setPausedState(mappedError.code);
       }
       lastWorkbookSignature.current = '';
       setSearchData({
@@ -311,6 +382,9 @@ export function useSearchData({ mode, runState, macroRunInFlightRef, shortcutSav
     if ((mode !== 'search' && mode !== 'explorer') || runState === 'running' || Boolean(macroRunInFlightRef?.current) || Boolean(shortcutSaveInFlightRef?.current)) {
       return;
     }
+    if (trigger === 'paused-loop' && !pollingPausedRef.current) {
+      return;
+    }
 
     const now = Date.now();
     if (shouldSkipForegroundRefresh({
@@ -328,9 +402,8 @@ export function useSearchData({ mode, runState, macroRunInFlightRef, shortcutSav
     if (pollingPausedRef.current) {
       if (!shouldAttemptPausedReconnect({
         isPaused: pollingPausedRef.current,
-        trigger,
         now,
-        lastResumeAttemptAt: lastResumeAttemptAtRef.current,
+        nextAttemptAt: pausedReconnectNextAttemptAtRef.current,
         inFlight: resumeAttemptInFlightRef.current
       })) {
         return;
@@ -341,10 +414,15 @@ export function useSearchData({ mode, runState, macroRunInFlightRef, shortcutSav
       try {
         const reconnect = await window.excel?.reconnect?.();
         if (reconnect?.success) {
-          pollingPausedRef.current = false;
-          pollingPausedReasonRef.current = '';
+          clearPausedState();
           await loadSearchData({ silent: true });
+        } else {
+          setPausedState(inferPauseReasonCodeFromResult(reconnect, 'NO_EXCEL'));
+          schedulePausedReconnectBackoff(Date.now());
         }
+      } catch (error) {
+        setPausedState(inferPauseReasonCodeFromResult(error, 'NO_EXCEL'));
+        schedulePausedReconnectBackoff(Date.now());
       } finally {
         resumeAttemptInFlightRef.current = false;
       }
@@ -463,11 +541,15 @@ export function useSearchData({ mode, runState, macroRunInFlightRef, shortcutSav
     const periodicId = setInterval(() => {
       refreshSearchOnForeground({ trigger: 'interval' });
     }, SEARCH_PERIODIC_REFRESH_MS);
+    const pausedReconnectId = setInterval(() => {
+      refreshSearchOnForeground({ trigger: 'paused-loop' });
+    }, SEARCH_PAUSED_RECONNECT_TICK_MS);
 
     return () => {
       window.removeEventListener('focus', handleFocus);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       clearInterval(periodicId);
+      clearInterval(pausedReconnectId);
       if (helperRefreshDebounceTimerRef.current) {
         clearTimeout(helperRefreshDebounceTimerRef.current);
         helperRefreshDebounceTimerRef.current = null;

@@ -26,7 +26,11 @@ function loadExcelBridge({
   const winaxStub = {
     Object: function ObjectFactory(id, options) {
       objectCalls += 1;
-      return objectFactory({ id, options, call: objectCalls });
+      const app = objectFactory({ id, options, call: objectCalls });
+      if (app && typeof app === 'object' && !Object.prototype.hasOwnProperty.call(app, 'Windows')) {
+        app.Windows = { Count: 1 };
+      }
+      return app;
     },
     release: (...objects) => {
       releaseCalls.push(objects);
@@ -129,6 +133,208 @@ test('NO_EXCEL preflight occurs before COM attach', () => {
   assert.equal(result.success, false);
   assert.match(result.message, /NO_EXCEL/);
   assert.equal(getObjectCalls(), 0);
+});
+
+test('windowless Excel reports NO_VISIBLE_WINDOWS and grace-gates quit attempts', () => {
+  const originalNow = Date.now;
+  let fakeNow = 10_000;
+  Date.now = () => fakeNow;
+
+  const processIds = [2333];
+  let quitCalls = 0;
+  const excelApp = {
+    Windows: { Count: 0 },
+    Quit: () => {
+      quitCalls += 1;
+    }
+  };
+
+  try {
+    const { bridge } = loadExcelBridge({
+      processIds,
+      objectFactory: () => excelApp
+    });
+
+    const first = bridge.getWorkbookInfo();
+    assert.equal(first.success, false);
+    assert.match(first.message, /NO_VISIBLE_WINDOWS/);
+    assert.equal(quitCalls, 0);
+
+    fakeNow += 2000;
+    const second = bridge.getWorkbookInfo();
+    assert.equal(second.success, false);
+    assert.match(second.message, /NO_VISIBLE_WINDOWS/);
+    assert.equal(quitCalls, 0);
+
+    fakeNow += 600;
+    const third = bridge.getWorkbookInfo();
+    assert.equal(third.success, false);
+    assert.match(third.message, /NO_VISIBLE_WINDOWS/);
+    assert.equal(quitCalls, 1);
+
+    fakeNow += 1000;
+    const fourth = bridge.getWorkbookInfo();
+    assert.equal(fourth.success, false);
+    assert.match(fourth.message, /NO_VISIBLE_WINDOWS/);
+    assert.equal(quitCalls, 1);
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test('windowless detection resets after successful attach', () => {
+  const originalNow = Date.now;
+  let fakeNow = 20_000;
+  Date.now = () => fakeNow;
+
+  const processIds = [2444];
+  let quitCalls = 0;
+  const workbook = {
+    Name: 'Book1.xlsx',
+    FullName: 'C:\\Book1.xlsx',
+    ActiveSheet: { Name: 'Sheet1' },
+    Sheets: {
+      Count: 1,
+      Item: () => ({ Name: 'Sheet1' })
+    }
+  };
+  const windowsState = { count: 0 };
+  const excelApp = {
+    get Windows() {
+      return { Count: windowsState.count };
+    },
+    Quit: () => {
+      quitCalls += 1;
+    },
+    ActiveWorkbook: workbook
+  };
+
+  try {
+    const { bridge } = loadExcelBridge({
+      processIds,
+      objectFactory: () => excelApp
+    });
+
+    const first = bridge.getWorkbookInfo();
+    assert.equal(first.success, false);
+    assert.match(first.message, /NO_VISIBLE_WINDOWS/);
+    assert.equal(quitCalls, 0);
+
+    fakeNow += 2600;
+    const second = bridge.getWorkbookInfo();
+    assert.equal(second.success, false);
+    assert.match(second.message, /NO_VISIBLE_WINDOWS/);
+    assert.equal(quitCalls, 1);
+
+    windowsState.count = 1;
+    fakeNow += 200;
+    const success = bridge.getWorkbookInfo();
+    assert.equal(success.success, true);
+
+    windowsState.count = 0;
+    fakeNow += 200;
+    const afterReset = bridge.getWorkbookInfo();
+    assert.equal(afterReset.success, false);
+    assert.match(afterReset.message, /NO_VISIBLE_WINDOWS/);
+    assert.equal(quitCalls, 1);
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test('windowless detection resets when Excel process disappears', () => {
+  const originalNow = Date.now;
+  let fakeNow = 30_000;
+  Date.now = () => fakeNow;
+
+  const processIds = [2555];
+  let quitCalls = 0;
+  const excelApp = {
+    Windows: { Count: 0 },
+    Quit: () => {
+      quitCalls += 1;
+    }
+  };
+
+  try {
+    const { bridge } = loadExcelBridge({
+      processIds,
+      objectFactory: () => excelApp
+    });
+
+    const first = bridge.getWorkbookInfo();
+    assert.equal(first.success, false);
+    assert.match(first.message, /NO_VISIBLE_WINDOWS/);
+
+    fakeNow += 2600;
+    const second = bridge.getWorkbookInfo();
+    assert.equal(second.success, false);
+    assert.match(second.message, /NO_VISIBLE_WINDOWS/);
+    assert.equal(quitCalls, 1);
+
+    processIds.length = 0;
+    fakeNow += 200;
+    const noProcess = bridge.getWorkbookInfo();
+    assert.equal(noProcess.success, false);
+    assert.match(noProcess.message, /NO_EXCEL/);
+
+    processIds.push(2555);
+    fakeNow += 200;
+    const afterNoProcessReset = bridge.getWorkbookInfo();
+    assert.equal(afterNoProcessReset.success, false);
+    assert.match(afterNoProcessReset.message, /NO_VISIBLE_WINDOWS/);
+    assert.equal(quitCalls, 1);
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test('windowless detection does not carry stale grace window across process-id cycles', () => {
+  const originalNow = Date.now;
+  let fakeNow = 40_000;
+  Date.now = () => fakeNow;
+
+  const processIds = [2666];
+  let quitCalls = 0;
+  const excelApp = {
+    Windows: { Count: 0 },
+    Quit: () => {
+      quitCalls += 1;
+    }
+  };
+
+  try {
+    const { bridge } = loadExcelBridge({
+      processIds,
+      objectFactory: () => excelApp
+    });
+
+    const first = bridge.getWorkbookInfo();
+    assert.equal(first.success, false);
+    assert.match(first.message, /NO_VISIBLE_WINDOWS/);
+    assert.equal(quitCalls, 0);
+
+    // Simulate stale elapsed time with a different Excel process cycle.
+    fakeNow += 5000;
+    processIds[0] = 2777;
+
+    const afterPidChange = bridge.getWorkbookInfo();
+    assert.equal(afterPidChange.success, false);
+    assert.match(afterPidChange.message, /NO_VISIBLE_WINDOWS/);
+    assert.equal(
+      quitCalls,
+      0,
+      'new process-id cycle should not inherit grace elapsed from previous cycle'
+    );
+
+    fakeNow += 2600;
+    const afterGrace = bridge.getWorkbookInfo();
+    assert.equal(afterGrace.success, false);
+    assert.match(afterGrace.message, /NO_VISIBLE_WINDOWS/);
+    assert.equal(quitCalls, 1);
+  } finally {
+    Date.now = originalNow;
+  }
 });
 
 test('getOpenWorkbooks uses fresh COM attach for each call (no persistent cache)', () => {

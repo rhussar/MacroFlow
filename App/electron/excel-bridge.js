@@ -37,6 +37,9 @@ const PERSONAL_WORKBOOK_NAME = 'PERSONAL.XLSB';
 const XLSB_FILE_FORMAT = 50;
 const VBA_MODULE_NAME_PATTERN = /^[A-Za-z][A-Za-z0-9_]*$/;
 const MACROFLOW_ADDIN_WORKBOOK_NAME = 'MacroFlow.xlam';
+const WINDOWLESS_GRACE_MS = 2500;
+const WINDOWLESS_QUIT_COOLDOWN_MS = 10000;
+const WINDOWLESS_MAX_QUIT_ATTEMPTS = 1;
 
 class ExcelBridge {
   constructor() {
@@ -46,6 +49,10 @@ class ExcelBridge {
     this._multiInstanceCacheResult = null;
     this._isShuttingDown = false;
     this._attachAttemptSeq = 0;
+    this._windowlessFirstDetectedAt = 0;
+    this._windowlessLastQuitAttemptAt = 0;
+    this._windowlessQuitAttempts = 0;
+    this._windowlessProcessSignature = '';
   }
 
   setFocusHelper(client) {
@@ -68,6 +75,28 @@ class ExcelBridge {
 
   isShuttingDown() {
     return this._isShuttingDown;
+  }
+
+  _resetWindowlessLifecycle(reason = '') {
+    const hadWindowlessState =
+      this._windowlessFirstDetectedAt > 0 ||
+      this._windowlessLastQuitAttemptAt > 0 ||
+      this._windowlessQuitAttempts > 0;
+
+    if (hadWindowlessState) {
+      logger.info('[ExcelBridge] windowless_cleared', {
+        reason: String(reason || '').trim() || 'reset',
+        firstDetectedAt: this._windowlessFirstDetectedAt,
+        lastQuitAttemptAt: this._windowlessLastQuitAttemptAt,
+        quitAttempts: this._windowlessQuitAttempts,
+        processSignature: this._windowlessProcessSignature
+      });
+    }
+
+    this._windowlessFirstDetectedAt = 0;
+    this._windowlessLastQuitAttemptAt = 0;
+    this._windowlessQuitAttempts = 0;
+    this._windowlessProcessSignature = '';
   }
 
   _safeRelease(...objects) {
@@ -105,6 +134,18 @@ class ExcelBridge {
     return this._listExcelProcessIds();
   }
 
+  _buildProcessSignature(processIds = []) {
+    if (!Array.isArray(processIds) || processIds.length < 1) {
+      return '';
+    }
+
+    return processIds
+      .map((value) => Number(value))
+      .filter((value) => Number.isFinite(value))
+      .sort((a, b) => a - b)
+      .join(',');
+  }
+
   // ===========================================================================
   // CONNECTION
   // ===========================================================================
@@ -132,9 +173,11 @@ class ExcelBridge {
 
     const processIds = this._listExcelProcessIds();
     if (processIds.length === 0) {
+      this._resetWindowlessLifecycle('no_processes_preflight');
       logger.debug('[ExcelBridge] COM attach preflight found no Excel processes', { attempt });
       throw new Error('NO_EXCEL: Excel is not running. Please open Excel first.');
     }
+    const processSignature = this._buildProcessSignature(processIds);
 
     let excel = null;
     try {
@@ -151,15 +194,59 @@ class ExcelBridge {
         windowsProxy = excel.Windows;
         const windowCount = windowsProxy ? Number(windowsProxy.Count) : 0;
         if (windowCount < 1) {
-          // Actively tell the ghost Excel to quit. Just releasing our COM
-          // reference is not always enough — Excel may have entered a zombie
-          // state (e.g. xlam loaded from XLSTART) that prevents clean exit.
-          try {
-            excel.DisplayAlerts = false;
-            excel.Quit();
-          } catch {
-            // Best-effort; the instance may already be partially torn down.
+          const nowMs = Date.now();
+          if (
+            this._windowlessProcessSignature &&
+            this._windowlessProcessSignature !== processSignature
+          ) {
+            logger.info('[ExcelBridge] windowless_cycle_changed', {
+              attempt,
+              previousProcessSignature: this._windowlessProcessSignature,
+              processSignature
+            });
+            this._windowlessFirstDetectedAt = 0;
+            this._windowlessLastQuitAttemptAt = 0;
+            this._windowlessQuitAttempts = 0;
           }
+
+          if (this._windowlessFirstDetectedAt < 1) {
+            this._windowlessProcessSignature = processSignature;
+            this._windowlessFirstDetectedAt = nowMs;
+            logger.info('[ExcelBridge] windowless_detected', {
+              attempt,
+              processCount: processIds.length,
+              processSignature
+            });
+          }
+
+          const elapsedSinceFirstMs = nowMs - this._windowlessFirstDetectedAt;
+          const elapsedSinceLastQuitMs = this._windowlessLastQuitAttemptAt > 0
+            ? nowMs - this._windowlessLastQuitAttemptAt
+            : Number.POSITIVE_INFINITY;
+          const shouldAttemptQuit =
+            elapsedSinceFirstMs >= WINDOWLESS_GRACE_MS &&
+            this._windowlessQuitAttempts < WINDOWLESS_MAX_QUIT_ATTEMPTS &&
+            elapsedSinceLastQuitMs >= WINDOWLESS_QUIT_COOLDOWN_MS;
+
+          // Best-effort graceful cleanup only after grace period.
+          if (shouldAttemptQuit) {
+            const quitAttemptNumber = this._windowlessQuitAttempts + 1;
+            logger.info('[ExcelBridge] windowless_quit_attempted', {
+              attempt,
+              quitAttemptNumber,
+              processCount: processIds.length,
+              elapsedSinceFirstMs
+            });
+            this._windowlessLastQuitAttemptAt = nowMs;
+            this._windowlessQuitAttempts = quitAttemptNumber;
+            try {
+              excel.DisplayAlerts = false;
+              excel.Quit();
+            } catch {
+              // Best-effort; the instance may already be partially torn down.
+            }
+          }
+
           this._safeRelease(windowsProxy, excel);
           windowsProxy = null;
           excel = null;
@@ -169,7 +256,7 @@ class ExcelBridge {
             try { global.gc(); } catch { /* best-effort */ }
           }
           throw new Error(
-            'NO_EXCEL: Excel process found but has no open windows. ' +
+            'NO_VISIBLE_WINDOWS: Excel process found but has no visible workbook windows. ' +
             'It may be shutting down. Please reopen Excel.'
           );
         }
@@ -190,6 +277,7 @@ class ExcelBridge {
           processIdsAfterAttach: afterAttachProcessIds
         });
       }
+      this._resetWindowlessLifecycle('attach_succeeded');
       return excel;
     } catch (error) {
       // Ensure the COM reference is released if any validation step threw.
@@ -204,9 +292,11 @@ class ExcelBridge {
         error: String(error?.message || error || 'Unknown COM attach error')
       });
       if (remainingProcessIds.length === 0) {
+        this._resetWindowlessLifecycle('no_processes_after_failure');
         throw new Error('NO_EXCEL: Excel is not running. Please open Excel first.');
       }
-      if (String(error?.message || '').includes('NO_EXCEL')) {
+      const errorMessage = String(error?.message || '');
+      if (errorMessage.includes('NO_EXCEL') || errorMessage.includes('NO_VISIBLE_WINDOWS')) {
         throw error;
       }
       if (remainingProcessIds.length > 1) {

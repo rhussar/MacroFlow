@@ -2,66 +2,122 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   isTerminalConnectionStatus,
+  inferPauseReasonCodeFromResult,
+  getNextPausedReconnectDelayMs,
   shouldSkipForegroundRefresh,
   shouldAttemptPausedReconnect
 } from './useSearchData.js';
 import {
   SEARCH_FOCUS_REFRESH_COOLDOWN_MS,
-  SEARCH_MODE_ENTRY_QUIET_MS
+  SEARCH_MODE_ENTRY_QUIET_MS,
+  SEARCH_PAUSED_RECONNECT_INITIAL_DELAY_MS,
+  SEARCH_PAUSED_RECONNECT_MAX_DELAY_MS
 } from './search-constants.js';
 
-test('isTerminalConnectionStatus identifies no_excel and no_workbook only', () => {
+test('isTerminalConnectionStatus identifies paused terminal states only', () => {
   assert.equal(isTerminalConnectionStatus('no_excel'), true);
   assert.equal(isTerminalConnectionStatus('no_workbook'), true);
+  assert.equal(isTerminalConnectionStatus('excel_background'), true);
   assert.equal(isTerminalConnectionStatus('ready'), false);
   assert.equal(isTerminalConnectionStatus('multi_instance'), false);
 });
 
-test('shouldAttemptPausedReconnect ignores interval trigger while paused', () => {
+test('inferPauseReasonCodeFromResult prefers reasonCode and parses message fallback', () => {
+  assert.equal(
+    inferPauseReasonCodeFromResult({ reasonCode: 'NO_VISIBLE_WINDOWS' }, 'NO_EXCEL'),
+    'NO_VISIBLE_WINDOWS'
+  );
+  assert.equal(
+    inferPauseReasonCodeFromResult({ message: 'NO_WORKBOOK: workbook not available' }, 'NO_EXCEL'),
+    'NO_WORKBOOK'
+  );
+  assert.equal(
+    inferPauseReasonCodeFromResult({ message: 'NO_EXCEL: not running' }, 'NO_VISIBLE_WINDOWS'),
+    'NO_EXCEL'
+  );
+  assert.equal(
+    inferPauseReasonCodeFromResult({ message: 'unknown failure' }, 'NO_EXCEL'),
+    'NO_EXCEL'
+  );
+});
+
+test('shouldAttemptPausedReconnect waits until next attempt timestamp', () => {
   const now = 10_000;
   const result = shouldAttemptPausedReconnect({
     isPaused: true,
-    trigger: 'interval',
     now,
-    lastResumeAttemptAt: now - SEARCH_FOCUS_REFRESH_COOLDOWN_MS - 1,
+    nextAttemptAt: now + 1,
     inFlight: false
   });
 
   assert.equal(result, false);
 });
 
-test('shouldAttemptPausedReconnect allows focus-triggered reconnect after cooldown', () => {
+test('shouldAttemptPausedReconnect allows reconnect when delay has elapsed', () => {
   const now = 10_000;
   const result = shouldAttemptPausedReconnect({
     isPaused: true,
-    trigger: 'focus',
     now,
-    lastResumeAttemptAt: now - SEARCH_FOCUS_REFRESH_COOLDOWN_MS,
+    nextAttemptAt: now,
     inFlight: false
   });
 
   assert.equal(result, true);
 });
 
-test('shouldAttemptPausedReconnect blocks reconnect storms via inFlight and cooldown checks', () => {
+test('shouldAttemptPausedReconnect blocks reconnect storms via inFlight and paused checks', () => {
   const now = 10_000;
   const inFlightBlocked = shouldAttemptPausedReconnect({
     isPaused: true,
-    trigger: 'visibility',
     now,
-    lastResumeAttemptAt: now - SEARCH_FOCUS_REFRESH_COOLDOWN_MS - 1,
+    nextAttemptAt: now - 1,
     inFlight: true
   });
   assert.equal(inFlightBlocked, false);
 
-  const cooldownBlocked = shouldAttemptPausedReconnect({
-    isPaused: true,
-    trigger: 'focus',
+  const notPaused = shouldAttemptPausedReconnect({
+    isPaused: false,
     now,
-    lastResumeAttemptAt: now - SEARCH_FOCUS_REFRESH_COOLDOWN_MS + 1,
+    nextAttemptAt: now - 1,
     inFlight: false
   });
-  assert.equal(cooldownBlocked, false);
+  assert.equal(notPaused, false);
+});
+
+test('getNextPausedReconnectDelayMs applies multiplier and max cap', () => {
+  const first = getNextPausedReconnectDelayMs({
+    currentDelayMs: SEARCH_PAUSED_RECONNECT_INITIAL_DELAY_MS
+  });
+  assert.equal(first, 1440);
+
+  const second = getNextPausedReconnectDelayMs({
+    currentDelayMs: first
+  });
+  assert.equal(second, 2592);
+
+  const capped = getNextPausedReconnectDelayMs({
+    currentDelayMs: SEARCH_PAUSED_RECONNECT_MAX_DELAY_MS
+  });
+  assert.equal(capped, SEARCH_PAUSED_RECONNECT_MAX_DELAY_MS);
+});
+
+test('getNextPausedReconnectDelayMs uses initial delay fallback for invalid current values', () => {
+  const fallback = getNextPausedReconnectDelayMs({
+    currentDelayMs: 0
+  });
+  assert.equal(fallback >= SEARCH_PAUSED_RECONNECT_INITIAL_DELAY_MS, true);
+});
+
+test('shouldAttemptPausedReconnect ignores cooldown arg and relies on nextAttemptAt', () => {
+  const now = 10_000;
+  const allowed = shouldAttemptPausedReconnect({
+    isPaused: true,
+    now,
+    nextAttemptAt: now - 1,
+    inFlight: false,
+    cooldownMs: SEARCH_FOCUS_REFRESH_COOLDOWN_MS + 1000
+  });
+  assert.equal(allowed, true);
 });
 
 test('shouldSkipForegroundRefresh blocks focus/visibility/helper during mode-entry quiet window', () => {

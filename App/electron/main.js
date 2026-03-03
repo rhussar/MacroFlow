@@ -628,38 +628,6 @@ if (!gotLock) {
     }
     stopExcelWindowMonitor();
 
-    // If Excel is running but has no visible windows (ghost), tell it to quit.
-    // This handles the case where a COM reference kept a closing Excel alive.
-    try {
-      const pids = excel.getExcelProcessIds?.() || [];
-      if (pids.length > 0) {
-        const winax = require('winax');
-        let ghostExcel = null;
-        let windowsProxy = null;
-        try {
-          ghostExcel = new winax.Object('Excel.Application', { activate: true });
-          windowsProxy = ghostExcel.Windows;
-          const windowCount = windowsProxy ? Number(windowsProxy.Count) : 0;
-          if (windowCount < 1) {
-            logger.info('[Lifecycle] ghost Excel detected at quit, sending Quit command');
-            try {
-              ghostExcel.DisplayAlerts = false;
-              ghostExcel.Quit();
-            } catch {
-              // Best-effort.
-            }
-          }
-        } catch {
-          // Excel not reachable via COM — nothing to clean up.
-        } finally {
-          try { winax.release(windowsProxy); } catch { /* ignore */ }
-          try { winax.release(ghostExcel); } catch { /* ignore */ }
-        }
-      }
-    } catch {
-      // Ignore ghost cleanup errors entirely.
-    }
-
     // Force V8 GC to release any lingering COM proxy wrappers before exit.
     if (typeof global.gc === 'function') {
       try {
@@ -703,6 +671,15 @@ function registerWindowHandlers() {
       return { success: true, value: win.isAlwaysOnTop() };
     }
     return { success: false, message: 'Window not available' };
+  });
+
+  // Move window by relative delta (used for JS-driven title bar dragging)
+  ipcMain.on('window:moveBy', (event, dx, dy) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (win && !win.isDestroyed()) {
+      const [x, y] = win.getPosition();
+      win.setPosition(x + dx, y + dy);
+    }
   });
 }
 
@@ -757,7 +734,9 @@ function createWindow() {
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
-      sandbox: false
+      sandbox: true,
+      nodeIntegration: false,
+      webSecurity: true
     }
   });
 

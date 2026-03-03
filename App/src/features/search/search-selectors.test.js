@@ -144,6 +144,14 @@ test('getSearchStatusView returns loading state metadata', () => {
   assert.equal(statusView.isLoading, true);
 });
 
+test('getSearchStatusView returns excel background copy', () => {
+  const statusView = getSearchStatusView({ status: 'excel_background' });
+  assert.equal(statusView.status, 'excel_background');
+  assert.equal(statusView.title, 'Excel background process detected');
+  assert.match(statusView.message, /visible workbook window/i);
+  assert.equal(statusView.isLoading, false);
+});
+
 test('getSearchStatusView uses backend error override when present', () => {
   const statusView = getSearchStatusView({
     status: 'error',

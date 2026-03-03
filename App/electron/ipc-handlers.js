@@ -17,6 +17,13 @@ const { ipcMain, app, BrowserWindow } = require('electron');
 const excel = require('./excel-bridge');
 const { generateVba } = require('./openai-client');
 const {
+  loadSecurityPolicy,
+  isModuleAllowed,
+  isMacroAllowed,
+  normalizeMacroTargetForPolicy
+} = require('./security-policy');
+const { initializeAuditLog, writeAuditEvent } = require('./audit-log');
+const {
   logger,
   checkExcelModalState,
   collectDiagnostics,
@@ -44,6 +51,74 @@ const FOCUS_CONFIG = {
  */
 function logIpc(channel, phase, details = {}) {
   logger.debug('IPC', `${channel} ${phase}`, details);
+}
+
+function toSafeString(value) {
+  return String(value || '').trim();
+}
+
+function normalizeWorkbookIdentity(workbookName, workbookPath) {
+  return {
+    name: toSafeString(workbookName),
+    path: toSafeString(workbookPath)
+  };
+}
+
+function hasOnlyKeys(payload, allowedKeys) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    return false;
+  }
+
+  const allowedSet = new Set(allowedKeys);
+  return Object.keys(payload).every((key) => allowedSet.has(key));
+}
+
+function toLowerPath(pathValue) {
+  return toSafeString(pathValue).toLowerCase();
+}
+
+function toLowerName(nameValue) {
+  return toSafeString(nameValue).toLowerCase();
+}
+
+function workbooksMatchScope(scope, target) {
+  const scopePath = toLowerPath(scope?.path);
+  const targetPath = toLowerPath(target?.path);
+
+  if (scopePath && targetPath) {
+    return scopePath === targetPath;
+  }
+
+  const scopeName = toLowerName(scope?.name);
+  const targetName = toLowerName(target?.name);
+  if (scopeName && targetName) {
+    return scopeName === targetName;
+  }
+
+  return false;
+}
+
+function extractWorkbookNameFromMacroTarget(macroName) {
+  const raw = toSafeString(macroName);
+  const bangIndex = raw.indexOf('!');
+  if (bangIndex < 1) {
+    return '';
+  }
+
+  const workbookPrefix = raw.slice(0, bangIndex).trim();
+  if (workbookPrefix.startsWith("'") && workbookPrefix.endsWith("'")) {
+    return workbookPrefix.slice(1, -1).replace(/''/g, "'").trim();
+  }
+
+  return workbookPrefix;
+}
+
+function buildBlockedResult(reasonCode, message) {
+  return {
+    success: false,
+    reasonCode,
+    message
+  };
 }
 
 /**
@@ -147,9 +222,73 @@ async function withExcelFocus(fn, options = {}) {
 }
 
 function registerHandlers() {
+  try {
+    const auditInit = initializeAuditLog();
+    logger.info('[Audit] initialized', {
+      auditDirectoryPath: auditInit?.auditDirectoryPath
+    });
+  } catch (error) {
+    logger.warn('[Audit] initialization failed', { error: error?.message || String(error) });
+  }
+
   let isAppQuitting = false;
   let closeRequested = false;
   let activeExcelOperations = 0;
+  let selectedWorkbookScope = { name: '', path: '' };
+
+  const getSelectedWorkbookScope = () => selectedWorkbookScope;
+
+  const setSelectedWorkbookScope = (args = {}) => {
+    const normalized = normalizeWorkbookIdentity(args?.workbookName, args?.workbookPath);
+    selectedWorkbookScope = normalized;
+    return normalized;
+  };
+
+  const hasSelectedWorkbookScope = () => {
+    const scope = getSelectedWorkbookScope();
+    return Boolean(scope.name || scope.path);
+  };
+
+  const getPolicy = () => loadSecurityPolicy();
+
+  const writeHighRiskAudit = async (entry) => {
+    try {
+      const auditResult = await writeAuditEvent(entry);
+      logger.info('[Audit] high-risk action', {
+        action: entry?.action,
+        channel: entry?.channel,
+        outcome: entry?.outcome,
+        reasonCode: entry?.reasonCode,
+        filePath: auditResult?.filePath
+      });
+    } catch (error) {
+      logger.warn('[Audit] write failed', { error: error?.message || String(error) });
+    }
+  };
+
+  const getWorkbookScopeBlock = (targetWorkbook) => {
+    if (!hasSelectedWorkbookScope()) {
+      return buildBlockedResult(
+        'WORKBOOK_SCOPE_NOT_SET',
+        'A selected workbook is required before high-risk actions can run.'
+      );
+    }
+
+    const scope = getSelectedWorkbookScope();
+    if (!workbooksMatchScope(scope, targetWorkbook)) {
+      return buildBlockedResult(
+        'WORKBOOK_SCOPE_MISMATCH',
+        'High-risk action blocked because workbook is outside the selected workbook boundary.'
+      );
+    }
+
+    return null;
+  };
+
+  const getPolicyUnavailableBlock = (policyResult) => buildBlockedResult(
+    'POLICY_UNAVAILABLE',
+    toSafeString(policyResult?.message) || 'Security policy is unavailable.'
+  );
 
   // Hard shutdown latch: once quit starts, never touch Excel COM again.
   app.on('before-quit', () => {
@@ -207,7 +346,7 @@ function registerHandlers() {
       return buildShutdownResult();
     }
 
-    // If we recently got a NO_EXCEL error, skip COM operations briefly
+    // If we recently got a connection-state error, skip COM operations briefly
     // to avoid re-attaching to a dying process and creating ghost instances.
     const elapsed = Date.now() - lastNoExcelAt;
     if (lastNoExcelAt > 0 && elapsed < NO_EXCEL_COOLDOWN_MS) {
@@ -223,7 +362,8 @@ function registerHandlers() {
       }
       return result;
     } catch (err) {
-      if (String(err?.message || '').includes('NO_EXCEL')) {
+      const errorMessage = String(err?.message || '');
+      if (errorMessage.includes('NO_EXCEL') || errorMessage.includes('NO_VISIBLE_WINDOWS')) {
         lastNoExcelAt = Date.now();
         // Force immediate GC to release any transient COM proxies from
         // the failed operation before they can keep a ghost Excel alive.
@@ -238,6 +378,16 @@ function registerHandlers() {
         excel.clearComCache();
       } catch {
         // Ignore cache clear failures.
+      }
+    }
+  };
+
+  const withHighRiskComRelease = async (operation) => {
+    try {
+      return await withComRelease(operation);
+    } finally {
+      if (typeof global.gc === 'function') {
+        try { global.gc(); } catch { /* best-effort */ }
       }
     }
   };
@@ -268,6 +418,9 @@ function registerHandlers() {
 
   const extractPauseReason = (result) => {
     const message = extractMessage(result).toUpperCase();
+    if (message.includes('NO_VISIBLE_WINDOWS')) {
+      return 'NO_VISIBLE_WINDOWS';
+    }
     if (message.includes('NO_WORKBOOK')) {
       return 'NO_WORKBOOK';
     }
@@ -279,29 +432,50 @@ function registerHandlers() {
 
   const isPauseTrigger = (result) => {
     const reason = extractPauseReason(result);
-    return reason === 'NO_EXCEL' || reason === 'NO_WORKBOOK';
+    return reason === 'NO_EXCEL' || reason === 'NO_WORKBOOK' || reason === 'NO_VISIBLE_WINDOWS';
   };
 
   const setPollingPaused = (reason) => {
+    const normalizedReason = reason || 'NO_EXCEL';
+    const wasPaused = pollingPaused;
+    const previousReason = pollingPauseReason;
     pollingPaused = true;
-    pollingPauseReason = reason || 'NO_EXCEL';
+    pollingPauseReason = normalizedReason;
     pollingPausedAt = Date.now();
+    if (!wasPaused || previousReason !== normalizedReason) {
+      logger.info('IPC', 'Polling paused', {
+        reason: normalizedReason,
+        pausedAt: pollingPausedAt
+      });
+    }
   };
 
   const clearPollingPaused = () => {
+    const wasPaused = pollingPaused;
+    const previousReason = pollingPauseReason;
+    const previousPausedAt = pollingPausedAt;
     pollingPaused = false;
     pollingPauseReason = '';
     pollingPausedAt = 0;
+    if (wasPaused) {
+      logger.info('IPC', 'Polling resumed', {
+        reason: previousReason || 'UNKNOWN',
+        pausedAt: previousPausedAt
+      });
+    }
   };
 
   const buildPausedResult = (channel) => {
-    const code = pollingPauseReason === 'NO_WORKBOOK' ? 'NO_WORKBOOK' : 'NO_EXCEL';
+    const code = pollingPauseReason === 'NO_WORKBOOK'
+      ? 'NO_WORKBOOK'
+      : (pollingPauseReason === 'NO_VISIBLE_WINDOWS' ? 'NO_VISIBLE_WINDOWS' : 'NO_EXCEL');
     const message = `${code}: Search polling is paused until reconnect succeeds.`;
     const base = {
       success: false,
       message,
       paused: true,
       reason: 'polling_paused',
+      reasonCode: code,
       pausedAt: pollingPausedAt
     };
 
@@ -503,6 +677,30 @@ function registerHandlers() {
   // ==========================================================================
   // APP CONTROLS
   // ==========================================================================
+  ipcMain.handle('security:set-selected-workbook', async (_, args = {}) => {
+    const allowedKeys = ['workbookName', 'workbookPath'];
+    if (!hasOnlyKeys(args, allowedKeys)) {
+      return buildBlockedResult(
+        'VALIDATION_FAILED',
+        'Invalid selected workbook payload.'
+      );
+    }
+
+    const workbook = setSelectedWorkbookScope(args);
+    const selected = Boolean(workbook.name || workbook.path);
+    logger.info('[Security] selected workbook updated', {
+      selected,
+      workbookName: workbook.name,
+      hasWorkbookPath: Boolean(workbook.path)
+    });
+
+    return {
+      success: true,
+      selected,
+      workbookName: workbook.name,
+      workbookPath: workbook.path
+    };
+  });
 
   ipcMain.on('app:close', () => {
     if (closeRequested) {
@@ -546,32 +744,6 @@ function registerHandlers() {
         }
       }
 
-      // If Excel is running but has no visible windows (ghost), tell it to quit.
-      try {
-        const pids = excel.getExcelProcessIds?.() || [];
-        if (pids.length > 0) {
-          const winax = require('winax');
-          let ghostExcel = null;
-          let windowsProxy = null;
-          try {
-            ghostExcel = new winax.Object('Excel.Application', { activate: true });
-            windowsProxy = ghostExcel.Windows;
-            const windowCount = windowsProxy ? Number(windowsProxy.Count) : 0;
-            if (windowCount < 1) {
-              logger.info('Lifecycle', 'ghost Excel detected at app:close, sending Quit');
-              try {
-                ghostExcel.DisplayAlerts = false;
-                ghostExcel.Quit();
-              } catch { /* best-effort */ }
-            }
-          } catch { /* Excel not reachable — nothing to clean up */ }
-          finally {
-            try { winax.release(windowsProxy); } catch { /* ignore */ }
-            try { winax.release(ghostExcel); } catch { /* ignore */ }
-          }
-        }
-      } catch { /* ignore ghost cleanup errors */ }
-
       app.quit();
     })();
   });
@@ -585,17 +757,29 @@ function registerHandlers() {
    * Channel: 'vba:inject'
    * Args: { moduleName: string, code: string }
    */
-  ipcMain.handle('vba:inject', async (_, { moduleName = 'MacroFlowModule', code }) => {
-    logIpc('vba:inject', 'start', { moduleName, codeLength: code?.length });
+  ipcMain.handle('vba:inject', async (_, args = {}) => {
+    const moduleName = toSafeString(args?.moduleName) || 'MacroFlowModule';
+    const code = String(args?.code || '');
+    logIpc('vba:inject', 'start', { moduleName, codeLength: code.length });
 
-    // Use withExcelFocus to prevent hiding Excel dialogs during injection
-    const result = await withComRelease(
-      () => withExcelFocus(() => excel.injectModule(moduleName, code))
+    const blocked = buildBlockedResult(
+      'VALIDATION_FAILED',
+      'Use workbook-scoped injection through vba:inject:by-workbook.'
     );
 
-    clearWorkbookContextBurstCache();
-    logIpc('vba:inject', 'end', { success: result.success });
-    return result;
+    await writeHighRiskAudit({
+      action: 'vba.inject',
+      channel: 'vba:inject',
+      outcome: 'blocked',
+      reasonCode: blocked.reasonCode,
+      workbook: getSelectedWorkbookScope(),
+      target: { moduleName, macroName: '' },
+      payload: { code, codeLength: code.length },
+      result: blocked
+    });
+
+    logIpc('vba:inject', 'end', { success: false, reasonCode: blocked.reasonCode });
+    return blocked;
   });
 
   /**
@@ -603,31 +787,151 @@ function registerHandlers() {
    * Channel: 'vba:inject:by-workbook'
    * Args: { workbookName?: string, workbookPath?: string, moduleName: string, code: string, createIfMissing?: boolean }
    */
-  ipcMain.handle('vba:inject:by-workbook', async (_, {
-    workbookName,
-    workbookPath,
-    moduleName = 'MacroFlowModule',
-    code,
-    createIfMissing = true
-  } = {}) => {
+  ipcMain.handle('vba:inject:by-workbook', async (_, args = {}) => {
+    const {
+      workbookName,
+      workbookPath,
+      moduleName = 'MacroFlowModule',
+      code,
+      createIfMissing = true
+    } = args || {};
+
+    const payload = args && typeof args === 'object' ? args : {
+      workbookName,
+      workbookPath,
+      moduleName,
+      code,
+      createIfMissing
+    };
+
     logIpc('vba:inject:by-workbook', 'start', {
       workbookName,
       workbookPath,
       moduleName,
-      codeLength: code?.length,
+      codeLength: String(code || '').length,
       createIfMissing
     });
 
-    const result = await withComRelease(
+    const allowedKeys = ['workbookName', 'workbookPath', 'moduleName', 'code', 'createIfMissing'];
+    if (!hasOnlyKeys(payload, allowedKeys)) {
+      const blocked = buildBlockedResult('VALIDATION_FAILED', 'Invalid vba:inject:by-workbook payload.');
+      await writeHighRiskAudit({
+        action: 'vba.inject',
+        channel: 'vba:inject:by-workbook',
+        outcome: 'blocked',
+        reasonCode: blocked.reasonCode,
+        workbook: normalizeWorkbookIdentity(workbookName, workbookPath),
+        target: { moduleName: toSafeString(moduleName), macroName: '' },
+        payload: { code: String(code || ''), codeLength: String(code || '').length },
+        result: blocked
+      });
+      return blocked;
+    }
+
+    const policyResult = getPolicy();
+    if (!policyResult.ok) {
+      const blocked = getPolicyUnavailableBlock(policyResult);
+      await writeHighRiskAudit({
+        action: 'vba.inject',
+        channel: 'vba:inject:by-workbook',
+        outcome: 'blocked',
+        reasonCode: blocked.reasonCode,
+        workbook: normalizeWorkbookIdentity(workbookName, workbookPath),
+        target: { moduleName: toSafeString(moduleName), macroName: '' },
+        payload: { code: String(code || ''), codeLength: String(code || '').length },
+        result: blocked
+      });
+      return blocked;
+    }
+
+    const policy = policyResult.policy;
+    const normalizedWorkbook = normalizeWorkbookIdentity(workbookName, workbookPath);
+    const normalizedModuleName = toSafeString(moduleName);
+    const normalizedCode = String(code || '');
+    const normalizedCreateIfMissing = Boolean(createIfMissing);
+
+    if ((!normalizedWorkbook.name && !normalizedWorkbook.path) || !normalizedModuleName || typeof code !== 'string') {
+      const blocked = buildBlockedResult('VALIDATION_FAILED', 'Workbook, module name, and code are required.');
+      await writeHighRiskAudit({
+        action: 'vba.inject',
+        channel: 'vba:inject:by-workbook',
+        outcome: 'blocked',
+        reasonCode: blocked.reasonCode,
+        workbook: normalizedWorkbook,
+        target: { moduleName: normalizedModuleName, macroName: '' },
+        payload: { code: normalizedCode, codeLength: normalizedCode.length },
+        result: blocked
+      });
+      return blocked;
+    }
+
+    if (normalizedModuleName.length > policy.limits.maxModuleNameChars || normalizedCode.length > policy.limits.maxVbaCodeChars) {
+      const blocked = buildBlockedResult('VALIDATION_FAILED', 'Module name or code length exceeds policy limits.');
+      await writeHighRiskAudit({
+        action: 'vba.inject',
+        channel: 'vba:inject:by-workbook',
+        outcome: 'blocked',
+        reasonCode: blocked.reasonCode,
+        workbook: normalizedWorkbook,
+        target: { moduleName: normalizedModuleName, macroName: '' },
+        payload: { code: normalizedCode, codeLength: normalizedCode.length },
+        result: blocked
+      });
+      return blocked;
+    }
+
+    const scopeBlock = getWorkbookScopeBlock(normalizedWorkbook);
+    if (scopeBlock) {
+      await writeHighRiskAudit({
+        action: 'vba.inject',
+        channel: 'vba:inject:by-workbook',
+        outcome: 'blocked',
+        reasonCode: scopeBlock.reasonCode,
+        workbook: normalizedWorkbook,
+        target: { moduleName: normalizedModuleName, macroName: '' },
+        payload: { code: normalizedCode, codeLength: normalizedCode.length },
+        result: scopeBlock
+      });
+      return scopeBlock;
+    }
+
+    if (policy.enforcement.denyByDefault && !isModuleAllowed(policy, normalizedModuleName)) {
+      const blocked = buildBlockedResult('POLICY_DENIED', `Module "${normalizedModuleName}" is not allowlisted.`);
+      await writeHighRiskAudit({
+        action: 'vba.inject',
+        channel: 'vba:inject:by-workbook',
+        outcome: 'blocked',
+        reasonCode: blocked.reasonCode,
+        workbook: normalizedWorkbook,
+        target: { moduleName: normalizedModuleName, macroName: '' },
+        payload: { code: normalizedCode, codeLength: normalizedCode.length },
+        result: blocked
+      });
+      return blocked;
+    }
+
+    const result = await withHighRiskComRelease(
       () => withExcelFocus(
-        () => excel.injectModuleByWorkbookName(workbookName, moduleName, code, {
-          workbookPath,
-          createIfMissing
+        () => excel.injectModuleByWorkbookName(normalizedWorkbook.name, normalizedModuleName, normalizedCode, {
+          workbookPath: normalizedWorkbook.path,
+          createIfMissing: normalizedCreateIfMissing
         })
       )
     );
 
     clearWorkbookContextBurstCache();
+
+    await writeHighRiskAudit({
+      action: 'vba.inject',
+      channel: 'vba:inject:by-workbook',
+      outcome: result?.success ? 'succeeded' : 'failed',
+      reasonCode: result?.success ? 'OK' : 'EXECUTION_FAILED',
+      workbook: normalizeWorkbookIdentity(result?.workbook?.name || normalizedWorkbook.name, result?.workbook?.path || normalizedWorkbook.path),
+      target: { moduleName: normalizedModuleName, macroName: '' },
+      payload: { code: normalizedCode, codeLength: normalizedCode.length },
+      result
+    });
+
     logIpc('vba:inject:by-workbook', 'end', {
       success: result.success,
       workbookFound: result.workbookFound,
@@ -701,13 +1005,15 @@ function registerHandlers() {
    * Channel: 'vba:module-code:set:by-workbook'
    * Args: { workbookName?: string, workbookPath?: string, moduleName: string, code: string, createIfMissing?: boolean }
    */
-  ipcMain.handle('vba:module-code:set:by-workbook', async (_, {
-    workbookName,
-    workbookPath,
-    moduleName = '',
-    code = '',
-    createIfMissing = false
-  } = {}) => {
+  ipcMain.handle('vba:module-code:set:by-workbook', async (_, args = {}) => {
+    const {
+      workbookName,
+      workbookPath,
+      moduleName = '',
+      code = '',
+      createIfMissing = false
+    } = args || {};
+
     logIpc('vba:module-code:set:by-workbook', 'start', {
       workbookName,
       workbookPath,
@@ -716,14 +1022,124 @@ function registerHandlers() {
       createIfMissing
     });
 
-    const result = await withComRelease(
-      () => excel.setModuleCodeByWorkbookName(workbookName, moduleName, code, {
-        workbookPath,
-        createIfMissing
+    const allowedKeys = ['workbookName', 'workbookPath', 'moduleName', 'code', 'createIfMissing'];
+    if (!hasOnlyKeys(args, allowedKeys)) {
+      const blocked = buildBlockedResult('VALIDATION_FAILED', 'Invalid vba:module-code:set:by-workbook payload.');
+      await writeHighRiskAudit({
+        action: 'vba.set_module_code',
+        channel: 'vba:module-code:set:by-workbook',
+        outcome: 'blocked',
+        reasonCode: blocked.reasonCode,
+        workbook: normalizeWorkbookIdentity(workbookName, workbookPath),
+        target: { moduleName: toSafeString(moduleName), macroName: '' },
+        payload: { code: String(code || ''), codeLength: String(code || '').length },
+        result: blocked
+      });
+      return blocked;
+    }
+
+    const policyResult = getPolicy();
+    if (!policyResult.ok) {
+      const blocked = getPolicyUnavailableBlock(policyResult);
+      await writeHighRiskAudit({
+        action: 'vba.set_module_code',
+        channel: 'vba:module-code:set:by-workbook',
+        outcome: 'blocked',
+        reasonCode: blocked.reasonCode,
+        workbook: normalizeWorkbookIdentity(workbookName, workbookPath),
+        target: { moduleName: toSafeString(moduleName), macroName: '' },
+        payload: { code: String(code || ''), codeLength: String(code || '').length },
+        result: blocked
+      });
+      return blocked;
+    }
+
+    const policy = policyResult.policy;
+    const normalizedWorkbook = normalizeWorkbookIdentity(workbookName, workbookPath);
+    const normalizedModuleName = toSafeString(moduleName);
+    const normalizedCode = String(code || '');
+    const normalizedCreateIfMissing = Boolean(createIfMissing);
+
+    if ((!normalizedWorkbook.name && !normalizedWorkbook.path) || !normalizedModuleName || typeof code !== 'string') {
+      const blocked = buildBlockedResult('VALIDATION_FAILED', 'Workbook, module name, and code are required.');
+      await writeHighRiskAudit({
+        action: 'vba.set_module_code',
+        channel: 'vba:module-code:set:by-workbook',
+        outcome: 'blocked',
+        reasonCode: blocked.reasonCode,
+        workbook: normalizedWorkbook,
+        target: { moduleName: normalizedModuleName, macroName: '' },
+        payload: { code: normalizedCode, codeLength: normalizedCode.length },
+        result: blocked
+      });
+      return blocked;
+    }
+
+    if (normalizedModuleName.length > policy.limits.maxModuleNameChars || normalizedCode.length > policy.limits.maxVbaCodeChars) {
+      const blocked = buildBlockedResult('VALIDATION_FAILED', 'Module name or code length exceeds policy limits.');
+      await writeHighRiskAudit({
+        action: 'vba.set_module_code',
+        channel: 'vba:module-code:set:by-workbook',
+        outcome: 'blocked',
+        reasonCode: blocked.reasonCode,
+        workbook: normalizedWorkbook,
+        target: { moduleName: normalizedModuleName, macroName: '' },
+        payload: { code: normalizedCode, codeLength: normalizedCode.length },
+        result: blocked
+      });
+      return blocked;
+    }
+
+    const scopeBlock = getWorkbookScopeBlock(normalizedWorkbook);
+    if (scopeBlock) {
+      await writeHighRiskAudit({
+        action: 'vba.set_module_code',
+        channel: 'vba:module-code:set:by-workbook',
+        outcome: 'blocked',
+        reasonCode: scopeBlock.reasonCode,
+        workbook: normalizedWorkbook,
+        target: { moduleName: normalizedModuleName, macroName: '' },
+        payload: { code: normalizedCode, codeLength: normalizedCode.length },
+        result: scopeBlock
+      });
+      return scopeBlock;
+    }
+
+    if (policy.enforcement.denyByDefault && !isModuleAllowed(policy, normalizedModuleName)) {
+      const blocked = buildBlockedResult('POLICY_DENIED', `Module "${normalizedModuleName}" is not allowlisted.`);
+      await writeHighRiskAudit({
+        action: 'vba.set_module_code',
+        channel: 'vba:module-code:set:by-workbook',
+        outcome: 'blocked',
+        reasonCode: blocked.reasonCode,
+        workbook: normalizedWorkbook,
+        target: { moduleName: normalizedModuleName, macroName: '' },
+        payload: { code: normalizedCode, codeLength: normalizedCode.length },
+        result: blocked
+      });
+      return blocked;
+    }
+
+    const result = await withHighRiskComRelease(
+      () => excel.setModuleCodeByWorkbookName(normalizedWorkbook.name, normalizedModuleName, normalizedCode, {
+        workbookPath: normalizedWorkbook.path,
+        createIfMissing: normalizedCreateIfMissing
       })
     );
 
     clearWorkbookContextBurstCache();
+
+    await writeHighRiskAudit({
+      action: 'vba.set_module_code',
+      channel: 'vba:module-code:set:by-workbook',
+      outcome: result?.success ? 'succeeded' : 'failed',
+      reasonCode: result?.success ? 'OK' : 'EXECUTION_FAILED',
+      workbook: normalizeWorkbookIdentity(result?.workbook?.name || normalizedWorkbook.name, result?.workbook?.path || normalizedWorkbook.path),
+      target: { moduleName: normalizedModuleName, macroName: '' },
+      payload: { code: normalizedCode, codeLength: normalizedCode.length },
+      result
+    });
+
     logIpc('vba:module-code:set:by-workbook', 'end', {
       success: result.success,
       workbookFound: result.workbookFound,
@@ -752,7 +1168,7 @@ function registerHandlers() {
       nextModuleName
     });
 
-    const result = await withComRelease(
+    const result = await withHighRiskComRelease(
       () => excel.renameModuleByWorkbookName(workbookName, moduleName, nextModuleName, { workbookPath })
     );
 
@@ -785,7 +1201,7 @@ function registerHandlers() {
       moduleName
     });
 
-    const result = await withComRelease(
+    const result = await withHighRiskComRelease(
       () => excel.deleteModuleByWorkbookName(workbookName, moduleName, { workbookPath })
     );
 
@@ -810,15 +1226,126 @@ function registerHandlers() {
    * IMPORTANT: This operation may block if the macro shows a MsgBox or other dialog.
    * We disable alwaysOnTop so the user can see and dismiss Excel prompts.
    */
-  ipcMain.handle('vba:run', async (_, { macroName }) => {
+  ipcMain.handle('vba:run', async (_, args = {}) => {
+    const { macroName = '' } = args || {};
     logIpc('vba:run', 'start', { macroName });
 
+    const allowedKeys = ['macroName'];
+    if (!hasOnlyKeys(args, allowedKeys)) {
+      const blocked = buildBlockedResult('VALIDATION_FAILED', 'Invalid vba:run payload.');
+      await writeHighRiskAudit({
+        action: 'vba.run',
+        channel: 'vba:run',
+        outcome: 'blocked',
+        reasonCode: blocked.reasonCode,
+        workbook: getSelectedWorkbookScope(),
+        target: { moduleName: '', macroName: toSafeString(macroName) },
+        payload: { codeLength: 0 },
+        result: blocked
+      });
+      return blocked;
+    }
+
+    const policyResult = getPolicy();
+    if (!policyResult.ok) {
+      const blocked = getPolicyUnavailableBlock(policyResult);
+      await writeHighRiskAudit({
+        action: 'vba.run',
+        channel: 'vba:run',
+        outcome: 'blocked',
+        reasonCode: blocked.reasonCode,
+        workbook: getSelectedWorkbookScope(),
+        target: { moduleName: '', macroName: toSafeString(macroName) },
+        payload: { codeLength: 0 },
+        result: blocked
+      });
+      return blocked;
+    }
+
+    const policy = policyResult.policy;
+    const normalizedMacroName = toSafeString(macroName);
+    if (!normalizedMacroName) {
+      const blocked = buildBlockedResult('VALIDATION_FAILED', 'Macro name is required.');
+      await writeHighRiskAudit({
+        action: 'vba.run',
+        channel: 'vba:run',
+        outcome: 'blocked',
+        reasonCode: blocked.reasonCode,
+        workbook: getSelectedWorkbookScope(),
+        target: { moduleName: '', macroName: normalizedMacroName },
+        payload: { codeLength: 0 },
+        result: blocked
+      });
+      return blocked;
+    }
+
+    if (normalizedMacroName.length > policy.limits.maxMacroNameChars) {
+      const blocked = buildBlockedResult('VALIDATION_FAILED', 'Macro name exceeds policy limits.');
+      await writeHighRiskAudit({
+        action: 'vba.run',
+        channel: 'vba:run',
+        outcome: 'blocked',
+        reasonCode: blocked.reasonCode,
+        workbook: getSelectedWorkbookScope(),
+        target: { moduleName: '', macroName: normalizedMacroName },
+        payload: { codeLength: 0 },
+        result: blocked
+      });
+      return blocked;
+    }
+
+    const workbookNameFromTarget = extractWorkbookNameFromMacroTarget(normalizedMacroName);
+    const targetWorkbook = workbookNameFromTarget
+      ? normalizeWorkbookIdentity(workbookNameFromTarget, '')
+      : getSelectedWorkbookScope();
+    const scopeBlock = getWorkbookScopeBlock(targetWorkbook);
+    if (scopeBlock) {
+      await writeHighRiskAudit({
+        action: 'vba.run',
+        channel: 'vba:run',
+        outcome: 'blocked',
+        reasonCode: scopeBlock.reasonCode,
+        workbook: targetWorkbook,
+        target: { moduleName: '', macroName: normalizedMacroName },
+        payload: { codeLength: 0 },
+        result: scopeBlock
+      });
+      return scopeBlock;
+    }
+
+    const macroPolicyTarget = normalizeMacroTargetForPolicy(normalizedMacroName);
+    if (policy.enforcement.denyByDefault && !isMacroAllowed(policy, macroPolicyTarget)) {
+      const blocked = buildBlockedResult('POLICY_DENIED', `Macro "${macroPolicyTarget}" is not allowlisted.`);
+      await writeHighRiskAudit({
+        action: 'vba.run',
+        channel: 'vba:run',
+        outcome: 'blocked',
+        reasonCode: blocked.reasonCode,
+        workbook: targetWorkbook,
+        target: { moduleName: '', macroName: normalizedMacroName },
+        payload: { codeLength: 0 },
+        result: blocked
+      });
+      return blocked;
+    }
+
     // Use withExcelFocus - CRITICAL for MsgBox/dialog visibility
-    const result = await withComRelease(
-      () => withExcelFocus(() => excel.runMacro(macroName))
+    const result = await withHighRiskComRelease(
+      () => withExcelFocus(() => excel.runMacro(normalizedMacroName))
     );
 
     clearWorkbookContextBurstCache();
+    await writeHighRiskAudit({
+      action: 'vba.run',
+      channel: 'vba:run',
+      outcome: result?.success ? 'succeeded' : 'failed',
+      reasonCode: result?.success ? 'OK' : 'EXECUTION_FAILED',
+      workbook: targetWorkbook,
+      target: { moduleName: '', macroName: normalizedMacroName },
+      payload: { codeLength: 0 },
+      result
+    });
+
     logIpc('vba:run', 'end', { success: result.success, message: result.message });
     return result;
   });
@@ -826,26 +1353,30 @@ function registerHandlers() {
   /**
    * Generate VBA code from natural language prompt (OpenAI).
    * Channel: 'ai:generate-vba'
-   * Args: { prompt: string, workbookName?: string, moduleName?: string, currentCode?: string }
+   * Args: { prompt: string, workbookName?: string, moduleName?: string, currentCode?: string, includeCurrentCode?: boolean }
    */
   ipcMain.handle('ai:generate-vba', async (_, {
     prompt = '',
     workbookName = '',
     moduleName = '',
-    currentCode = ''
+    currentCode = '',
+    includeCurrentCode = false
   } = {}) => {
+    const shouldIncludeCurrentCode = Boolean(includeCurrentCode);
     logIpc('ai:generate-vba', 'start', {
       workbookName,
       moduleName,
       promptChars: String(prompt || '').length,
-      currentCodeChars: String(currentCode || '').length
+      includeCurrentCode: shouldIncludeCurrentCode,
+      currentCodeChars: shouldIncludeCurrentCode ? String(currentCode || '').length : 0
     });
 
     const result = await Promise.resolve(generateVba({
       prompt,
       workbookName,
       moduleName,
-      currentCode
+      currentCode: shouldIncludeCurrentCode ? currentCode : '',
+      includeCurrentCode: shouldIncludeCurrentCode
     }));
 
     logIpc('ai:generate-vba', 'end', {

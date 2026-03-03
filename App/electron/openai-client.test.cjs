@@ -150,11 +150,11 @@ test('generateVba maps timeout and network failures', async () => {
   assert.equal(network.reason, 'AI_NETWORK_ERROR');
 });
 
-test('generateVba truncates prompt and current code before request', async () => {
+test('generateVba truncates prompt and omits current code by default', async () => {
   const longPrompt = 'P'.repeat(MAX_PROMPT_CHARS + 150);
   const longCurrentCode = 'C'.repeat(MAX_CURRENT_CODE_CHARS + 500);
   let taskText = '';
-  let codeText = '';
+  let userContent = '';
 
   const result = await generateVba(
     {
@@ -166,11 +166,9 @@ test('generateVba truncates prompt and current code before request', async () =>
     {
       requestImpl: async ({ body }) => {
         const payload = JSON.parse(String(body || '{}'));
-        const userContent = String(payload?.messages?.[1]?.content || '');
-        const taskMatch = userContent.match(/Task:\n([\s\S]*?)\n\nCurrent module code:/);
-        const codeMatch = userContent.match(/Current module code:\n([\s\S]*)$/);
+        userContent = String(payload?.messages?.[1]?.content || '');
+        const taskMatch = userContent.match(/Task:\n([\s\S]*)$/);
         taskText = taskMatch ? taskMatch[1] : '';
-        codeText = codeMatch ? codeMatch[1] : '';
 
         return {
           statusCode: 200,
@@ -184,6 +182,38 @@ test('generateVba truncates prompt and current code before request', async () =>
 
   assert.equal(result.success, true);
   assert.equal(taskText.length, MAX_PROMPT_CHARS);
-  assert.equal(codeText.length, MAX_CURRENT_CODE_CHARS);
+  assert.equal(userContent.includes('Current module code:'), false);
 });
 
+test('generateVba includes and truncates current code when opted in', async () => {
+  const longCurrentCode = 'C'.repeat(MAX_CURRENT_CODE_CHARS + 500);
+  let codeText = '';
+
+  const result = await generateVba(
+    {
+      prompt: 'Generate a macro',
+      workbookName: 'Book1.xlsm',
+      moduleName: 'Module1',
+      currentCode: longCurrentCode,
+      includeCurrentCode: true
+    },
+    {
+      requestImpl: async ({ body }) => {
+        const payload = JSON.parse(String(body || '{}'));
+        const userContent = String(payload?.messages?.[1]?.content || '');
+        const codeMatch = userContent.match(/Current module code:\n([\s\S]*)$/);
+        codeText = codeMatch ? codeMatch[1] : '';
+
+        return {
+          statusCode: 200,
+          bodyText: JSON.stringify({
+            choices: [{ message: { content: 'Sub RunA()\nEnd Sub' } }]
+          })
+        };
+      }
+    }
+  );
+
+  assert.equal(result.success, true);
+  assert.equal(codeText.length, MAX_CURRENT_CODE_CHARS);
+});

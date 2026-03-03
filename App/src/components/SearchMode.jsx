@@ -61,6 +61,49 @@ const SearchMode = ({
   const workbookMenuRef = useRef(null);
   const moduleContextMenuRef = useRef(null);
   const renameCommitInFlightRef = useRef(false);
+  const searchInputRef = useRef(null);
+
+  // JS-driven drag handler for the search bar area.
+  // Distinguishes click (focus input) from drag (move window).
+  const handleSearchBarMouseDown = useCallback((e) => {
+    // Only handle left button, and skip if input is already focused
+    if (e.button !== 0) return;
+    if (document.activeElement === searchInputRef.current) return;
+
+    e.preventDefault();
+    const startScreenX = e.screenX;
+    const startScreenY = e.screenY;
+    let lastScreenX = startScreenX;
+    let lastScreenY = startScreenY;
+    let dragging = false;
+    const THRESHOLD = 3;
+
+    const onMouseMove = (ev) => {
+      const dx = ev.screenX - startScreenX;
+      const dy = ev.screenY - startScreenY;
+      if (!dragging && (Math.abs(dx) > THRESHOLD || Math.abs(dy) > THRESHOLD)) {
+        dragging = true;
+      }
+      if (dragging) {
+        const moveDx = ev.screenX - lastScreenX;
+        const moveDy = ev.screenY - lastScreenY;
+        lastScreenX = ev.screenX;
+        lastScreenY = ev.screenY;
+        window.excel?.window?.moveBy(moveDx, moveDy);
+      }
+    };
+
+    const onMouseUp = () => {
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseup', onMouseUp);
+      if (!dragging) {
+        searchInputRef.current?.focus();
+      }
+    };
+
+    document.addEventListener('mousemove', onMouseMove);
+    document.addEventListener('mouseup', onMouseUp);
+  }, []);
 
   const selectedWorkbook = workbookPickerState.selectedWorkbook;
   const selectedWorkbookLabel = selectedWorkbook?.name || 'Active Workbook';
@@ -858,8 +901,12 @@ const SearchMode = ({
       {/* Header / Search Bar */}
       <header className="header">
         <div className="drag-region" />
-        <div className="search-input-wrapper">
+        <div
+          className="search-input-wrapper"
+          onMouseDown={handleSearchBarMouseDown}
+        >
           <input
+            ref={searchInputRef}
             type="text"
             className="search-input"
             placeholder="Search files and manage macros"

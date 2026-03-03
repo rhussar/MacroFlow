@@ -13,6 +13,12 @@ test('mapSearchError maps NO_EXCEL to no_excel state', () => {
   assert.equal(result.code, 'NO_EXCEL');
 });
 
+test('mapSearchError maps NO_VISIBLE_WINDOWS to excel_background state', () => {
+  const result = mapSearchError('NO_VISIBLE_WINDOWS: Excel process found but has no visible workbook windows.');
+  assert.equal(result.status, 'excel_background');
+  assert.equal(result.code, 'NO_VISIBLE_WINDOWS');
+});
+
 test('mapSearchError maps NO_WORKBOOK to no_workbook state', () => {
   const result = mapSearchError('NO_WORKBOOK: No workbook is open');
   assert.equal(result.status, 'no_workbook');

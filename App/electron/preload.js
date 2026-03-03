@@ -138,10 +138,22 @@ contextBridge.exposeInMainWorld('excel', {
   ai: {
     /**
      * Generate VBA module code using OpenAI.
-     * @param {{ prompt: string, workbookName?: string, moduleName?: string, currentCode?: string }} args
+     * @param {{ prompt: string, workbookName?: string, moduleName?: string, currentCode?: string, includeCurrentCode?: boolean }} args
      * @returns {Promise<{ success: boolean, code?: string, model?: string, usage?: { promptTokens?: number, completionTokens?: number, totalTokens?: number }, reason?: string, message?: string }>}
      */
     generateVba: (args) => ipcRenderer.invoke('ai:generate-vba', args)
+  },
+
+  // ==========================================================================
+  // SECURITY CONTROLS
+  // ==========================================================================
+  security: {
+    /**
+     * Set the selected workbook boundary used by high-risk IPC actions.
+     * @param {{ workbookName?: string, workbookPath?: string }} args
+     * @returns {Promise<{ success: boolean, selected: boolean, workbookName?: string, workbookPath?: string, message?: string }>}
+     */
+    setSelectedWorkbook: (args) => ipcRenderer.invoke('security:set-selected-workbook', args)
   },
 
   // ==========================================================================
@@ -272,6 +284,13 @@ contextBridge.exposeInMainWorld('excel', {
      * @returns {Promise<{ success: boolean, value?: boolean }>}
      */
     getAlwaysOnTop: () => ipcRenderer.invoke('window:getAlwaysOnTop'),
+
+    /**
+     * Move window by a relative delta (fire-and-forget, used for drag)
+     * @param {number} dx
+     * @param {number} dy
+     */
+    moveBy: (dx, dy) => ipcRenderer.send('window:moveBy', dx, dy),
   },
 
   // ==========================================================================

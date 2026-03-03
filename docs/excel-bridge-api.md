@@ -51,7 +51,7 @@ Returns: `{ success: boolean, workbookFound: boolean, moduleFound: boolean, work
 ### `vba.run({ macroName: string })`
 Run a VBA macro.
 
-Returns: `{ success: boolean, message: string }`
+Returns: `{ success: boolean, reasonCode?: string, message: string }`
 
 ### `vba.modules()`
 List VBA modules in the active workbook.
@@ -125,3 +125,24 @@ Returns: `{ success: boolean, sheet?: object, structuralContext?: object, dataCo
 Get metadata for a closed workbook path.
 
 Returns: `{ success: boolean, sheet?: object, structuralContext?: object, dataContext?: object }`
+
+---
+
+## AI Operations
+
+### `ai.generateVba({ prompt: string, workbookName?: string, moduleName?: string, currentCode?: string, includeCurrentCode?: boolean })`
+Generate VBA module code with OpenAI.
+
+- `includeCurrentCode` defaults to `false`
+- `currentCode` is only used when `includeCurrentCode` is `true`
+
+Returns: `{ success: boolean, code?: string, model?: string, usage?: object, reason?: string, message?: string }`
+
+---
+
+## Security Operations
+
+### `security.setSelectedWorkbook({ workbookName?: string, workbookPath?: string })`
+Sets the selected workbook scope used by high-risk IPC actions (inject/run/module code set).
+
+Returns: `{ success: boolean, selected: boolean, workbookName?: string, workbookPath?: string, message?: string }`

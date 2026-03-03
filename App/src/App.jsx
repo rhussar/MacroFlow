@@ -142,6 +142,19 @@ function App() {
     setSelectedWorkbookForBuild(fallbackWorkbook);
   }, [searchData?.workbook]);
 
+  useEffect(() => {
+    const setSelectedWorkbookApi = window.excel?.security?.setSelectedWorkbook;
+    if (typeof setSelectedWorkbookApi !== 'function') {
+      return;
+    }
+
+    const preferredWorkbook = normalizeBuildWorkbook(selectedWorkbookForBuild || searchData?.workbook);
+    const workbookName = String(preferredWorkbook?.name || '').trim();
+    const workbookPath = String(preferredWorkbook?.path || '').trim();
+
+    void setSelectedWorkbookApi({ workbookName, workbookPath });
+  }, [searchData?.workbook?.name, searchData?.workbook?.path, selectedWorkbookForBuild?.key, selectedWorkbookForBuild?.name, selectedWorkbookForBuild?.path]);
+
   const openBuildMode = useCallback((workbook = null, launchOptions = {}) => {
     const normalizedWorkbook = normalizeBuildWorkbook(
       workbook || selectedWorkbookForBuildRef.current || searchWorkbookRef.current

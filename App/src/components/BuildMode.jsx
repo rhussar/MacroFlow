@@ -110,6 +110,7 @@ const BuildMode = ({
   const [runOutcome, setRunOutcome] = useState('idle');
   const [savedMacroName, setSavedMacroName] = useState('');
   const [lastPrompt, setLastPrompt] = useState('');
+  const [includeCurrentCode, setIncludeCurrentCode] = useState(false);
   const [exitDialog, setExitDialog] = useState(null);
   const [savedShortcutLetter, setSavedShortcutLetter] = useState('');
   const [draftShortcutLetter, setDraftShortcutLetter] = useState('');
@@ -324,6 +325,21 @@ const BuildMode = ({
 
   attemptExitRef.current = attemptExit;
 
+  useEffect(() => {
+    const setSelectedWorkbookApi = window.excel?.security?.setSelectedWorkbook;
+    if (typeof setSelectedWorkbookApi !== 'function') {
+      return;
+    }
+
+    const workbookName = String(sessionContext?.workbook?.name || '').trim();
+    const workbookPath = String(sessionContext?.workbook?.path || '').trim();
+    if (!workbookName && !workbookPath) {
+      return;
+    }
+
+    void setSelectedWorkbookApi({ workbookName, workbookPath });
+  }, [sessionContext?.workbook?.name, sessionContext?.workbook?.path]);
+
   const bootstrapSession = useCallback(async () => {
     const strictWorkbookMode = shouldUseStrictWorkbook(normalizedLaunchMode);
     const requestedModuleName = requestedLaunchModuleName;
@@ -334,6 +350,7 @@ const BuildMode = ({
     setIsBusy(true);
     setErrorInfo(null);
     setExitDialog(null);
+    setIncludeCurrentCode(false);
     setSessionContext(null);
     setRunOutcome('idle');
     setLastPrompt('');
@@ -759,12 +776,17 @@ const BuildMode = ({
 
     try {
       const session = sessionContextRef.current;
-      const result = await generateVbaApi({
+      const request = {
         prompt: submittedPrompt,
         workbookName: String(session?.workbook?.name || '').trim(),
         moduleName: String(session?.moduleName || '').trim(),
-        currentCode: String(editedCodeRef.current || '')
-      });
+        includeCurrentCode
+      };
+      if (includeCurrentCode) {
+        request.currentCode = String(editedCodeRef.current || '');
+      }
+
+      const result = await generateVbaApi(request);
 
       if (!result?.success) {
         throw new Error(mapAiGenerationMessage(result));
@@ -788,7 +810,7 @@ const BuildMode = ({
       setIsBusy(false);
       isBusyRef.current = false;
     }
-  }, [markLocalDirty]);
+  }, [includeCurrentCode, markLocalDirty]);
 
   const cancelModuleRename = useCallback(() => {
     const restoreName = String(
@@ -1199,6 +1221,15 @@ const BuildMode = ({
       <div className="user-prompt">
         {lastPrompt || 'Build session is ready. Describe what macro you want to generate.'}
       </div>
+      <label className="build-ai-context-toggle">
+        <input
+          type="checkbox"
+          checked={includeCurrentCode}
+          onChange={(event) => setIncludeCurrentCode(event.target.checked)}
+          disabled={isBusy}
+        />
+        <span>Include current module code</span>
+      </label>
 
       {errorInfo && (
         <div className="error-title">{errorInfo.title}</div>

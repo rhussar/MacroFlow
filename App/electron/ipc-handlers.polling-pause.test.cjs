@@ -5,7 +5,13 @@ const Module = require('node:module');
 
 const IPC_HANDLERS_PATH = path.resolve(__dirname, 'ipc-handlers.js');
 
-function loadHandlers({ excelOverrides = {}, appOverrides = {}, openAiOverrides = {} } = {}) {
+function loadHandlers({
+  excelOverrides = {},
+  appOverrides = {},
+  openAiOverrides = {},
+  securityPolicyOverrides = {},
+  auditOverrides = {}
+} = {}) {
   const originalLoad = Module._load;
   const handlers = {};
   const appEvents = {};
@@ -160,6 +166,36 @@ function loadHandlers({ excelOverrides = {}, appOverrides = {}, openAiOverrides 
     ...openAiOverrides
   };
 
+  const securityPolicyStub = {
+    loadSecurityPolicy: () => ({
+      ok: true,
+      policy: {
+        limits: {
+          maxVbaCodeChars: 60000,
+          maxModuleNameChars: 80,
+          maxMacroNameChars: 255
+        },
+        allowlists: {
+          modulesExact: [],
+          modulesRegex: ['^MacroFlowModule[0-9]+$'],
+          macrosExact: [],
+          macrosRegex: ['^MacroFlowModule[0-9]+\\.[A-Za-z_][A-Za-z0-9_]*$']
+        },
+        enforcement: { denyByDefault: true }
+      }
+    }),
+    isModuleAllowed: () => true,
+    isMacroAllowed: () => true,
+    normalizeMacroTargetForPolicy: (macroName) => String(macroName || '').split('!').pop() || '',
+    ...securityPolicyOverrides
+  };
+
+  const auditStub = {
+    initializeAuditLog: () => ({ success: true, auditDirectoryPath: 'C:\\Audit' }),
+    writeAuditEvent: async () => ({ success: true, filePath: 'C:\\Audit\\audit-2026-03-02.jsonl' }),
+    ...auditOverrides
+  };
+
   Module._load = function patchedLoad(request, parent, isMain) {
     if (request === 'electron') {
       return electronStub;
@@ -173,6 +209,12 @@ function loadHandlers({ excelOverrides = {}, appOverrides = {}, openAiOverrides 
     if (request === './openai-client') {
       return openAiStub;
     }
+    if (request === './security-policy') {
+      return securityPolicyStub;
+    }
+    if (request === './audit-log') {
+      return auditStub;
+    }
     return originalLoad.call(this, request, parent, isMain);
   };
 
@@ -185,6 +227,8 @@ function loadHandlers({ excelOverrides = {}, appOverrides = {}, openAiOverrides 
     handlers,
     excelStub,
     openAiStub,
+    securityPolicyStub,
+    auditStub,
     getQuitCalls: () => quitCalls,
     getClearComCacheCalls: () => clearComCacheCalls,
     triggerAppEvent: (event) => {
@@ -193,6 +237,11 @@ function loadHandlers({ excelOverrides = {}, appOverrides = {}, openAiOverrides 
       }
     }
   };
+}
+
+async function setSelectedWorkbookScope(handlers, workbookName = 'Book1.xlsx', workbookPath = 'C:\\Book1.xlsx') {
+  const result = await handlers['security:set-selected-workbook'](null, { workbookName, workbookPath });
+  assert.equal(result.success, true);
 }
 
 test('polling pause latches after NO_EXCEL and protected channels short-circuit', async () => {
@@ -221,6 +270,40 @@ test('polling pause latches after NO_EXCEL and protected channels short-circuit'
   assert.equal(modulesResult.paused, true);
   assert.equal(modulesResult.reason, 'polling_paused');
   assert.match(modulesResult.message, /NO_EXCEL/);
+  assert.deepEqual(modulesResult.modules, []);
+  assert.equal(listModulesCalls, 0);
+});
+
+test('polling pause latches after NO_VISIBLE_WINDOWS and keeps reason alignment', async () => {
+  let getWorkbookInfoCalls = 0;
+  let listModulesCalls = 0;
+  const { handlers } = loadHandlers({
+    excelOverrides: {
+      getWorkbookInfo: () => {
+        getWorkbookInfoCalls += 1;
+        return {
+          success: false,
+          message: 'NO_VISIBLE_WINDOWS: Excel process found but has no visible workbook windows.'
+        };
+      },
+      listModules: () => {
+        listModulesCalls += 1;
+        return { success: true, modules: [{ name: 'Module1' }] };
+      }
+    }
+  });
+
+  const workbookInfoResult = await handlers['workbook:info']();
+  assert.equal(workbookInfoResult.success, false);
+  assert.match(workbookInfoResult.message, /NO_VISIBLE_WINDOWS/);
+  assert.equal(getWorkbookInfoCalls, 1);
+
+  const modulesResult = await handlers['vba:modules']();
+  assert.equal(modulesResult.success, false);
+  assert.equal(modulesResult.paused, true);
+  assert.equal(modulesResult.reason, 'polling_paused');
+  assert.equal(modulesResult.reasonCode, 'NO_VISIBLE_WINDOWS');
+  assert.match(modulesResult.message, /NO_VISIBLE_WINDOWS/);
   assert.deepEqual(modulesResult.modules, []);
   assert.equal(listModulesCalls, 0);
 });
@@ -256,6 +339,52 @@ test('excel:reconnect success clears polling pause and protected channels resume
 
   const pausedResult = await handlers['vba:modules']();
   assert.equal(pausedResult.paused, true);
+  assert.equal(listModulesCalls, 0);
+
+  const reconnectResult = await handlers['excel:reconnect']();
+  assert.equal(reconnectResult.success, true);
+
+  const resumedResult = await handlers['vba:modules']();
+  assert.equal(resumedResult.success, true);
+  assert.equal(resumedResult.paused, undefined);
+  assert.equal(listModulesCalls, 1);
+});
+
+test('excel:reconnect success clears NO_VISIBLE_WINDOWS pause and resumes protected channels', async () => {
+  let workbookInfoCall = 0;
+  let listModulesCalls = 0;
+  const { handlers } = loadHandlers({
+    excelOverrides: {
+      getWorkbookInfo: () => {
+        workbookInfoCall += 1;
+        if (workbookInfoCall === 1) {
+          return {
+            success: false,
+            message: 'NO_VISIBLE_WINDOWS: Excel process found but has no visible workbook windows.'
+          };
+        }
+        return {
+          success: true,
+          name: 'Book2.xlsx',
+          path: 'C:\\Book2.xlsx',
+          activeSheet: 'Sheet1',
+          sheets: ['Sheet1']
+        };
+      },
+      listModules: () => {
+        listModulesCalls += 1;
+        return { success: true, modules: [{ name: 'Module1' }] };
+      }
+    }
+  });
+
+  const firstResult = await handlers['workbook:info']();
+  assert.equal(firstResult.success, false);
+  assert.match(firstResult.message, /NO_VISIBLE_WINDOWS/);
+
+  const pausedResult = await handlers['vba:modules']();
+  assert.equal(pausedResult.paused, true);
+  assert.equal(pausedResult.reasonCode, 'NO_VISIBLE_WINDOWS');
   assert.equal(listModulesCalls, 0);
 
   const reconnectResult = await handlers['excel:reconnect']();
@@ -339,6 +468,7 @@ test('vba:inject:by-workbook forwards workbook args to bridge', async () => {
       }
     }
   });
+  await setSelectedWorkbookScope(handlers, 'Book1.xlsm', 'C:\\Book1.xlsm');
 
   const result = await handlers['vba:inject:by-workbook'](null, {
     workbookName: 'Book1.xlsm',
@@ -408,6 +538,7 @@ test('module code channels forward workbook args and payloads to bridge', async 
       }
     }
   });
+  await setSelectedWorkbookScope(handlers, 'Client.xlsm', 'C:\\Client.xlsm');
 
   const readResult = await handlers['vba:module-code:by-workbook'](null, {
     workbookName: 'Client.xlsm',
@@ -1099,6 +1230,137 @@ test('excel:resolveInstance returns helper metadata when no qualifying instance 
   assert.equal(result.pid, 2222);
   assert.equal(result.workbookCount, 0);
   assert.equal(result.strategy, 'max_workbooks');
+});
+
+test('security:set-selected-workbook stores and clears workbook scope', async () => {
+  const { handlers } = loadHandlers();
+
+  const selected = await handlers['security:set-selected-workbook'](null, {
+    workbookName: 'Client.xlsm',
+    workbookPath: 'C:\\Client.xlsm'
+  });
+  assert.equal(selected.success, true);
+  assert.equal(selected.selected, true);
+
+  const cleared = await handlers['security:set-selected-workbook'](null, {});
+  assert.equal(cleared.success, true);
+  assert.equal(cleared.selected, false);
+});
+
+test('vba:inject is blocked with VALIDATION_FAILED and audited', async () => {
+  const auditCalls = [];
+  const { handlers } = loadHandlers({
+    auditOverrides: {
+      writeAuditEvent: async (entry) => {
+        auditCalls.push(entry);
+        return { success: true, filePath: 'C:\\Audit\\audit-2026-03-02.jsonl' };
+      }
+    }
+  });
+
+  const result = await handlers['vba:inject'](null, {
+    moduleName: 'MacroFlowModule1',
+    code: 'Option Explicit'
+  });
+
+  assert.equal(result.success, false);
+  assert.equal(result.reasonCode, 'VALIDATION_FAILED');
+  assert.equal(auditCalls.length, 1);
+  assert.equal(auditCalls[0].outcome, 'blocked');
+});
+
+test('high-risk handlers block when selected workbook scope mismatches', async () => {
+  const { handlers } = loadHandlers();
+  await setSelectedWorkbookScope(handlers, 'Allowed.xlsm', 'C:\\Allowed.xlsm');
+
+  const result = await handlers['vba:inject:by-workbook'](null, {
+    workbookName: 'Other.xlsm',
+    workbookPath: 'C:\\Other.xlsm',
+    moduleName: 'MacroFlowModule1',
+    code: 'Option Explicit'
+  });
+
+  assert.equal(result.success, false);
+  assert.equal(result.reasonCode, 'WORKBOOK_SCOPE_MISMATCH');
+});
+
+test('high-risk handlers block when policy denies module/macro', async () => {
+  const { handlers } = loadHandlers({
+    securityPolicyOverrides: {
+      isModuleAllowed: () => false,
+      isMacroAllowed: () => false
+    }
+  });
+  await setSelectedWorkbookScope(handlers, 'Book1.xlsx', 'C:\\Book1.xlsx');
+
+  const injectResult = await handlers['vba:inject:by-workbook'](null, {
+    workbookName: 'Book1.xlsx',
+    workbookPath: 'C:\\Book1.xlsx',
+    moduleName: 'MacroFlowModule1',
+    code: 'Option Explicit'
+  });
+  assert.equal(injectResult.success, false);
+  assert.equal(injectResult.reasonCode, 'POLICY_DENIED');
+
+  const runResult = await handlers['vba:run'](null, {
+    macroName: "'Book1.xlsx'!MacroFlowModule1.RunA"
+  });
+  assert.equal(runResult.success, false);
+  assert.equal(runResult.reasonCode, 'POLICY_DENIED');
+});
+
+test('high-risk handlers block oversized VBA payloads', async () => {
+  const { handlers } = loadHandlers({
+    securityPolicyOverrides: {
+      loadSecurityPolicy: () => ({
+        ok: true,
+        policy: {
+          limits: {
+            maxVbaCodeChars: 5,
+            maxModuleNameChars: 80,
+            maxMacroNameChars: 255
+          },
+          enforcement: { denyByDefault: true }
+        }
+      })
+    }
+  });
+  await setSelectedWorkbookScope(handlers, 'Book1.xlsx', 'C:\\Book1.xlsx');
+
+  const result = await handlers['vba:module-code:set:by-workbook'](null, {
+    workbookName: 'Book1.xlsx',
+    workbookPath: 'C:\\Book1.xlsx',
+    moduleName: 'MacroFlowModule1',
+    code: 'Option Explicit',
+    createIfMissing: true
+  });
+
+  assert.equal(result.success, false);
+  assert.equal(result.reasonCode, 'VALIDATION_FAILED');
+});
+
+test('high-risk success paths write audit records', async () => {
+  const auditCalls = [];
+  const { handlers } = loadHandlers({
+    auditOverrides: {
+      writeAuditEvent: async (entry) => {
+        auditCalls.push(entry);
+        return { success: true, filePath: 'C:\\Audit\\audit-2026-03-02.jsonl' };
+      }
+    }
+  });
+  await setSelectedWorkbookScope(handlers, 'Book1.xlsx', 'C:\\Book1.xlsx');
+
+  const result = await handlers['vba:inject:by-workbook'](null, {
+    workbookName: 'Book1.xlsx',
+    workbookPath: 'C:\\Book1.xlsx',
+    moduleName: 'MacroFlowModule1',
+    code: 'Option Explicit'
+  });
+
+  assert.equal(result.success, true);
+  assert.equal(auditCalls.length, 1);
+  assert.equal(auditCalls[0].outcome, 'succeeded');
 });
 
 test('before-quit latch blocks Excel COM calls during shutdown', async () => {

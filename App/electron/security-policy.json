@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "limits": {
+    "maxVbaCodeChars": 60000,
+    "maxModuleNameChars": 80,
+    "maxMacroNameChars": 255
+  },
+  "allowlists": {
+    "modulesExact": [],
+    "modulesRegex": [
+      "^MacroFlowModule[0-9]+$"
+    ],
+    "macrosExact": [],
+    "macrosRegex": [
+      "^MacroFlowModule[0-9]+\\.[A-Za-z_][A-Za-z0-9_]*$"
+    ]
+  },
+  "enforcement": {
+    "denyByDefault": true
+  }
+}

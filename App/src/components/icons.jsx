@@ -3,7 +3,7 @@ import appIcon from '../../assets/app-icon.png';
 import lightningIcon from '../../assets/lightning.png';
 import excelLogo from '../../assets/excel-logo.png';
 import folderLogo from '../../assets/folder-logo.png';
-import workbookIcon from '../../assets/workbook-icon.png';
+
 
 // MacroFlow Logo (app icon)
 export const MacroFlowLogo = ({ className = '', size = 20 }) => (
@@ -27,16 +27,11 @@ export const FolderIcon = ({ className = '', size = 24 }) => (
   />
 );
 
-// Large Folder Icon (same asset, larger default)
+// Backward-compatible large folder icon used in File Explorer detail panel.
 export const FolderIconLarge = ({ className = '', size = 80 }) => (
-  <img
-    src={folderLogo}
-    alt="Folder"
-    width={size}
-    height={size}
-    className={className}
-  />
+  <FolderIcon className={className} size={size} />
 );
+
 
 // Arrow Left (back button / macro icon)
 export const ArrowLeftIcon = ({ className = '', size = 20 }) => (
@@ -106,23 +101,6 @@ export const CheckIcon = ({ className = '', size = 14 }) => (
   </svg>
 );
 
-// Edit (Pencil) Icon
-export const EditIcon = ({ className = '', size = 14 }) => (
-  <svg
-    width={size}
-    height={size}
-    viewBox="0 0 24 24"
-    fill="none"
-    stroke="currentColor"
-    strokeWidth="2"
-    strokeLinecap="round"
-    strokeLinejoin="round"
-    className={className}
-  >
-    <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7" />
-    <path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z" />
-  </svg>
-);
 
 // Mail/Feedback Icon
 export const MailIcon = ({ className = '', size = 16 }) => (
@@ -219,41 +197,6 @@ export const ListIcon = ({ className = '', size = 16 }) => (
   </svg>
 );
 
-// Refresh/Agent Icon
-export const RefreshIcon = ({ className = '', size = 16 }) => (
-  <svg
-    width={size}
-    height={size}
-    viewBox="0 0 24 24"
-    fill="none"
-    stroke="currentColor"
-    strokeWidth="2"
-    strokeLinecap="round"
-    strokeLinejoin="round"
-    className={className}
-  >
-    <path d="M23 4v6h-6" />
-    <path d="M1 20v-6h6" />
-    <path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15" />
-  </svg>
-);
-
-// Message/Chat Icon
-export const MessageIcon = ({ className = '', size = 16 }) => (
-  <svg
-    width={size}
-    height={size}
-    viewBox="0 0 24 24"
-    fill="none"
-    stroke="currentColor"
-    strokeWidth="2"
-    strokeLinecap="round"
-    strokeLinejoin="round"
-    className={className}
-  >
-    <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z" />
-  </svg>
-);
 
 // Workbook/Excel Icon (uses Excel logo asset)
 export const WorkbookIcon = ({ className = '', size = 16 }) => (
@@ -264,23 +207,6 @@ export const WorkbookIcon = ({ className = '', size = 16 }) => (
     height={size}
     className={className}
   />
-);
-
-// Workbook tab icon (sheet with tab)
-export const WorkbookTabIcon = ({ className = '', size = 16 }) => (
-  <svg
-    width={size}
-    height={size}
-    viewBox="0 0 15 15"
-    fill="none"
-    xmlns="http://www.w3.org/2000/svg"
-    className={className}
-  >
-    <path
-      d="M2.5 11.25H12.5V6.25H8.125V3.75H2.5V11.25ZM2.5 12.5C2.15625 12.5 1.86198 12.3776 1.61719 12.1328C1.3724 11.888 1.25 11.5938 1.25 11.25V3.75C1.25 3.40625 1.3724 3.11198 1.61719 2.86719C1.86198 2.6224 2.15625 2.5 2.5 2.5H12.5C12.8438 2.5 13.138 2.6224 13.3828 2.86719C13.6276 3.11198 13.75 3.40625 13.75 3.75V11.25C13.75 11.5938 13.6276 11.888 13.3828 12.1328C13.138 12.3776 12.8438 12.5 12.5 12.5H2.5Z"
-      fill="currentColor"
-    />
-  </svg>
 );
 
 // Search Icon

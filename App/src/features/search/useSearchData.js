@@ -12,6 +12,7 @@ import {
   SEARCH_HELPER_EVENT_COOLDOWN_MS,
   SEARCH_HELPER_EVENT_DEBOUNCE_MS,
   SEARCH_FULL_REFRESH_STALE_MS,
+  SEARCH_PERIODIC_DEEP_REFRESH_STALE_MS,
   SEARCH_PERIODIC_REFRESH_MS,
   SEARCH_PAUSED_RECONNECT_TICK_MS,
   SEARCH_PAUSED_RECONNECT_INITIAL_DELAY_MS,
@@ -82,10 +83,8 @@ export function shouldAttemptPausedReconnect({
   isPaused,
   now,
   nextAttemptAt = 0,
-  inFlight,
-  cooldownMs = SEARCH_FOCUS_REFRESH_COOLDOWN_MS
+  inFlight
 }) {
-  void cooldownMs;
   if (!isPaused || inFlight) {
     return false;
   }
@@ -501,7 +500,10 @@ export function useSearchData({ mode, runState, macroRunInFlightRef, shortcutSav
 
       const workbookSignature = `${String(ping?.path || '').trim()}::${String(ping?.name || '').trim()}`;
       const workbookChanged = workbookSignature !== lastWorkbookSignature.current;
-      const stale = Date.now() - lastFullSearchRefreshAt.current > SEARCH_FULL_REFRESH_STALE_MS;
+      const staleThresholdMs = trigger === 'interval'
+        ? SEARCH_PERIODIC_DEEP_REFRESH_STALE_MS
+        : SEARCH_FULL_REFRESH_STALE_MS;
+      const stale = Date.now() - lastFullSearchRefreshAt.current > staleThresholdMs;
       const shouldRefreshFull = searchData.status !== 'ready' || workbookChanged || stale;
 
       if (shouldRefreshFull) {

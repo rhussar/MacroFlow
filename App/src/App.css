@@ -522,120 +522,14 @@ body {
   transform: rotate(180deg);
 }
 
-/* ---- All Files Picker (orange variant) ---- */
+/* ---- Section Picker Shared Styles ---- */
 
-.allfiles-picker-wrap {
-  padding: 12px 16px 8px;
-}
-
-.allfiles-picker-group {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  position: relative;
-}
-
-/* Shared base for both All Files buttons */
-.allfiles-picker,
-.allfiles-info-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  height: 25px;
-  border: none;
-  background: linear-gradient(rgba(220, 154, 116, 0.2), rgba(220, 154, 116, 0.2)), #FFFBEB;
-  color: rgba(0, 0, 0, 0.7);
-  cursor: default;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25), 0 4px 10px rgba(0, 0, 0, 0.15);
-  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.2)) drop-shadow(0 1px 2px rgba(0, 0, 0, 0.15));
-  position: relative;
-  overflow: hidden;
-}
-
-/* Shared swoosh base */
-.allfiles-picker::after,
-.allfiles-info-btn::after {
-  content: '';
-  position: absolute;
-  right: 0;
-  bottom: 0;
-  height: 25px;
-  background-repeat: no-repeat;
-  background-position: right bottom;
-  pointer-events: none;
-}
-
-/* Left button (All Files label) */
-.allfiles-picker {
-  gap: 6px;
-  padding: 0 14px 0 10px;
-  border-radius: 8px 4px 4px 8px;
-  font-size: 13px;
-  font-weight: 800;
-}
-
-.allfiles-picker::after {
-  width: 55px;
-  background-image: url("data:image/svg+xml,%3Csvg width='55' height='17' viewBox='0 0 55 17' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M56.25 2.09189V16.723C56.25 17.8425 54.3845 18.75 52.0833 18.75H0C0 8.39466 17.2557 0 38.5417 0C44.9259 0 50.9477 0.75516 56.25 2.09189Z' fill='%23DC9A74' fill-opacity='0.25'/%3E%3C/svg%3E");
-  background-size: 55px 17px;
-}
-
-.allfiles-picker-icon {
-  flex-shrink: 0;
-  position: relative;
-  z-index: 1;
-}
-
-.allfiles-picker-label {
-  white-space: nowrap;
-  position: relative;
-  z-index: 1;
-}
-
-/* Right button (info) */
-.allfiles-info-btn {
-  width: 30px;
-  flex-shrink: 0;
-  border-radius: 4px 8px 8px 4px;
-  cursor: pointer;
-  transition: background 0.15s ease;
-  -webkit-app-region: no-drag;
-  z-index: 1;
-}
-
-.allfiles-info-btn::after {
-  width: 30px;
-  background-image: url("data:image/svg+xml,%3Csvg width='30' height='16' viewBox='0 0 30 16' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M30.75 2.09189V16.723C30.75 17.8425 28.8845 18.75 26.5833 18.75H-25.5C-25.5 8.39466 -8.24431 0 13.0417 0C19.4259 0 25.4477 0.75516 30.75 2.09189Z' fill='%23DC9A74' fill-opacity='0.25'/%3E%3C/svg%3E");
-  background-size: 30px 16px;
-}
-
-.allfiles-info-btn:hover {
-  background: linear-gradient(rgba(220, 154, 116, 0.3), rgba(220, 154, 116, 0.3)), #FFFBEB;
-}
-
-/* Info tooltip */
-.allfiles-info-tooltip {
-  position: absolute;
-  top: calc(100% + 4px);
-  left: 0;
-  width: 280px;
-  padding: 8px 12px;
-  background: var(--bg-panel-solid);
-  border: 1px solid var(--border-default);
-  border-radius: 6px;
-  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.35);
-  font-size: 12px;
-  color: var(--text-secondary);
-  line-height: 1.45;
-  z-index: 25;
-}
-
-/* ---- PERSONAL.XLSB Picker (blue variant) ---- */
-
+.allfiles-picker-wrap,
 .personal-picker-wrap {
   padding: 12px 16px 8px;
 }
 
+.allfiles-picker-group,
 .personal-picker-group {
   display: inline-flex;
   align-items: center;
@@ -643,7 +537,9 @@ body {
   position: relative;
 }
 
-/* Shared base for both PERSONAL buttons */
+/* Shared button base (all section picker buttons) */
+.allfiles-picker,
+.allfiles-info-btn,
 .personal-picker,
 .personal-info-btn {
   display: inline-flex;
@@ -651,7 +547,6 @@ body {
   justify-content: center;
   height: 25px;
   border: none;
-  background: linear-gradient(rgba(116, 163, 220, 0.2), rgba(116, 163, 220, 0.2)), #FFFBEB;
   color: rgba(0, 0, 0, 0.7);
   cursor: default;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25), 0 4px 10px rgba(0, 0, 0, 0.15);
@@ -660,7 +555,9 @@ body {
   overflow: hidden;
 }
 
-/* Shared swoosh base */
+/* Shared swoosh pseudo-element base */
+.allfiles-picker::after,
+.allfiles-info-btn::after,
 .personal-picker::after,
 .personal-info-btn::after {
   content: '';
@@ -673,7 +570,8 @@ body {
   pointer-events: none;
 }
 
-/* Left button (PERSONAL label) */
+/* Shared left button (label) styles */
+.allfiles-picker,
 .personal-picker {
   gap: 6px;
   padding: 0 14px 0 10px;
@@ -682,25 +580,34 @@ body {
   font-weight: 800;
 }
 
+/* Shared left swoosh size */
+.allfiles-picker::after,
 .personal-picker::after {
   width: 55px;
-  background-image: url("data:image/svg+xml,%3Csvg width='55' height='17' viewBox='0 0 55 17' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M56.25 2.09189V16.723C56.25 17.8425 54.3845 18.75 52.0833 18.75H0C0 8.39466 17.2557 0 38.5417 0C44.9259 0 50.9477 0.75516 56.25 2.09189Z' fill='%2374A3DC' fill-opacity='0.25'/%3E%3C/svg%3E");
   background-size: 55px 17px;
 }
 
+/* Shared icon and label z-index */
+.allfiles-picker-icon,
+.allfiles-picker-label,
+.personal-picker-icon,
+.personal-picker-label {
+  position: relative;
+  z-index: 1;
+}
+
+.allfiles-picker-icon,
 .personal-picker-icon {
   flex-shrink: 0;
-  position: relative;
-  z-index: 1;
 }
 
+.allfiles-picker-label,
 .personal-picker-label {
   white-space: nowrap;
-  position: relative;
-  z-index: 1;
 }
 
-/* Right button (info) */
+/* Shared right button (info) styles */
+.allfiles-info-btn,
 .personal-info-btn {
   width: 30px;
   flex-shrink: 0;
@@ -711,17 +618,15 @@ body {
   z-index: 1;
 }
 
+/* Shared right swoosh size */
+.allfiles-info-btn::after,
 .personal-info-btn::after {
   width: 30px;
-  background-image: url("data:image/svg+xml,%3Csvg width='30' height='16' viewBox='0 0 30 16' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M30.75 2.09189V16.723C30.75 17.8425 28.8845 18.75 26.5833 18.75H-25.5C-25.5 8.39466 -8.24431 0 13.0417 0C19.4259 0 25.4477 0.75516 30.75 2.09189Z' fill='%2374A3DC' fill-opacity='0.25'/%3E%3C/svg%3E");
   background-size: 30px 16px;
 }
 
-.personal-info-btn:hover {
-  background: linear-gradient(rgba(116, 163, 220, 0.3), rgba(116, 163, 220, 0.3)), #FFFBEB;
-}
-
-/* Info tooltip */
+/* Shared info tooltip */
+.allfiles-info-tooltip,
 .personal-info-tooltip {
   position: absolute;
   top: calc(100% + 4px);
@@ -736,6 +641,44 @@ body {
   color: var(--text-secondary);
   line-height: 1.45;
   z-index: 25;
+}
+
+/* ---- All Files Picker (orange variant) ---- */
+
+.allfiles-picker,
+.allfiles-info-btn {
+  background: linear-gradient(rgba(220, 154, 116, 0.2), rgba(220, 154, 116, 0.2)), #FFFBEB;
+}
+
+.allfiles-picker::after {
+  background-image: url("data:image/svg+xml,%3Csvg width='55' height='17' viewBox='0 0 55 17' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M56.25 2.09189V16.723C56.25 17.8425 54.3845 18.75 52.0833 18.75H0C0 8.39466 17.2557 0 38.5417 0C44.9259 0 50.9477 0.75516 56.25 2.09189Z' fill='%23DC9A74' fill-opacity='0.25'/%3E%3C/svg%3E");
+}
+
+.allfiles-info-btn::after {
+  background-image: url("data:image/svg+xml,%3Csvg width='30' height='16' viewBox='0 0 30 16' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M30.75 2.09189V16.723C30.75 17.8425 28.8845 18.75 26.5833 18.75H-25.5C-25.5 8.39466 -8.24431 0 13.0417 0C19.4259 0 25.4477 0.75516 30.75 2.09189Z' fill='%23DC9A74' fill-opacity='0.25'/%3E%3C/svg%3E");
+}
+
+.allfiles-info-btn:hover {
+  background: linear-gradient(rgba(220, 154, 116, 0.3), rgba(220, 154, 116, 0.3)), #FFFBEB;
+}
+
+/* ---- PERSONAL.XLSB Picker (blue variant) ---- */
+
+.personal-picker,
+.personal-info-btn {
+  background: linear-gradient(rgba(116, 163, 220, 0.2), rgba(116, 163, 220, 0.2)), #FFFBEB;
+}
+
+.personal-picker::after {
+  background-image: url("data:image/svg+xml,%3Csvg width='55' height='17' viewBox='0 0 55 17' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M56.25 2.09189V16.723C56.25 17.8425 54.3845 18.75 52.0833 18.75H0C0 8.39466 17.2557 0 38.5417 0C44.9259 0 50.9477 0.75516 56.25 2.09189Z' fill='%2374A3DC' fill-opacity='0.25'/%3E%3C/svg%3E");
+}
+
+.personal-info-btn::after {
+  background-image: url("data:image/svg+xml,%3Csvg width='30' height='16' viewBox='0 0 30 16' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M30.75 2.09189V16.723C30.75 17.8425 28.8845 18.75 26.5833 18.75H-25.5C-25.5 8.39466 -8.24431 0 13.0417 0C19.4259 0 25.4477 0.75516 30.75 2.09189Z' fill='%2374A3DC' fill-opacity='0.25'/%3E%3C/svg%3E");
+}
+
+.personal-info-btn:hover {
+  background: linear-gradient(rgba(116, 163, 220, 0.3), rgba(116, 163, 220, 0.3)), #FFFBEB;
 }
 
 .macro-workbook-menu {
@@ -762,7 +705,6 @@ body {
 .macro-workbook-menu-divider {
   height: 1px;
   background: var(--border-default);
-  margin: 0 10px;
 }
 
 .macro-workbook-menu-state {

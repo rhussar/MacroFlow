@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { FolderIcon, ReturnIcon, CloseIcon, ChevronDownIcon, WorkbookIcon, WorkbookTabIcon, SearchIcon, FilePageIcon, AllFilesFolderIcon, InfoIcon, GlobeIcon } from './icons';
+import { FolderIcon, ReturnIcon, CloseIcon, ChevronDownIcon, WorkbookIcon, SearchIcon, FilePageIcon, AllFilesFolderIcon, InfoIcon, GlobeIcon } from './icons';
 import {
   getSearchStatusView,
   selectAllFilesModules,
@@ -78,6 +78,16 @@ function getAllFilesMacroLoadErrorMessage(result) {
   }
 
   return String(result?.message || 'Unable to load macros for this workbook.');
+}
+
+function getAllFilesMacroLoadTimeoutResult() {
+  return {
+    success: false,
+    workbookFound: false,
+    macros: [],
+    message: `Timed out loading workbook macros after ${ALL_FILES_MACRO_LOAD_TIMEOUT_MS}ms.`,
+    reason: 'timeout'
+  };
 }
 
 function workbookIdentityMatches({
@@ -267,6 +277,22 @@ const SearchMode = ({
     });
   }, []);
 
+  const raceWorkbookMacroPromiseWithTimeout = useCallback(async (promise) => {
+    let timeoutId = null;
+    try {
+      const timeoutPromise = new Promise((resolve) => {
+        timeoutId = window.setTimeout(() => {
+          resolve(getAllFilesMacroLoadTimeoutResult());
+        }, ALL_FILES_MACRO_LOAD_TIMEOUT_MS);
+      });
+      return await Promise.race([promise, timeoutPromise]);
+    } finally {
+      if (timeoutId) {
+        window.clearTimeout(timeoutId);
+      }
+    }
+  }, []);
+
   const loadWorkbookMacrosForAllFiles = useCallback(async ({ workbookName, workbookPath }) => {
     const safeWorkbookName = String(workbookName || '').trim();
     const safeWorkbookPath = String(workbookPath || '').trim();
@@ -291,7 +317,7 @@ const SearchMode = ({
 
     const inFlight = allFilesWorkbookMacroInFlightRef.current.get(workbookKey);
     if (inFlight) {
-      return inFlight;
+      return raceWorkbookMacroPromiseWithTimeout(inFlight);
     }
 
     const proceduresByWorkbookApi = window.excel?.vba?.proceduresByWorkbook;
@@ -304,27 +330,12 @@ const SearchMode = ({
       };
     }
 
-    const loadPromise = (async () => {
-      let timeoutId = null;
+    const workbookLoadPromise = (async () => {
       try {
-        const timeoutPromise = new Promise((resolve) => {
-          timeoutId = window.setTimeout(() => {
-            resolve({
-              success: false,
-              workbookFound: false,
-              message: `Timed out loading workbook macros after ${ALL_FILES_MACRO_LOAD_TIMEOUT_MS}ms.`,
-              reason: 'timeout'
-            });
-          }, ALL_FILES_MACRO_LOAD_TIMEOUT_MS);
+        const result = await proceduresByWorkbookApi({
+          workbookName: safeWorkbookName,
+          workbookPath: safeWorkbookPath
         });
-
-        const result = await Promise.race([
-          proceduresByWorkbookApi({
-            workbookName: safeWorkbookName,
-            workbookPath: safeWorkbookPath
-          }),
-          timeoutPromise
-        ]);
 
         if (!result?.success) {
           return {
@@ -357,17 +368,18 @@ const SearchMode = ({
           macros: [],
           message: error?.message ? String(error.message) : 'Unable to load macros for this workbook.'
         };
-      } finally {
-        if (timeoutId) {
-          window.clearTimeout(timeoutId);
-        }
-        allFilesWorkbookMacroInFlightRef.current.delete(workbookKey);
       }
     })();
 
-    allFilesWorkbookMacroInFlightRef.current.set(workbookKey, loadPromise);
-    return loadPromise;
-  }, []);
+    allFilesWorkbookMacroInFlightRef.current.set(workbookKey, workbookLoadPromise);
+    workbookLoadPromise.finally(() => {
+      if (allFilesWorkbookMacroInFlightRef.current.get(workbookKey) === workbookLoadPromise) {
+        allFilesWorkbookMacroInFlightRef.current.delete(workbookKey);
+      }
+    });
+
+    return raceWorkbookMacroPromiseWithTimeout(workbookLoadPromise);
+  }, [raceWorkbookMacroPromiseWithTimeout]);
 
   const loadAllFilesModuleMacros = useCallback(async (moduleItem, { force = false } = {}) => {
     const moduleId = String(moduleItem?.id || '').trim();
@@ -534,14 +546,9 @@ const SearchMode = ({
 
       const currentState = allFilesMacrosByModuleId[normalizedModuleId];
       const isIdle = !currentState || currentState.status === 'idle';
-      const loadingAgeMs = currentState?.status === 'loading'
-        ? (Date.now() - Number(currentState?.requestedAt || 0))
-        : Number.POSITIVE_INFINITY;
-      const isStaleLoading = currentState?.status === 'loading'
-        && (!Number.isFinite(loadingAgeMs) || loadingAgeMs >= ALL_FILES_LOADING_STALE_MS);
 
-      if (isIdle || isStaleLoading) {
-        void loadAllFilesModuleMacros(moduleItem, { force: isStaleLoading });
+      if (isIdle) {
+        void loadAllFilesModuleMacros(moduleItem);
       }
     });
   }, [
@@ -551,6 +558,47 @@ const SearchMode = ({
     status,
     workbookPickerState.allFilesData.modules
   ]);
+
+  useEffect(() => {
+    if (status !== 'ready') {
+      return;
+    }
+
+    const timerId = window.setInterval(() => {
+      const now = Date.now();
+      setAllFilesMacrosByModuleId((previous) => {
+        let changed = false;
+        const next = { ...previous };
+
+        Object.entries(previous).forEach(([moduleId, moduleState]) => {
+          if (moduleState?.status !== 'loading') {
+            return;
+          }
+
+          const loadingAgeMs = now - Number(moduleState?.requestedAt || 0);
+          const isFresh = Number.isFinite(loadingAgeMs)
+            && loadingAgeMs >= 0
+            && loadingAgeMs < ALL_FILES_LOADING_STALE_MS;
+          if (isFresh) {
+            return;
+          }
+
+          changed = true;
+          next[moduleId] = {
+            status: 'error',
+            macros: [],
+            error: 'Timed out loading macros. Collapse and expand to retry.'
+          };
+        });
+
+        return changed ? next : previous;
+      });
+    }, 1000);
+
+    return () => {
+      window.clearInterval(timerId);
+    };
+  }, [status]);
 
   const activeMacroRows = useMemo(
     () => selectActiveWorkbookMacros(displayedWorkbookData.macros, searchQuery, effectiveShortcutByMacroId),

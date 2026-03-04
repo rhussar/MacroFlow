@@ -31,15 +31,6 @@ function log(level, message, details = null) {
   logger[level]('AddinInstaller', message, details);
 }
 
-function buildPowerShellEncodedCommand(script) {
-  return Buffer.from(String(script), 'utf16le').toString('base64');
-}
-
-async function runPowerShellEncoded(script) {
-  const encoded = buildPowerShellEncodedCommand(script);
-  return execAsync(`powershell.exe -NoProfile -NonInteractive -STA -ExecutionPolicy Bypass -EncodedCommand ${encoded}`);
-}
-
 async function isFileLocked(filePath) {
   if (!await fs.pathExists(filePath)) return false;
   try {
@@ -160,30 +151,6 @@ async function cleanupLegacyInstalls() {
     }
   } catch (error) {
     log('debug', 'Legacy AddIns cleanup failed (ignored)', { error: error.message });
-  }
-
-  try {
-    const script = [
-      "$ErrorActionPreference = 'Stop'",
-      "$keyPath = 'HKCU:\\Software\\Microsoft\\Office\\16.0\\Excel\\Options'",
-      "if (Test-Path $keyPath) {",
-      "  $props = Get-ItemProperty -Path $keyPath",
-      "  $props.PSObject.Properties | Where-Object {",
-      "    $_.Name -match '^OPEN(\\d+)?$' -and ($_.Value -match 'MacroFlow')",
-      "  } | ForEach-Object {",
-      "    Remove-ItemProperty -Path $keyPath -Name $_.Name -ErrorAction SilentlyContinue",
-      "    Write-Output $_.Name",
-      "  }",
-      "}"
-    ].join('; ');
-
-    const { stdout } = await runPowerShellEncoded(script);
-    const removed = stdout.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
-    for (const slot of removed) {
-      log('info', 'Removed legacy registry entry', { slot });
-    }
-  } catch (error) {
-    log('debug', 'Legacy registry cleanup failed (ignored)', { error: error.message });
   }
 }
 

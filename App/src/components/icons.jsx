@@ -1,7 +1,9 @@
 import React from 'react';
 import appIcon from '../../assets/app-icon.png';
-const excelLogo = 'data:image/png;base64,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';
-const folderLogo = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAACXBIWXMAAAsTAAALEwEAmpwYAAACTUlEQVR4nO2XwW4SQRjHF9ST9WSMMaVvUGBml1o1FeIuEpOefQVfg3O9mPgKJh5gp9AS02CjtKbKUKvGg00wYXd1sdhUQxOBplDmM7PbNFCg0ABtD0zy29M3M7/9725mP0G4KANAcEBYcPYECI7BCwinW5SLDFSgkPRczcUkdy6KPSeRjXjR5vzUdUsCwoORAAg7dYKX83ERDIL3DRXVOlA1VMx0FeV1It7hc1OpwOW+Bf4kvOOFBVw2bQH2Yx5DJ3SC2fYrCX4tiNvZqDTN529sSFe4SDcg8vhSW4HvxO3SVVz6GRP5BnW+yUloBB8UErZELiLd7vudMLkAQRVLQMXMIBi6oam4bknExd85FT3XCZrTCXragTlNRc8M4p21ZY89NvNIAIMWRUxXMfQCrzVjmBWTPth93Zli0sdKb6Zga1Esbr6QblkSjZ+y2SDwN3mX7a36obLSG+WUn5VX7td6YW/VXwUqrwFVnjRJmMTt0lRU2Vr0QZ0qDDJBGAo0yODbI4CvoV14N3OjKQEuUEj4ANIyA6rAUEgr9toZ5R+shybOR2CdJyGXWSrgOjcBRuUKoyOBwEjANRIYJTBK4KIlgEuHAnWrcDjUrWM5LZeaBPIx30Q+hu0EqMwgYx2Zg4f/a3wMAnwOluHL7PiRwE783jUtirI7S9O8qMqofNCRdCtAlVpvyPuWAJWXG3sKB7/kXk7erL6dkeC9gtuSeYhaWDuEhrw2D5r5JHsgfYwPQTekAmMtbRmcsjXrZ7TtLYFLQNh5NpzdzXYd/wFj1V/Xq1V+gQAAAABJRU5ErkJggg==';
+import lightningIcon from '../../assets/lightning.png';
+import excelLogo from '../../assets/excel-logo.png';
+import folderLogo from '../../assets/folder-logo.png';
+import workbookIcon from '../../assets/workbook-icon.png';
 
 // MacroFlow Logo (app icon)
 export const MacroFlowLogo = ({ className = '', size = 20 }) => (
@@ -264,8 +266,19 @@ export const WorkbookIcon = ({ className = '', size = 16 }) => (
   />
 );
 
-// Return/Enter Arrow (for macros)
-export const ReturnIcon = ({ className = '', size = 16 }) => (
+// Workbook tab icon (uses workbook-icon asset)
+export const WorkbookTabIcon = ({ className = '', size = 16 }) => (
+  <img
+    src={workbookIcon}
+    alt="Workbook"
+    width={size}
+    height={size}
+    className={className}
+  />
+);
+
+// Search Icon
+export const SearchIcon = ({ className = '', size = 16 }) => (
   <svg
     width={size}
     height={size}
@@ -277,9 +290,20 @@ export const ReturnIcon = ({ className = '', size = 16 }) => (
     strokeLinejoin="round"
     className={className}
   >
-    <polyline points="9,10 4,15 9,20" />
-    <path d="M20 4v7a4 4 0 01-4 4H4" />
+    <circle cx="11" cy="11" r="8" />
+    <line x1="21" y1="21" x2="16.65" y2="16.65" />
   </svg>
+);
+
+// Lightning bolt icon (for macros)
+export const ReturnIcon = ({ className = '', size = 16 }) => (
+  <img
+    src={lightningIcon}
+    alt="macro"
+    width={size}
+    height={size}
+    className={className}
+  />
 );
 
 export const SidebarIcon = ({ className = '', size = 16 }) => (

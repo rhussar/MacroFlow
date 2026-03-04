@@ -244,42 +244,33 @@ async function checkAddinStatus() {
         registered: false,
         loadedInExcel: false,
         filePath: null,
-        registrySlot: null,
+        installLocation: null,
         errors: []
     };
 
-    // Check if file exists in AddIns folder
+    // Check if file exists in XLSTART (current install location).
+    // Fallback to legacy AddIns location for backward compatibility diagnostics.
     const appData = process.env.APPDATA;
     if (appData) {
-        const addinPath = path.join(appData, 'Microsoft', 'AddIns', ADDIN_FILE_NAME);
+        const xlstartPath = path.join(appData, 'Microsoft', 'Excel', 'XLSTART', ADDIN_FILE_NAME);
+        const legacyAddinsPath = path.join(appData, 'Microsoft', 'AddIns', ADDIN_FILE_NAME);
         try {
-            const exists = await fs.pathExists(addinPath);
-            result.installed = exists;
-            if (exists) {
-                result.filePath = addinPath;
-                const stat = await fs.stat(addinPath);
+            const xlstartExists = await fs.pathExists(xlstartPath);
+            const legacyExists = xlstartExists ? false : await fs.pathExists(legacyAddinsPath);
+            const resolvedPath = xlstartExists ? xlstartPath : (legacyExists ? legacyAddinsPath : '');
+
+            result.installed = Boolean(resolvedPath);
+            result.registered = result.installed;
+
+            if (resolvedPath) {
+                result.filePath = resolvedPath;
+                result.installLocation = xlstartExists ? 'xlstart' : 'legacy_addins';
+                const stat = await fs.stat(resolvedPath);
                 result.fileSize = stat.size;
                 result.fileModified = stat.mtime.toISOString();
             }
         } catch (error) {
             result.errors.push(`File check failed: ${error.message}`);
-        }
-    }
-
-    // Check registry entries
-    const registryKey = 'HKCU\\Software\\Microsoft\\Office\\16.0\\Excel\\Options';
-    const slots = ['OPEN', ...Array.from({ length: 10 }, (_, i) => `OPEN${i + 1}`)];
-
-    for (const slot of slots) {
-        try {
-            const { stdout } = await execAsync(`reg query "${registryKey}" /v ${slot} 2>nul`);
-            if (stdout.includes(ADDIN_FILE_NAME)) {
-                result.registered = true;
-                result.registrySlot = slot;
-                break;
-            }
-        } catch {
-            // Slot doesn't exist, continue
         }
     }
 
@@ -345,7 +336,19 @@ async function checkRibbonStatus() {
             return result;
         }
 
-        const addinPath = path.join(appData, 'Microsoft', 'AddIns', ADDIN_FILE_NAME);
+        const xlstartPath = path.join(appData, 'Microsoft', 'Excel', 'XLSTART', ADDIN_FILE_NAME);
+        const legacyAddinsPath = path.join(appData, 'Microsoft', 'AddIns', ADDIN_FILE_NAME);
+        let addinPath = xlstartPath;
+
+        if (!await fs.pathExists(addinPath)) {
+            if (await fs.pathExists(legacyAddinsPath)) {
+                addinPath = legacyAddinsPath;
+            } else {
+                result.ribbonErrors.push('Add-in file not found');
+                return result;
+            }
+        }
+
         if (!await fs.pathExists(addinPath)) {
             result.ribbonErrors.push('Add-in file not found');
             return result;
@@ -354,7 +357,8 @@ async function checkRibbonStatus() {
         // The xlam file is a zip - we could inspect it, but for now just check if it loads
         result.hasRibbon = true; // Assume ribbon exists if add-in exists
         result.ribbonInfo = {
-            note: 'Ribbon is defined in the .xlam file. Check Excel > Developer > COM Add-ins if not visible.'
+            path: addinPath,
+            note: 'Ribbon is defined in the .xlam file. If not visible, restart Excel and verify MacroFlow.xlam exists in XLSTART.'
         };
 
     } catch (error) {

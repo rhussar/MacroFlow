@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { FolderIcon, ReturnIcon, CloseIcon, ChevronDownIcon, WorkbookIcon } from './icons';
+import { FolderIcon, ReturnIcon, CloseIcon, ChevronDownIcon, WorkbookIcon, WorkbookTabIcon, SearchIcon } from './icons';
 import {
   getSearchStatusView,
   selectAllFilesModules,
@@ -579,12 +579,17 @@ const SearchMode = ({
   const workbookDataHasError = displayedWorkbookData.status === 'error';
   const workbookDataIsReady = displayedWorkbookData.status === 'ready';
   const canRenderMacroRows = workbookDataIsReady || (workbookDataIsLoading && activeMacroRows.length > 0);
+  const workbookMacroCount = Array.isArray(displayedWorkbookData.macros)
+    ? displayedWorkbookData.macros.length
+    : 0;
 
   const macrosEmptyMessage = workbookDataIsLoading
     ? `Loading macros from ${selectedWorkbookLabel}...`
     : workbookDataHasError
       ? selectedWorkbookErrorMessage
-      : 'No macros match this search.';
+      : workbookMacroCount < 1
+        ? 'This workbook has no macros.'
+        : 'No macros match this search.';
 
   const allFilesDataIsLoading = workbookPickerState.allFilesData.status === 'loading';
   const allFilesDataHasError = workbookPickerState.allFilesData.status === 'error';
@@ -601,16 +606,26 @@ const SearchMode = ({
     <>
       <section className="search-ready-section search-ready-section-first">
         <div className="macro-workbook-picker-wrap" ref={workbookMenuRef}>
-          <button
-            type="button"
-            className={`macro-workbook-picker ${isWorkbookMenuOpen ? 'open' : ''}`}
-            aria-label="Select workbook"
-            aria-expanded={isWorkbookMenuOpen}
-            onClick={toggleWorkbookMenu}
-          >
-            <span className="macro-workbook-picker-label">{selectedWorkbookLabel}</span>
-            <ChevronDownIcon size={14} className="macro-workbook-picker-icon" />
-          </button>
+          <div className="macro-workbook-picker-group">
+            <button
+              type="button"
+              className={`macro-workbook-picker ${isWorkbookMenuOpen ? 'open' : ''}`}
+              aria-label="Select workbook"
+              aria-expanded={isWorkbookMenuOpen}
+              onClick={toggleWorkbookMenu}
+            >
+              <WorkbookTabIcon size={18} className="macro-workbook-picker-wb-icon" />
+              <span className="macro-workbook-picker-label">{selectedWorkbookLabel}</span>
+            </button>
+            <button
+              type="button"
+              className={`macro-workbook-picker-chevron ${isWorkbookMenuOpen ? 'open' : ''}`}
+              aria-label="Toggle workbook menu"
+              onClick={toggleWorkbookMenu}
+            >
+              <ChevronDownIcon size={14} />
+            </button>
+          </div>
 
           {isWorkbookMenuOpen && (
             <div className="macro-workbook-menu" role="listbox" aria-label="Open workbooks">
@@ -671,7 +686,7 @@ const SearchMode = ({
                   onClick={() => onRunMacro?.(macro)}
                 >
                   <span className="shortcut-icon">
-                    <ReturnIcon size={16} />
+                    <ReturnIcon size={20} />
                   </span>
                   <span className="shortcut-name">{macro.name}</span>
                 </button>
@@ -748,7 +763,7 @@ const SearchMode = ({
                   >
                     <div className="shortcut-run-target readonly-target">
                       <span className="shortcut-icon">
-                        <ReturnIcon size={16} />
+                        <ReturnIcon size={20} />
                       </span>
                       <span className="shortcut-name">{macro.name}</span>
                     </div>
@@ -800,7 +815,7 @@ const SearchMode = ({
                 onContextMenu={(event) => handleOpenModuleContextMenu(event, file)}
               >
                 <div className="file-icon">
-                  <FolderIcon size={24} />
+                  <FolderIcon size={20} />
                 </div>
                 <div className="file-info">
                   <span className="file-name">
@@ -905,6 +920,7 @@ const SearchMode = ({
           className="search-input-wrapper"
           onMouseDown={handleSearchBarMouseDown}
         >
+          <SearchIcon size={16} className="search-input-icon" />
           <input
             ref={searchInputRef}
             type="text"

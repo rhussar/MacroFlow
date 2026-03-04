@@ -17,6 +17,7 @@ export default defineConfig({
     outDir: 'dist',
     assetsDir: 'assets',
     sourcemap: true,
+    assetsInlineLimit: 10240, // inline PNGs under 10KB as base64
     rollupOptions: {
       output: {
         manualChunks: undefined

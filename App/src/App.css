@@ -60,20 +60,9 @@
   box-sizing: border-box;
 }
 
-body {
-  font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
-  font-size: 13px;
-  color: var(--text-primary);
-  background: transparent;
-  overflow: hidden;
-  -webkit-font-smoothing: antialiased;
-}
-
 #root,
 html,
 body {
-  margin: 0;
-  padding: 0;
   width: 100%;
   height: 100%;
   background: transparent;
@@ -82,8 +71,12 @@ body {
   box-shadow: none;
 }
 
-#root {
-  height: 100%;
+body {
+  font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
+  font-size: 13px;
+  color: var(--text-primary);
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
 }
 
 /* ============================================
@@ -93,16 +86,16 @@ body {
 .app-container {
   width: 100%;
   height: 100%;
-  background: var(--bg-primary);
+  background: linear-gradient(to bottom, rgba(40, 40, 40, 0.98), rgba(68, 68, 68, 0.98));
   border-radius: var(--border-radius);
   display: flex;
   flex-direction: column;
   overflow: hidden;
   border: none;
   outline: none;
-  box-shadow: none;
-  backdrop-filter: blur(8px) saturate(1.04);
-  -webkit-backdrop-filter: blur(8px) saturate(1.04);
+  box-shadow: 0 0 0 0.42px rgba(0, 0, 0, 1), 0 4.2px 10.08px rgba(0, 0, 0, 0.5), 0 13.44px 33.6px rgba(0, 0, 0, 0.46);
+  mask-image: radial-gradient(white, black);
+  -webkit-mask-image: -webkit-radial-gradient(white, black);
   -webkit-app-region: drag;
 }
 
@@ -116,7 +109,7 @@ body {
   display: flex;
   align-items: center;
   gap: 10px;
-  background: var(--bg-secondary);
+  background: transparent;
   border-bottom: 1px solid var(--border-default);
   -webkit-app-region: drag;
   position: relative;
@@ -154,13 +147,22 @@ body {
 .search-input-wrapper {
   flex: 1;
   position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-left: 8px;
   -webkit-app-region: no-drag;
+}
+
+.search-input-icon {
+  color: var(--text-muted);
+  flex-shrink: 0;
 }
 
 .search-input {
   width: 100%;
   height: 36px;
-  padding: 0 12px;
+  padding: 0;
   background: transparent;
   border: none;
   color: var(--text-primary);
@@ -195,7 +197,6 @@ body {
 }
 
 .build-mode-btn:hover {
-  background: transparent;
   color: var(--text-primary);
 }
 
@@ -261,7 +262,7 @@ body {
   flex: 1;
   display: flex;
   flex-direction: column;
-  background: var(--bg-secondary);
+  background: transparent;
   overflow-y: auto;
   overflow-x: hidden;
   -webkit-app-region: no-drag;
@@ -421,34 +422,70 @@ body {
   z-index: 20;
 }
 
-.macro-workbook-picker {
-  max-width: 100%;
+.macro-workbook-picker-group {
+  display: flex;
+  align-items: center;
+  gap: 2px;
   width: 100%;
-  height: 30px;
+}
+
+/* Shared styles for both picker buttons */
+.macro-workbook-picker,
+.macro-workbook-picker-chevron {
   display: inline-flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 0 10px;
-  border-radius: 8px;
-  border: 1px solid rgba(74, 222, 128, 0.45);
-  background: rgba(34, 197, 94, 0.2);
-  color: var(--text-primary);
-  font-size: 12px;
-  font-weight: 600;
+  justify-content: center;
+  height: 25px;
+  border: none;
+  background: linear-gradient(rgba(52, 89, 52, 0.2), rgba(52, 89, 52, 0.2)), #B7DEC4;
+  color: rgba(0, 0, 0, 0.7);
   cursor: pointer;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25), 0 4px 10px rgba(0, 0, 0, 0.15);
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.2)) drop-shadow(0 1px 2px rgba(0, 0, 0, 0.15));
+  transition: background 0.15s ease;
+  position: relative;
+  overflow: hidden;
 }
 
-.macro-workbook-picker:hover {
-  background: rgba(34, 197, 94, 0.26);
+.macro-workbook-picker:hover,
+.macro-workbook-picker.open,
+.macro-workbook-picker-chevron:hover,
+.macro-workbook-picker-chevron.open {
+  background: #c4e5cf;
 }
 
-.macro-workbook-picker.open {
-  border-color: rgba(74, 222, 128, 0.65);
+/* Shared swoosh pseudo-element base */
+.macro-workbook-picker::after,
+.macro-workbook-picker-chevron::after {
+  content: '';
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  height: 25px;
+  background-repeat: no-repeat;
+  background-position: right bottom;
+  pointer-events: none;
 }
 
-.macro-workbook-picker.open .macro-workbook-picker-icon {
-  transform: rotate(180deg);
+/* Left button (workbook label) */
+.macro-workbook-picker {
+  flex: 1;
+  min-width: 0;
+  gap: 8px;
+  padding: 0 14px;
+  border-radius: 8px 4px 4px 8px;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.macro-workbook-picker::after {
+  width: 55px;
+  background-image: url("data:image/svg+xml,%3Csvg width='55' height='17' viewBox='0 0 55 17' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M56.25 2.09189V16.723C56.25 17.8425 54.3845 18.75 52.0833 18.75H0C0 8.39466 17.2557 0 38.5417 0C44.9259 0 50.9477 0.75516 56.25 2.09189Z' fill='%23345934' fill-opacity='0.2'/%3E%3C/svg%3E");
+  background-size: 55px 17px;
+}
+
+.macro-workbook-picker-wb-icon {
+  flex-shrink: 0;
 }
 
 .macro-workbook-picker-label {
@@ -460,9 +497,25 @@ body {
   text-overflow: ellipsis;
 }
 
-.macro-workbook-picker-icon {
-  color: var(--text-primary);
-  transition: transform 0.15s ease;
+/* Right button (chevron dropdown) */
+.macro-workbook-picker-chevron {
+  width: 30px;
+  flex-shrink: 0;
+  border-radius: 4px 8px 8px 4px;
+}
+
+.macro-workbook-picker-chevron::after {
+  width: 30px;
+  background-image: url("data:image/svg+xml,%3Csvg width='30' height='16' viewBox='0 0 30 16' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M30.75 2.09189V16.723C30.75 17.8425 28.8845 18.75 26.5833 18.75H-25.5C-25.5 8.39466 -8.24431 0 13.0417 0C19.4259 0 25.4477 0.75516 30.75 2.09189Z' fill='%23345934' fill-opacity='0.2'/%3E%3C/svg%3E");
+  background-size: 30px 16px;
+}
+
+.macro-workbook-picker-chevron svg {
+  stroke-width: 3;
+}
+
+.macro-workbook-picker-chevron.open svg {
+  transform: rotate(180deg);
 }
 
 .macro-workbook-menu {
@@ -601,8 +654,8 @@ body {
 }
 
 .file-icon {
-  width: 24px;
-  height: 24px;
+  width: 16px;
+  height: 16px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -923,7 +976,7 @@ body {
   align-items: center;
   gap: 8px;
   border-top: 1px solid var(--border-default);
-  background: var(--bg-secondary);
+  background: transparent;
   -webkit-app-region: no-drag;
 }
 
@@ -980,7 +1033,7 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  background: var(--bg-secondary);
+  background: #424242;
   border-top: 1px solid var(--border-default);
   -webkit-app-region: drag;
 }
@@ -1110,6 +1163,7 @@ body {
   box-shadow: 0 10px 40px rgba(0, 0, 0, 0.4);
   overflow: hidden;
   z-index: 101;
+  animation: settingsMenuSlideIn 0.15s ease-out;
 }
 
 .settings-menu-header {
@@ -1221,14 +1275,6 @@ body {
   flex-shrink: 0;
 }
 
-.tree-node__icon--workbook {
-  /* Uses Excel logo PNG — color inherited from image */
-}
-
-.tree-node__icon--module {
-  /* Uses folder-logo PNG — color inherited from image */
-}
-
 .tree-node__icon--macro {
   color: var(--text-muted);
 }
@@ -1245,10 +1291,6 @@ body {
 
 .tree-node--workbook .tree-node__label {
   font-weight: 500;
-}
-
-.workbook-icon-large {
-  /* Uses Excel logo PNG — no color override needed */
 }
 
 /* ============================================
@@ -1823,40 +1865,9 @@ body {
   display: none !important;
 }
 
-.flex-1 {
-  flex: 1;
-}
-
-.text-center {
-  text-align: center;
-}
-
-.gap-4 {
-  gap: 4px;
-}
-
-.gap-8 {
-  gap: 8px;
-}
-
 /* ============================================
    Animations
    ============================================ */
-
-@keyframes fadeIn {
-  from {
-    opacity: 0;
-    transform: translateY(-4px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-.settings-menu {
-  animation: settingsMenuSlideIn 0.15s ease-out;
-}
 
 @keyframes settingsMenuSlideIn {
   from {

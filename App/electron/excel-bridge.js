@@ -18,6 +18,16 @@ function parseTasklistRows(output) {
     .filter((line) => line && !line.toUpperCase().startsWith('INFO:'));
 }
 
+function parseCsvQuotedColumns(line) {
+  const columns = [];
+  const regex = /"((?:[^"]|"")*)"/g;
+  let match;
+  while ((match = regex.exec(String(line || '')))) {
+    columns.push(String(match[1] || '').replace(/""/g, '"'));
+  }
+  return columns;
+}
+
 // VBA Component Types (vbext_ComponentType)
 const VBA_COMPONENT_TYPE = {
   STANDARD_MODULE: 1,
@@ -134,6 +144,51 @@ class ExcelBridge {
     return this._listExcelProcessIds();
   }
 
+  _hasVisibleExcelWindow(processIds = []) {
+    const processIdSet = new Set(
+      (Array.isArray(processIds) ? processIds : [])
+        .map((value) => Number(value))
+        .filter((value) => Number.isFinite(value))
+    );
+
+    try {
+      const output = execSync('tasklist /FI "IMAGENAME eq EXCEL.EXE" /V /FO CSV /NH', {
+        windowsHide: true,
+        timeout: 3000,
+        encoding: 'utf8'
+      });
+      const rows = parseTasklistRows(output);
+      for (const line of rows) {
+        const columns = parseCsvQuotedColumns(line);
+        if (columns.length < 2) {
+          continue;
+        }
+
+        const imageName = String(columns[0] || '').trim().toUpperCase();
+        if (imageName !== 'EXCEL.EXE') {
+          continue;
+        }
+
+        const pid = Number(columns[1]);
+        if (processIdSet.size > 0) {
+          if (!Number.isFinite(pid) || !processIdSet.has(pid)) {
+            continue;
+          }
+        }
+
+        const windowTitle = String(columns[8] || columns[columns.length - 1] || '').trim();
+        if (windowTitle && windowTitle.toUpperCase() !== 'N/A') {
+          return true;
+        }
+      }
+
+      return false;
+    } catch {
+      // Fail open if visibility check is unavailable so we don't block real sessions.
+      return true;
+    }
+  }
+
   _buildProcessSignature(processIds = []) {
     if (!Array.isArray(processIds) || processIds.length < 1) {
       return '';
@@ -178,6 +233,18 @@ class ExcelBridge {
       throw new Error('NO_EXCEL: Excel is not running. Please open Excel first.');
     }
     const processSignature = this._buildProcessSignature(processIds);
+    const hasVisibleWindowPreflight = this._hasVisibleExcelWindow(processIds);
+    if (!hasVisibleWindowPreflight) {
+      logger.info('[ExcelBridge] preflight_no_visible_windows', {
+        attempt,
+        processCount: processIds.length,
+        processSignature
+      });
+      throw new Error(
+        'NO_VISIBLE_WINDOWS: Excel process found but has no visible workbook windows. ' +
+        'It may be shutting down. Please reopen Excel.'
+      );
+    }
 
     let excel = null;
     try {
@@ -185,6 +252,10 @@ class ExcelBridge {
       if (!excel) {
         throw new Error('Excel application not found');
       }
+      const afterAttachProcessIds = this._listExcelProcessIds();
+      const attachProcessSetChanged =
+        processIds.some((pid) => !afterAttachProcessIds.includes(pid)) ||
+        afterAttachProcessIds.some((pid) => !processIds.includes(pid));
 
       // Verify Excel has at least one open window. A windowless EXCEL.EXE is
       // a ghost process that is shutting down — attaching to it would keep it
@@ -194,6 +265,22 @@ class ExcelBridge {
         windowsProxy = excel.Windows;
         const windowCount = windowsProxy ? Number(windowsProxy.Count) : 0;
         if (windowCount < 1) {
+          if (attachProcessSetChanged) {
+            logger.warn('[ExcelBridge] attach_process_cycle_changed_while_windowless', {
+              attempt,
+              processIdsBeforeAttach: processIds,
+              processIdsAfterAttach: afterAttachProcessIds
+            });
+            this._resetWindowlessLifecycle('process_cycle_changed_while_windowless');
+            this._safeRelease(windowsProxy, excel);
+            windowsProxy = null;
+            excel = null;
+            if (typeof global.gc === 'function') {
+              try { global.gc(); } catch { /* best-effort */ }
+            }
+            throw new Error('NO_EXCEL: Excel is shutting down. Please wait for it to close and reopen Excel.');
+          }
+
           const nowMs = Date.now();
           if (
             this._windowlessProcessSignature &&
@@ -264,7 +351,6 @@ class ExcelBridge {
         this._safeRelease(windowsProxy);
       }
 
-      const afterAttachProcessIds = this._listExcelProcessIds();
       logger.debug('[ExcelBridge] COM attach succeeded', {
         attempt,
         processCount: processIds.length,

@@ -396,6 +396,32 @@ test('excel:reconnect success clears NO_VISIBLE_WINDOWS pause and resumes protec
   assert.equal(listModulesCalls, 1);
 });
 
+test('excel:reconnect applies its own cooldown after NO_EXCEL failure result', async () => {
+  let workbookInfoCalls = 0;
+  const { handlers } = loadHandlers({
+    excelOverrides: {
+      getWorkbookInfo: () => {
+        workbookInfoCalls += 1;
+        return { success: false, message: 'NO_EXCEL: Excel is not running.' };
+      }
+    }
+  });
+
+  const firstReconnect = await handlers['excel:reconnect']();
+  assert.equal(firstReconnect.success, false);
+  assert.match(firstReconnect.message, /NO_EXCEL/);
+  assert.equal(workbookInfoCalls, 1);
+
+  const secondReconnect = await handlers['excel:reconnect']();
+  assert.equal(secondReconnect.success, false);
+  assert.match(secondReconnect.message, /NO_EXCEL: Waiting for Excel to restart\./);
+  assert.equal(
+    workbookInfoCalls,
+    1,
+    'second reconnect should short-circuit during cooldown instead of re-attaching immediately'
+  );
+});
+
 test('non-protected channels continue to execute while polling is paused', async () => {
   let selectionCalls = 0;
   const { handlers } = loadHandlers({

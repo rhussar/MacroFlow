@@ -267,6 +267,13 @@ function registerHandlers() {
   };
 
   const getWorkbookScopeBlock = (targetWorkbook) => {
+    // PERSONAL.XLSB is a global macro store – always in-scope regardless of
+    // which workbook the user has selected in the picker.
+    const targetName = toLowerName(targetWorkbook?.name);
+    if (targetName === 'personal.xlsb') {
+      return null;
+    }
+
     if (!hasSelectedWorkbookScope()) {
       return buildBlockedResult(
         'WORKBOOK_SCOPE_NOT_SET',
@@ -360,6 +367,7 @@ function registerHandlers() {
       if (result && result.success !== false) {
         lastNoExcelAt = 0;
       }
+
       return result;
     } catch (err) {
       const errorMessage = String(err?.message || '');
@@ -583,6 +591,8 @@ function registerHandlers() {
   };
 
   let resolveInstanceInFlight = null;
+  let lastReconnectNoExcelAt = 0;
+  const RECONNECT_NO_EXCEL_COOLDOWN_MS = 3000;
 
   const toFiniteNumberOrUndefined = (value) => {
     const parsed = Number(value);
@@ -1783,10 +1793,23 @@ function registerHandlers() {
    */
   ipcMain.handle('excel:reconnect', async () => {
     logIpc('excel:reconnect', 'start');
+    const elapsedSinceNoExcel = Date.now() - lastReconnectNoExcelAt;
+    if (lastReconnectNoExcelAt > 0 && elapsedSinceNoExcel < RECONNECT_NO_EXCEL_COOLDOWN_MS) {
+      const cooldownResult = { success: false, message: 'NO_EXCEL: Waiting for Excel to restart.' };
+      logIpc('excel:reconnect', 'end', { success: false, cooldown: true });
+      return cooldownResult;
+    }
+
     const result = await withComRelease(() => {
       excel.clearComCache();
       return excel.getWorkbookInfo();
     });
+    const reconnectMessage = String(result?.message || result?.error || '').toUpperCase();
+    if (reconnectMessage.includes('NO_EXCEL') || reconnectMessage.includes('NO_VISIBLE_WINDOWS')) {
+      lastReconnectNoExcelAt = Date.now();
+    } else if (result?.success) {
+      lastReconnectNoExcelAt = 0;
+    }
     if (result?.success) {
       clearPollingPaused();
       clearWorkbookContextBurstCache();

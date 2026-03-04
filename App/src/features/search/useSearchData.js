@@ -43,6 +43,20 @@ export function inferPauseReasonCodeFromResult(result, fallback = 'NO_EXCEL') {
   return normalizedFallback;
 }
 
+export function mapPauseReasonCodeToSearchStatus(reasonCode, fallback = 'no_excel') {
+  const normalizedReason = String(reasonCode || '').trim().toUpperCase();
+  if (normalizedReason === 'NO_VISIBLE_WINDOWS') {
+    return 'excel_background';
+  }
+  if (normalizedReason === 'NO_WORKBOOK') {
+    return 'no_workbook';
+  }
+  if (normalizedReason === 'NO_EXCEL') {
+    return 'no_excel';
+  }
+  return String(fallback || 'no_excel');
+}
+
 export function getNextPausedReconnectDelayMs({
   currentDelayMs,
   initialDelayMs = SEARCH_PAUSED_RECONNECT_INITIAL_DELAY_MS,
@@ -153,6 +167,30 @@ export function useSearchData({ mode, runState, macroRunInFlightRef, shortcutSav
     pollingPausedRef.current = false;
     pollingPausedReasonRef.current = '';
     resetPausedReconnectBackoff();
+  };
+
+  const applyPausedReconnectFailure = (resultLike) => {
+    const reasonCode = inferPauseReasonCodeFromResult(resultLike, 'NO_EXCEL');
+    setPausedState(reasonCode);
+    schedulePausedReconnectBackoff(Date.now());
+
+    const fallbackMessage = `${reasonCode}: Unable to reconnect to Excel.`;
+    const rawMessage = String(resultLike?.message || resultLike?.error || fallbackMessage);
+    const mappedError = mapSearchError(rawMessage);
+    const status = mapPauseReasonCodeToSearchStatus(reasonCode, mappedError.status);
+
+    lastWorkbookSignature.current = '';
+    setSearchData({
+      status,
+      workbook: null,
+      modules: [],
+      macros: [],
+      shortcutAudit: null,
+      error: {
+        code: reasonCode,
+        message: mappedError.message
+      }
+    });
   };
 
   const loadSearchData = useCallback(async ({ silent = false } = {}) => {
@@ -417,12 +455,10 @@ export function useSearchData({ mode, runState, macroRunInFlightRef, shortcutSav
           clearPausedState();
           await loadSearchData({ silent: true });
         } else {
-          setPausedState(inferPauseReasonCodeFromResult(reconnect, 'NO_EXCEL'));
-          schedulePausedReconnectBackoff(Date.now());
+          applyPausedReconnectFailure(reconnect);
         }
       } catch (error) {
-        setPausedState(inferPauseReasonCodeFromResult(error, 'NO_EXCEL'));
-        schedulePausedReconnectBackoff(Date.now());
+        applyPausedReconnectFailure(error);
       } finally {
         resumeAttemptInFlightRef.current = false;
       }

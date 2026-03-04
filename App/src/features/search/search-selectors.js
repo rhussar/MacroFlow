@@ -98,8 +98,8 @@ export function selectActiveWorkbookMacros(macros, query, shortcutByMacroId = {}
   return filtered.map((macro) => buildMacroRowUiModel(macro, 'active'));
 }
 
-export function selectPersonalGlobalMacros(macros, query) {
-  const filtered = filterMacrosByQuery(macros, query, {});
+export function selectPersonalGlobalMacros(macros, query, shortcutByMacroId = {}) {
+  const filtered = filterMacrosByQuery(macros, query, shortcutByMacroId);
   return filtered.map((macro) => buildMacroRowUiModel(macro, 'personal'));
 }
 

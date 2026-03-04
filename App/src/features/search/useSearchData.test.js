@@ -3,6 +3,7 @@ import test from 'node:test';
 import {
   isTerminalConnectionStatus,
   inferPauseReasonCodeFromResult,
+  mapPauseReasonCodeToSearchStatus,
   getNextPausedReconnectDelayMs,
   shouldSkipForegroundRefresh,
   shouldAttemptPausedReconnect
@@ -39,6 +40,13 @@ test('inferPauseReasonCodeFromResult prefers reasonCode and parses message fallb
     inferPauseReasonCodeFromResult({ message: 'unknown failure' }, 'NO_EXCEL'),
     'NO_EXCEL'
   );
+});
+
+test('mapPauseReasonCodeToSearchStatus maps pause reason to UI status safely', () => {
+  assert.equal(mapPauseReasonCodeToSearchStatus('NO_VISIBLE_WINDOWS', 'error'), 'excel_background');
+  assert.equal(mapPauseReasonCodeToSearchStatus('NO_WORKBOOK', 'error'), 'no_workbook');
+  assert.equal(mapPauseReasonCodeToSearchStatus('NO_EXCEL', 'error'), 'no_excel');
+  assert.equal(mapPauseReasonCodeToSearchStatus('UNKNOWN_REASON', 'error'), 'error');
 });
 
 test('shouldAttemptPausedReconnect waits until next attempt timestamp', () => {

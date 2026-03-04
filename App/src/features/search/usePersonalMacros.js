@@ -7,6 +7,7 @@ export const PERSONAL_WORKBOOK_NAME = 'PERSONAL.XLSB';
 const INITIAL_PERSONAL_MACROS_STATE = {
   status: 'idle',
   macros: [],
+  shortcutAudit: null,
   workbookFound: false,
   workbook: null,
   fileExists: false,
@@ -107,6 +108,7 @@ export function usePersonalMacros(searchData, workbookListSignature = '') {
       setPersonalState({
         status: 'error',
         macros: [],
+        shortcutAudit: null,
         workbookFound: false,
         workbook: null,
         fileExists: false,
@@ -163,6 +165,7 @@ export function usePersonalMacros(searchData, workbookListSignature = '') {
           setPersonalState({
             status: 'error',
             macros: [],
+            shortcutAudit: null,
             workbookFound: false,
             workbook: null,
             fileExists: false,
@@ -192,6 +195,7 @@ export function usePersonalMacros(searchData, workbookListSignature = '') {
             setPersonalState({
               status: 'error',
               macros: [],
+              shortcutAudit: null,
               workbookFound: false,
               workbook: null,
               fileExists,
@@ -205,13 +209,18 @@ export function usePersonalMacros(searchData, workbookListSignature = '') {
             workbookFound = false;
             macros = [];
           } else {
-            macros = normalizeMacros(proceduresResult?.procedures);
+            macros = normalizeMacros(proceduresResult?.procedures).map((m) => ({
+              ...m,
+              runTarget: `${PERSONAL_WORKBOOK_NAME}!${m.runTarget}`,
+              fullName: `${PERSONAL_WORKBOOK_NAME}!${m.fullName}`
+            }));
           }
         }
 
         const nextState = {
           status: 'ready',
           macros,
+          shortcutAudit: null,
           workbookFound,
           workbook,
           fileExists,
@@ -232,6 +241,7 @@ export function usePersonalMacros(searchData, workbookListSignature = '') {
         setPersonalState((previous) => ({
           ...previous,
           status: 'error',
+          shortcutAudit: null,
           workbookFound: false,
           workbook: null,
           fileExists: false,

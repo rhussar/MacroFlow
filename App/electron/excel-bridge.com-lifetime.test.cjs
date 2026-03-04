@@ -15,9 +15,24 @@ function buildTasklistOutput(processIds = []) {
     .join('\r\n');
 }
 
+function buildTasklistVerboseOutput(processRows = []) {
+  if (!Array.isArray(processRows) || processRows.length < 1) {
+    return 'INFO: No tasks are running which match the specified criteria.\r\n';
+  }
+
+  return processRows
+    .map(({ pid, windowTitle }) => {
+      const safePid = Number(pid);
+      const safeTitle = String(windowTitle || 'N/A').replace(/"/g, '""');
+      return `"EXCEL.EXE","${safePid}","Console","1","123,456 K","Running","RONAN","0:00:01","${safeTitle}"`;
+    })
+    .join('\r\n');
+}
+
 function loadExcelBridge({
   processIds = [4242],
-  objectFactory = () => ({})
+  objectFactory = () => ({}),
+  execSyncImpl = null
 } = {}) {
   const originalLoad = Module._load;
   const releaseCalls = [];
@@ -38,7 +53,12 @@ function loadExcelBridge({
   };
 
   const childProcessStub = {
-    execSync: () => buildTasklistOutput(processIds)
+    execSync: (...args) => {
+      if (typeof execSyncImpl === 'function') {
+        return execSyncImpl(...args);
+      }
+      return buildTasklistOutput(processIds);
+    }
   };
 
   Module._load = function patchedLoad(request, parent, isMain) {
@@ -132,6 +152,26 @@ test('NO_EXCEL preflight occurs before COM attach', () => {
   const result = bridge.getWorkbookInfo();
   assert.equal(result.success, false);
   assert.match(result.message, /NO_EXCEL/);
+  assert.equal(getObjectCalls(), 0);
+});
+
+test('windowless preflight blocks COM attach when no Excel process has a visible window title', () => {
+  const processIds = [2111];
+  const { bridge, getObjectCalls } = loadExcelBridge({
+    objectFactory: () => {
+      throw new Error('COM attach should not be attempted when preflight sees no visible windows');
+    },
+    execSyncImpl: (command) => {
+      if (String(command).includes('/V')) {
+        return buildTasklistVerboseOutput([{ pid: 2111, windowTitle: 'N/A' }]);
+      }
+      return buildTasklistOutput(processIds);
+    }
+  });
+
+  const result = bridge.getWorkbookInfo();
+  assert.equal(result.success, false);
+  assert.match(result.message, /NO_VISIBLE_WINDOWS/);
   assert.equal(getObjectCalls(), 0);
 });
 
@@ -335,6 +375,39 @@ test('windowless detection does not carry stale grace window across process-id c
   } finally {
     Date.now = originalNow;
   }
+});
+
+test('windowless attach with process-id churn reports NO_EXCEL instead of NO_VISIBLE_WINDOWS', () => {
+  let nonVerboseTasklistCall = 0;
+  const excelApp = {
+    Windows: { Count: 0 }
+  };
+
+  const { bridge } = loadExcelBridge({
+    objectFactory: () => excelApp,
+    execSyncImpl: (command) => {
+      if (String(command).includes('/V')) {
+        // Visibility preflight should pass so this test reaches attach-time PID churn logic.
+        return buildTasklistVerboseOutput([{ pid: 3111, windowTitle: 'Book1.xlsx - Excel' }]);
+      }
+
+      nonVerboseTasklistCall += 1;
+      if (nonVerboseTasklistCall === 1) {
+        // Preflight snapshot
+        return buildTasklistOutput([3111]);
+      }
+      if (nonVerboseTasklistCall === 2) {
+        // Immediate post-attach snapshot shifted to a new process cycle
+        return buildTasklistOutput([4222]);
+      }
+      // Failure-path snapshots keep reporting the replacement process
+      return buildTasklistOutput([4222]);
+    }
+  });
+
+  const result = bridge.getWorkbookInfo();
+  assert.equal(result.success, false);
+  assert.match(result.message, /NO_EXCEL/);
 });
 
 test('getOpenWorkbooks uses fresh COM attach for each call (no persistent cache)', () => {

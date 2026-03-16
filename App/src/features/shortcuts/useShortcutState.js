@@ -1,19 +1,80 @@
-import { useState, useRef, useCallback, useEffect } from 'react';
-import {
-  mapAuditShortcutsToMacroIds
-} from '../../lib/shortcut-audit';
+import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
+import { mapAuditShortcutsToMacroIds } from '../../lib/shortcut-audit.js';
 import {
   normalizeShortcutLetterDraft,
   parseShortcutLetter,
   toExcelShortcutKeyFromLetter
-} from '../../lib/shortcut-keybind';
-import { SHORTCUT_REFRESH_TTL_MS } from '../search/search-constants';
+} from '../../lib/shortcut-keybind.js';
+import { SHORTCUT_REFRESH_TTL_MS } from '../search/search-constants.js';
 
-function shouldClearShortcutState(status) {
+const sharedShortcutCacheBySnapshot = new Map();
+
+function buildMacroIdSignature(macros = []) {
+  return (Array.isArray(macros) ? macros : [])
+    .map((macro) => String(macro?.id || ''))
+    .filter(Boolean)
+    .sort()
+    .join('|');
+}
+
+function buildShortcutSnapshotKey({ scope, workbook, macros = [] }) {
+  const workbookKey = String(workbook?.path || workbook?.name || '').trim()
+    || (scope === 'active' ? 'active-workbook' : 'workbook');
+  return `${workbookKey}::${buildMacroIdSignature(macros)}`;
+}
+
+function getShortcutApiContext(scope, workbookName, workbookPath) {
+  if (scope === 'workbook') {
+    return {
+      auditApi: window.excel?.vba?.auditShortcutsByWorkbook,
+      auditArgs: { workbookName, workbookPath },
+      setShortcutApi: window.excel?.vba?.setShortcutByWorkbook,
+      buildSetShortcutArgs: ({ macroName, shortcutKey }) => ({
+        workbookName,
+        workbookPath,
+        macroName,
+        shortcutKey
+      }),
+      unavailableAuditMessage: 'Shortcut refresh failed: Workbook shortcut audit API is unavailable.',
+      unavailableSetMessage: 'Shortcut assign failed: Workbook shortcut API is unavailable.'
+    };
+  }
+
+  return {
+    auditApi: window.excel?.vba?.auditShortcuts,
+    auditArgs: undefined,
+    setShortcutApi: window.excel?.vba?.setShortcut,
+    buildSetShortcutArgs: ({ macroName, shortcutKey }) => ({
+      macroName,
+      shortcutKey
+    }),
+    unavailableAuditMessage: 'Shortcut refresh failed: Excel VBA audit API is unavailable.',
+    unavailableSetMessage: 'Shortcut assign failed: Excel VBA setShortcut API is unavailable.'
+  };
+}
+
+export function shouldClearShortcutState(status) {
   return status === 'no_excel' || status === 'no_workbook' || status === 'multi_instance' || status === 'error';
 }
 
-export function useShortcutState({ searchData, setActionStatus, shortcutSaveInFlightRef }) {
+export function buildWorkbookShortcutSnapshotKey(workbook, macros = []) {
+  return buildShortcutSnapshotKey({
+    scope: 'workbook',
+    workbook,
+    macros
+  });
+}
+
+export function useShortcutState({
+  scope = 'active',
+  enabled = false,
+  clearOnDisabled = true,
+  workbook = null,
+  macros = [],
+  seededAudit = null,
+  setActionStatus,
+  shortcutSaveInFlightRef
+}) {
   const [shortcutByMacroId, setShortcutByMacroId] = useState({});
   const [shortcutDraftByMacroId, setShortcutDraftByMacroId] = useState({});
   const [shortcutInputErrorByMacroId, setShortcutInputErrorByMacroId] = useState({});
@@ -25,12 +86,23 @@ export function useShortcutState({ searchData, setActionStatus, shortcutSaveInFl
   const shortcutSnapshotTimestampRef = useRef(0);
   const shortcutByMacroIdRef = useRef({});
   const shortcutDraftByMacroIdRef = useRef({});
-  const shortcutCacheBySnapshotRef = useRef(new Map());
   const shortcutSavingMacroIdRef = useRef(null);
   const shortcutLoadErrorRef = useRef('');
 
-  const applyShortcutAuditResult = useCallback((auditResult, macros, snapshotKey) => {
-    const rawShortcutMap = mapAuditShortcutsToMacroIds(auditResult, macros);
+  const normalizedScope = scope === 'workbook' ? 'workbook' : 'active';
+  const workbookName = String(workbook?.name || '').trim();
+  const workbookPath = String(workbook?.path || '').trim();
+  const macrosList = useMemo(
+    () => (Array.isArray(macros) ? macros : []),
+    [macros]
+  );
+  const macroIdSignature = useMemo(
+    () => buildMacroIdSignature(macrosList),
+    [macrosList]
+  );
+
+  const applyShortcutAuditResult = useCallback((auditResult, snapshotKey) => {
+    const rawShortcutMap = mapAuditShortcutsToMacroIds(auditResult, macrosList);
     const shortcutMap = {};
     Object.entries(rawShortcutMap).forEach(([macroId, value]) => {
       const parsedLetter = parseShortcutLetter(value);
@@ -42,7 +114,7 @@ export function useShortcutState({ searchData, setActionStatus, shortcutSaveInFl
     const previousSavedMap = shortcutByMacroIdRef.current;
     const previousDraftMap = shortcutDraftByMacroIdRef.current;
     const nextDraftMap = {};
-    macros.forEach((macro) => {
+    macrosList.forEach((macro) => {
       const savedShortcut = previousSavedMap[macro.id] || '';
       const fetchedShortcut = shortcutMap[macro.id] || '';
       const hasDraft = Object.prototype.hasOwnProperty.call(previousDraftMap, macro.id);
@@ -54,7 +126,7 @@ export function useShortcutState({ searchData, setActionStatus, shortcutSaveInFl
     shortcutSnapshotRef.current = snapshotKey;
     shortcutSnapshotTimestampRef.current = Date.now();
     shortcutLoadErrorRef.current = '';
-    shortcutCacheBySnapshotRef.current.set(snapshotKey, {
+    sharedShortcutCacheBySnapshot.set(snapshotKey, {
       shortcutMap,
       draftMap: nextDraftMap,
       timestamp: shortcutSnapshotTimestampRef.current
@@ -64,16 +136,32 @@ export function useShortcutState({ searchData, setActionStatus, shortcutSaveInFl
     setShortcutDraftByMacroId(nextDraftMap);
     shortcutByMacroIdRef.current = shortcutMap;
     shortcutDraftByMacroIdRef.current = nextDraftMap;
+  }, [macrosList]);
+
+  const resetShortcutState = useCallback(() => {
+    shortcutSnapshotRef.current = '';
+    shortcutSnapshotTimestampRef.current = 0;
+    shortcutLoadErrorRef.current = '';
+    setShortcutByMacroId({});
+    setShortcutDraftByMacroId({});
+    setShortcutInputErrorByMacroId({});
+    setShortcutSavingMacroId(null);
+    shortcutByMacroIdRef.current = {};
+    shortcutDraftByMacroIdRef.current = {};
+    shortcutSavingMacroIdRef.current = null;
   }, []);
 
   const loadMacroShortcuts = useCallback(async ({ force = false } = {}) => {
-    if (searchData.status !== 'ready') {
+    const requiresWorkbookIdentity = normalizedScope === 'workbook';
+    if (!enabled || (requiresWorkbookIdentity && !workbookName)) {
       return;
     }
 
-    const macros = Array.isArray(searchData.macros) ? searchData.macros : [];
-    const workbookKey = searchData.workbook?.path || searchData.workbook?.name || 'active-workbook';
-    const snapshotKey = `${workbookKey}::${macros.map((macro) => macro.id).sort().join('|')}`;
+    const snapshotKey = buildShortcutSnapshotKey({
+      scope: normalizedScope,
+      workbook: { name: workbookName, path: workbookPath },
+      macros: macrosList
+    });
     const snapshotUnchanged = snapshotKey === shortcutSnapshotRef.current;
     const snapshotAgeMs = Date.now() - shortcutSnapshotTimestampRef.current;
     const snapshotStillFresh = snapshotAgeMs < SHORTCUT_REFRESH_TTL_MS;
@@ -81,7 +169,7 @@ export function useShortcutState({ searchData, setActionStatus, shortcutSaveInFl
       return;
     }
 
-    const cachedSnapshot = shortcutCacheBySnapshotRef.current.get(snapshotKey);
+    const cachedSnapshot = sharedShortcutCacheBySnapshot.get(snapshotKey);
     if (!force && cachedSnapshot && (Date.now() - Number(cachedSnapshot.timestamp || 0)) < SHORTCUT_REFRESH_TTL_MS) {
       shortcutSnapshotRef.current = snapshotKey;
       shortcutSnapshotTimestampRef.current = Number(cachedSnapshot.timestamp || Date.now());
@@ -93,7 +181,6 @@ export function useShortcutState({ searchData, setActionStatus, shortcutSaveInFl
       return;
     }
 
-    const seededAudit = searchData?.shortcutAudit;
     if (
       !force &&
       seededAudit &&
@@ -101,17 +188,21 @@ export function useShortcutState({ searchData, setActionStatus, shortcutSaveInFl
       seededAudit.success !== false &&
       Array.isArray(seededAudit.shortcuts)
     ) {
-      applyShortcutAuditResult(seededAudit, macros, snapshotKey);
+      applyShortcutAuditResult(seededAudit, snapshotKey);
       return;
     }
 
-    const auditApi = window.excel?.vba?.auditShortcuts;
-    if (!auditApi) {
+    const {
+      auditApi,
+      auditArgs,
+      unavailableAuditMessage
+    } = getShortcutApiContext(normalizedScope, workbookName, workbookPath);
+
+    if (typeof auditApi !== 'function') {
       if (force || Object.keys(shortcutByMacroIdRef.current).length === 0) {
-        const message = 'Shortcut refresh failed: Excel VBA audit API is unavailable.';
-        if (message !== shortcutLoadErrorRef.current) {
-          setActionStatus('error', message);
-          shortcutLoadErrorRef.current = message;
+        if (unavailableAuditMessage !== shortcutLoadErrorRef.current) {
+          setActionStatus?.('error', unavailableAuditMessage);
+          shortcutLoadErrorRef.current = unavailableAuditMessage;
         }
       }
       return;
@@ -124,28 +215,35 @@ export function useShortcutState({ searchData, setActionStatus, shortcutSaveInFl
     const requestId = ++shortcutAuditRequestSequence.current;
 
     try {
-      const result = await auditApi();
+      const result = auditArgs ? await auditApi(auditArgs) : await auditApi();
       if (requestId !== shortcutAuditRequestSequence.current) {
         return;
       }
+
       if (!result?.success) {
         if (force || Object.keys(shortcutByMacroIdRef.current).length === 0) {
           const backendMessage = result?.message || 'Unknown error.';
           const message = `Shortcut refresh failed: ${backendMessage}`;
           if (message !== shortcutLoadErrorRef.current) {
-            setActionStatus('error', message);
+            setActionStatus?.('error', message);
             shortcutLoadErrorRef.current = message;
           }
         }
         return;
       }
-      applyShortcutAuditResult(result, macros, snapshotKey);
+
+      if (normalizedScope === 'workbook' && result?.workbookFound === false) {
+        resetShortcutState();
+        return;
+      }
+
+      applyShortcutAuditResult(result, snapshotKey);
     } catch (error) {
       if (force || Object.keys(shortcutByMacroIdRef.current).length === 0) {
         const backendMessage = error?.message ? String(error.message) : 'Unexpected error.';
         const message = `Shortcut refresh failed: ${backendMessage}`;
         if (message !== shortcutLoadErrorRef.current) {
-          setActionStatus('error', message);
+          setActionStatus?.('error', message);
           shortcutLoadErrorRef.current = message;
         }
       }
@@ -154,40 +252,34 @@ export function useShortcutState({ searchData, setActionStatus, shortcutSaveInFl
     }
   }, [
     applyShortcutAuditResult,
-    searchData.macros,
-    searchData.shortcutAudit,
-    searchData.status,
-    searchData.workbook?.name,
-    searchData.workbook?.path,
-    setActionStatus
+    enabled,
+    macrosList,
+    normalizedScope,
+    resetShortcutState,
+    seededAudit,
+    setActionStatus,
+    workbookName,
+    workbookPath
   ]);
 
   useEffect(() => {
-    if (searchData.status !== 'ready') {
-      if (!shouldClearShortcutState(searchData.status)) {
-        return;
+    const requiresWorkbookIdentity = normalizedScope === 'workbook';
+    if (!enabled || (requiresWorkbookIdentity && !workbookName)) {
+      if (clearOnDisabled) {
+        resetShortcutState();
       }
-      shortcutSnapshotRef.current = '';
-      shortcutSnapshotTimestampRef.current = 0;
-      shortcutLoadErrorRef.current = '';
-      shortcutCacheBySnapshotRef.current.clear();
-      setShortcutByMacroId({});
-      setShortcutDraftByMacroId({});
-      setShortcutInputErrorByMacroId({});
-      setShortcutSavingMacroId(null);
-      shortcutByMacroIdRef.current = {};
-      shortcutDraftByMacroIdRef.current = {};
       return;
     }
 
     loadMacroShortcuts();
   }, [
+    clearOnDisabled,
+    enabled,
     loadMacroShortcuts,
-    searchData.macros,
-    searchData.shortcutAudit,
-    searchData.status,
-    searchData.workbook?.name,
-    searchData.workbook?.path
+    macroIdSignature,
+    normalizedScope,
+    resetShortcutState,
+    workbookName
   ]);
 
   useEffect(() => {
@@ -214,8 +306,14 @@ export function useShortcutState({ searchData, setActionStatus, shortcutSaveInFl
     });
   }, []);
 
-  const handleShortcutCommit = useCallback(async (macro, _trigger) => {
-    if (!macro || shortcutSavingMacroIdRef.current) {
+  const handleShortcutCommit = useCallback(async (macro) => {
+    const requiresWorkbookIdentity = normalizedScope === 'workbook';
+    if (
+      !enabled ||
+      !macro ||
+      shortcutSavingMacroIdRef.current ||
+      (requiresWorkbookIdentity && !workbookName)
+    ) {
       return;
     }
 
@@ -266,32 +364,44 @@ export function useShortcutState({ searchData, setActionStatus, shortcutSaveInFl
 
     const macroName = macro?.fullName || macro?.runTarget || macro?.name || '';
     if (!macroName) {
-      setActionStatus('error', 'Shortcut assign failed: Macro identity is missing.');
+      setActionStatus?.('error', 'Shortcut assign failed: Macro identity is missing.');
       return;
     }
 
-    const setShortcutApi = window.excel?.vba?.setShortcut;
-    if (!setShortcutApi) {
-      setActionStatus('error', 'Shortcut assign failed: Excel VBA setShortcut API is unavailable.');
+    const {
+      setShortcutApi,
+      buildSetShortcutArgs,
+      unavailableSetMessage
+    } = getShortcutApiContext(normalizedScope, workbookName, workbookPath);
+
+    if (typeof setShortcutApi !== 'function') {
+      setActionStatus?.('error', unavailableSetMessage);
       return;
     }
 
     shortcutSavingMacroIdRef.current = macro.id;
-    if (shortcutSaveInFlightRef) shortcutSaveInFlightRef.current = true;
+    if (shortcutSaveInFlightRef) {
+      shortcutSaveInFlightRef.current = true;
+    }
     setShortcutSavingMacroId(macro.id);
-    setActionStatus('running', `Saving shortcut for ${macro.name}...`);
+    setActionStatus?.('running', `Saving shortcut for ${macro.name}...`);
 
     try {
       const excelShortcutKey = toExcelShortcutKeyFromLetter(normalizedShortcut);
       if (!excelShortcutKey) {
-        setActionStatus('error', 'Shortcut assign failed: Enter a valid shortcut key.');
+        setActionStatus?.('error', 'Shortcut assign failed: Enter a valid shortcut key.');
         return;
       }
 
-      const result = await setShortcutApi({
+      const result = await setShortcutApi(buildSetShortcutArgs({
         macroName,
         shortcutKey: excelShortcutKey
-      });
+      }));
+
+      if (normalizedScope === 'workbook' && result?.workbookFound === false) {
+        setActionStatus?.('error', result?.message || `Workbook "${workbookName}" is not open.`);
+        return;
+      }
 
       if (result?.success) {
         const backendMessage = result?.message || `${macroName} -> ${normalizedShortcut}`;
@@ -311,21 +421,31 @@ export function useShortcutState({ searchData, setActionStatus, shortcutSaveInFl
           delete next[macro.id];
           return next;
         });
-        setActionStatus('success', `Shortcut assigned: ${backendMessage}`);
+        setActionStatus?.('success', `Shortcut assigned: ${backendMessage}`);
         await loadMacroShortcuts({ force: true });
       } else {
         const backendMessage = result?.message || 'Unknown error.';
-        setActionStatus('error', `Shortcut assign failed: ${backendMessage}`);
+        setActionStatus?.('error', `Shortcut assign failed: ${backendMessage}`);
       }
     } catch (error) {
       const backendMessage = error?.message ? String(error.message) : 'Unexpected error.';
-      setActionStatus('error', `Shortcut assign failed: ${backendMessage}`);
+      setActionStatus?.('error', `Shortcut assign failed: ${backendMessage}`);
     } finally {
       shortcutSavingMacroIdRef.current = null;
-      if (shortcutSaveInFlightRef) shortcutSaveInFlightRef.current = false;
+      if (shortcutSaveInFlightRef) {
+        shortcutSaveInFlightRef.current = false;
+      }
       setShortcutSavingMacroId(null);
     }
-  }, [loadMacroShortcuts, setActionStatus, shortcutSaveInFlightRef]);
+  }, [
+    enabled,
+    loadMacroShortcuts,
+    normalizedScope,
+    setActionStatus,
+    shortcutSaveInFlightRef,
+    workbookName,
+    workbookPath
+  ]);
 
   return {
     shortcutByMacroId,

@@ -1,179 +1,188 @@
-import { PERSONAL_WORKBOOK_NAME } from './usePersonalMacros';
+import { PERSONAL_WORKBOOK_NAME } from './usePersonalMacros.js';
 
 /**
  * @typedef {Object} TreeNode
  * @property {string}     id
  * @property {'workbook'|'module'|'macro'} nodeType
  * @property {string}     label
- * @property {Object|null} data     - Original domain object, null for inferred nodes
+ * @property {Object|null} data
  * @property {TreeNode[]} children
  */
 
-/**
- * Build the hierarchical Explorer tree from live search data.
- * Returns 0–2 workbook root nodes (active + optional PERSONAL).
- */
-export function buildExplorerTree(searchData, personalState) {
-  if (!searchData || searchData.status !== 'ready' || !searchData.workbook) {
-    return [];
-  }
+function toSafeString(value) {
+  return String(value || '').trim();
+}
 
-  const workbook = searchData.workbook;
-  const modules = Array.isArray(searchData.modules) ? searchData.modules : [];
-  const macros = Array.isArray(searchData.macros) ? searchData.macros : [];
+function toWorkbookKey(workbook) {
+  return toSafeString(workbook?.path) || toSafeString(workbook?.name);
+}
 
-  // Group macros by module name
+function buildModuleNodes({ workbook, modules = [], macros = [] }) {
   const macrosByModule = new Map();
-  for (const macro of macros) {
-    const key = macro.module || '';
-    if (!macrosByModule.has(key)) macrosByModule.set(key, []);
+  (Array.isArray(macros) ? macros : []).forEach((macro) => {
+    const key = toSafeString(macro?.module);
+    if (!macrosByModule.has(key)) {
+      macrosByModule.set(key, []);
+    }
     macrosByModule.get(key).push(macro);
-  }
+  });
 
-  // Track which module names are covered by real module objects
-  const knownModuleNames = new Set(modules.map((m) => m.name));
+  const knownModuleNames = new Set(
+    (Array.isArray(modules) ? modules : []).map((moduleItem) => toSafeString(moduleItem?.name))
+  );
 
-  // Build module nodes from real modules
-  const moduleNodes = modules.map((mod) => ({
-    id: mod.id,
-    nodeType: 'module',
-    label: mod.name,
-    data: mod,
-    children: (macrosByModule.get(mod.name) || []).map((macro) => ({
-      id: macro.id,
-      nodeType: 'macro',
-      label: macro.name,
-      data: macro,
-      children: [],
-    })),
-  }));
+  const moduleNodes = (Array.isArray(modules) ? modules : []).map((moduleItem) => {
+    const moduleName = toSafeString(moduleItem?.name);
+    return {
+      id: moduleItem.id,
+      nodeType: 'module',
+      label: moduleName,
+      data: moduleItem,
+      children: (macrosByModule.get(moduleName) || []).map((macro) => ({
+        id: macro.id,
+        nodeType: 'macro',
+        label: macro.name,
+        data: macro,
+        children: []
+      }))
+    };
+  });
 
-  // Build synthetic module nodes for orphan macros
   for (const [moduleName, orphanMacros] of macrosByModule) {
-    if (knownModuleNames.has(moduleName)) continue;
-    const wbKey = String(workbook.path || workbook.name).trim();
+    if (knownModuleNames.has(moduleName)) {
+      continue;
+    }
+
+    const workbookKey = toWorkbookKey(workbook) || 'workbook';
     moduleNodes.push({
-      id: `${wbKey}::module::${moduleName}`,
+      id: `${workbookKey}::module::${moduleName}`,
       nodeType: 'module',
       label: moduleName || 'Unknown Module',
-      data: null,
+      data: {
+        name: moduleName || 'Unknown Module',
+        workbookName: workbook?.name || '',
+        workbookPath: workbook?.path || ''
+      },
       children: orphanMacros.map((macro) => ({
         id: macro.id,
         nodeType: 'macro',
         label: macro.name,
         data: macro,
-        children: [],
-      })),
+        children: []
+      }))
     });
   }
 
-  // Sort modules alphabetically
   moduleNodes.sort((a, b) => a.label.localeCompare(b.label));
-
-  const activeWbNode = {
-    id: `wb::${workbook.path || workbook.name}`,
-    nodeType: 'workbook',
-    label: workbook.name,
-    data: workbook,
-    children: moduleNodes,
-  };
-
-  const tree = [activeWbNode];
-
-  // Build PERSONAL workbook node if applicable
-  const activeNameUpper = String(workbook.name || '').trim().toUpperCase();
-  const isPersonalActive = activeNameUpper === PERSONAL_WORKBOOK_NAME;
-
-  if (
-    !isPersonalActive &&
-    personalState &&
-    personalState.status === 'ready' &&
-    Array.isArray(personalState.macros) &&
-    personalState.macros.length > 0
-  ) {
-    const personalMacrosByModule = new Map();
-    for (const macro of personalState.macros) {
-      const key = macro.module || '';
-      if (!personalMacrosByModule.has(key)) personalMacrosByModule.set(key, []);
-      personalMacrosByModule.get(key).push(macro);
-    }
-
-    const personalModuleNodes = [];
-    for (const [moduleName, pMacros] of personalMacrosByModule) {
-      personalModuleNodes.push({
-        id: `personal::module::${moduleName}`,
-        nodeType: 'module',
-        label: moduleName || 'Unknown Module',
-        data: null,
-        children: pMacros.map((macro) => ({
-          id: `personal::${macro.id}`,
-          nodeType: 'macro',
-          label: macro.name,
-          data: macro,
-          children: [],
-        })),
-      });
-    }
-
-    personalModuleNodes.sort((a, b) => a.label.localeCompare(b.label));
-
-    tree.push({
-      id: 'wb::PERSONAL.XLSB',
-      nodeType: 'workbook',
-      label: 'PERSONAL.XLSB (Global Macros)',
-      data: null,
-      children: personalModuleNodes,
-    });
-  }
-
-  return tree;
+  return moduleNodes;
 }
 
 /**
- * Filter the Explorer tree by search query with bubble-up semantics.
- * Returns the filtered tree and a Set of all node IDs that should be expanded.
+ * Build the hierarchical Explorer tree from active workbook data plus open workbook/module context.
+ * Supports both the legacy signature `(searchData, personalState)` and the object form.
  */
-export function filterExplorerTree(tree, query, shortcutByMacroId = {}) {
-  const q = String(query || '').trim().toLowerCase();
-  if (!q) {
-    return { filteredTree: tree, matchedIds: new Set() };
-  }
-
-  const matchedIds = new Set();
-
-  function filterNode(node) {
-    if (node.nodeType === 'macro') {
-      const shortcut = String(shortcutByMacroId[node.data?.id] || '');
-      const isUpper = /^[A-Z]$/.test(shortcut);
-      const shortcutTokens = shortcut
-        ? `ctrl ${isUpper ? 'shift ' : ''}${shortcut.toLowerCase()}`
-        : '';
-      const haystack = `${node.label} ${node.data?.module || ''} ${shortcut} ${shortcutTokens}`.toLowerCase();
-      if (haystack.includes(q)) {
-        matchedIds.add(node.id);
-        return node;
-      }
-      return null;
-    }
-
-    // Branch node (workbook or module)
-    const selfMatch = node.label.toLowerCase().includes(q);
-    const filteredChildren = node.children.map(filterNode).filter(Boolean);
-
-    if (filteredChildren.length > 0 || selfMatch) {
-      matchedIds.add(node.id);
-      return {
-        ...node,
-        // Self-match shows all children; otherwise only show filtered
-        children: selfMatch ? node.children : filteredChildren,
+export function buildExplorerTree(searchDataOrOptions, personalStateArg) {
+  const options = searchDataOrOptions && typeof searchDataOrOptions === 'object' && 'searchData' in searchDataOrOptions
+    ? searchDataOrOptions
+    : {
+        searchData: searchDataOrOptions,
+        personalState: personalStateArg,
+        workbooks: [],
+        allFilesModules: []
       };
-    }
 
-    return null;
+  const searchData = options?.searchData;
+  const personalState = options?.personalState;
+  const openWorkbooks = Array.isArray(options?.workbooks) ? options.workbooks : [];
+  const allFilesModules = Array.isArray(options?.allFilesModules) ? options.allFilesModules : [];
+
+  if (!searchData || searchData.status !== 'ready' || !searchData.workbook) {
+    return [];
   }
 
-  const filteredTree = tree.map(filterNode).filter(Boolean);
-  return { filteredTree, matchedIds };
+  const activeWorkbook = searchData.workbook;
+  const activeWorkbookKey = toWorkbookKey(activeWorkbook);
+  const activeModules = Array.isArray(searchData.modules) ? searchData.modules : [];
+  const activeMacros = Array.isArray(searchData.macros) ? searchData.macros : [];
+
+  const workbookMap = new Map();
+  const orderedWorkbookKeys = [];
+  const registerWorkbook = (workbook) => {
+    const workbookKey = toWorkbookKey(workbook);
+    if (!workbookKey || workbookMap.has(workbookKey)) {
+      return;
+    }
+
+    workbookMap.set(workbookKey, {
+      ...workbook,
+      name: toSafeString(workbook?.name) || 'Workbook',
+      path: toSafeString(workbook?.path)
+    });
+    orderedWorkbookKeys.push(workbookKey);
+  };
+
+  registerWorkbook(activeWorkbook);
+  openWorkbooks.forEach((workbook) => registerWorkbook(workbook));
+  if (
+    personalState?.status === 'ready' &&
+    (personalState?.workbookFound || (Array.isArray(personalState?.macros) && personalState.macros.length > 0))
+  ) {
+    registerWorkbook({
+      name: PERSONAL_WORKBOOK_NAME,
+      path: toSafeString(personalState?.workbook?.path || personalState?.workbookPath)
+    });
+  }
+
+  const modulesByWorkbook = new Map();
+  const registerModule = (moduleItem) => {
+    const workbookKey = toWorkbookKey({
+      name: moduleItem?.workbookName,
+      path: moduleItem?.workbookPath
+    });
+    if (!workbookKey) {
+      return;
+    }
+
+    if (!modulesByWorkbook.has(workbookKey)) {
+      modulesByWorkbook.set(workbookKey, new Map());
+    }
+
+    const moduleId = toSafeString(moduleItem?.id);
+    if (!moduleId) {
+      return;
+    }
+    modulesByWorkbook.get(workbookKey).set(moduleId, moduleItem);
+  };
+
+  allFilesModules.forEach((moduleItem) => registerModule(moduleItem));
+  activeModules.forEach((moduleItem) => registerModule(moduleItem));
+
+  const tree = orderedWorkbookKeys.map((workbookKey) => {
+    const workbook = workbookMap.get(workbookKey);
+    const workbookNameUpper = toSafeString(workbook?.name).toUpperCase();
+    const workbookModules = Array.from(modulesByWorkbook.get(workbookKey)?.values() || []);
+    const workbookMacros = workbookKey === activeWorkbookKey
+      ? activeMacros
+      : (workbookNameUpper === PERSONAL_WORKBOOK_NAME && personalState?.status === 'ready'
+        ? (Array.isArray(personalState?.macros) ? personalState.macros : [])
+        : []);
+
+    return {
+      id: `wb::${workbookKey}`,
+      nodeType: 'workbook',
+      label: workbookNameUpper === PERSONAL_WORKBOOK_NAME && workbookKey !== activeWorkbookKey
+        ? 'PERSONAL.XLSB (Global Macros)'
+        : workbook.name,
+      data: workbook,
+      children: buildModuleNodes({
+        workbook,
+        modules: workbookModules,
+        macros: workbookMacros
+      })
+    };
+  });
+
+  return tree;
 }
 
 /**
@@ -189,8 +198,8 @@ export function buildNodeMetadata(node) {
         rows: [
           { label: 'Name', value: node.data?.name || node.label },
           { label: 'Path', value: node.data?.path || '-' },
-          { label: 'Active Sheet', value: node.data?.activeSheet || '-' },
-        ],
+          { label: 'Active Sheet', value: node.data?.activeSheet || '-' }
+        ]
       };
 
     case 'module':
@@ -200,8 +209,8 @@ export function buildNodeMetadata(node) {
           { label: 'Name', value: node.data?.name || node.label },
           { label: 'Type', value: node.data?.type || 'Unknown' },
           { label: 'Lines', value: node.data?.lineCount != null ? String(node.data.lineCount) : '-' },
-          { label: 'Workbook', value: node.data?.workbookName || '-' },
-        ],
+          { label: 'Workbook', value: node.data?.workbookName || '-' }
+        ]
       };
 
     case 'macro':
@@ -211,8 +220,8 @@ export function buildNodeMetadata(node) {
           { label: 'Name', value: node.data?.name || node.label },
           { label: 'Type', value: node.data?.kind || 'Sub' },
           { label: 'Module', value: node.data?.module || '-' },
-          { label: 'Scope', value: node.data?.scope || '-' },
-        ],
+          { label: 'Scope', value: node.data?.scope || '-' }
+        ]
       };
 
     default:
@@ -236,12 +245,9 @@ export function countTreeItems(tree) {
 }
 
 /**
- * Return default expanded IDs: active workbook expanded, PERSONAL collapsed.
+ * Return default expanded IDs for the Explorer tree.
+ * Workbook roots start collapsed until the user expands them.
  */
-export function getDefaultExpandedIds(tree) {
-  const ids = new Set();
-  if (tree.length > 0 && tree[0].nodeType === 'workbook') {
-    ids.add(tree[0].id);
-  }
-  return ids;
+export function getDefaultExpandedIds() {
+  return new Set();
 }

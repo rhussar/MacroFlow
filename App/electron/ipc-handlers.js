@@ -712,6 +712,13 @@ function registerHandlers() {
     };
   });
 
+  ipcMain.on('app:minimize', () => {
+    const win = BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0];
+    if (win && !win.isDestroyed()) {
+      win.minimize();
+    }
+  });
+
   ipcMain.on('app:close', () => {
     if (closeRequested) {
       logger.info('Lifecycle', 'app:close ignored (close already requested)');
@@ -1674,6 +1681,22 @@ function registerHandlers() {
   });
 
   /**
+   * Get PERSONAL.XLSB status + procedures + shortcut audit in one backend call.
+   * Channel: 'personal:context'
+   * Returns: { success, workbookFound, workbook, fileExists, workbookPath, procedures, shortcutAudit, message? }
+   */
+  ipcMain.handle('personal:context', async () => {
+    logIpc('personal:context', 'start');
+    const result = await withComRelease(() => excel.getPersonalWorkbookContext());
+    logIpc('personal:context', 'end', {
+      success: result.success,
+      workbookFound: result.workbookFound,
+      procedures: result.procedures?.length
+    });
+    return result;
+  });
+
+  /**
    * Open PERSONAL.XLSB from XLSTART.
    * Channel: 'personal:open'
    * Returns: { success, workbookFound, opened, alreadyOpen, workbook, fileExists, workbookPath, message? }
@@ -1895,5 +1918,4 @@ function registerHandlers() {
 }
 
 module.exports = { registerHandlers };
-
 

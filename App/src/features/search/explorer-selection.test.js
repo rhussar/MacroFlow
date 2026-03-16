@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { resolveInitialModuleNode } from './useExplorerWorkbookData.js';
+import { resolveInitialModuleNode } from './explorer-selection.js';
 
 test('resolveInitialModuleNode prefers module id when available', () => {
   const tree = [
@@ -64,4 +64,3 @@ test('resolveInitialModuleNode returns null when no module matches context', () 
 
   assert.equal(node, null);
 });
-

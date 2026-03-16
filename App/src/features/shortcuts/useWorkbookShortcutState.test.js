@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { buildWorkbookShortcutSnapshotKey } from './useWorkbookShortcutState.js';
+import { buildWorkbookShortcutSnapshotKey } from './useShortcutState.js';
 
 test('buildWorkbookShortcutSnapshotKey includes workbook identity and stable sorted macro IDs', () => {
   const snapshotKey = buildWorkbookShortcutSnapshotKey(

@@ -1,6 +1,7 @@
 ﻿import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { ArrowLeftIcon, CloseIcon, CheckIcon, MacroFlowLogo, DocumentIcon, SidebarIcon } from './icons';
-import CodePreview from './CodePreview';
+import { FolderIcon } from '../components/icons';
+import CodePreview from '../components/CodePreview';
+import SplitDivider from '../components/SplitDivider';
 import {
   BUILD_MODE_SEED_CODE,
   normalizeBuildWorkbook,
@@ -89,20 +90,32 @@ function mapAiGenerationMessage(result, fallbackMessage = '') {
   }
 }
 
-const BuildMode = ({
+const CreatePage = ({
   onBack,
   onClose,
   targetWorkbook,
   launchMode = 'new_module',
   launchModuleName = '',
   launchSource = '',
-  onRefreshSearchData
+  onRefreshSearchData,
+  chatOpen: chatOpenProp,
+  onChatToggle
 }) => {
   const [prompt, setPrompt] = useState('');
-  const [buildState, setBuildState] = useState('initializing');
-  const [steps, setSteps] = useState(() => createInitializationSteps({ resolve: 'loading' }));
+  const [buildState, setBuildState] = useState(() =>
+    shouldUseStrictWorkbook(resolveBuildLaunchMode(launchMode)) ? 'initializing' : 'idle'
+  );
+  const [steps, setSteps] = useState(() =>
+    shouldUseStrictWorkbook(resolveBuildLaunchMode(launchMode))
+      ? createInitializationSteps({ resolve: 'loading' })
+      : []
+  );
   const [errorInfo, setErrorInfo] = useState(null);
-  const [chatOpen, setChatOpen] = useState(true);
+  const [chatOpenInternal, setChatOpenInternal] = useState(true);
+  const chatOpen = chatOpenProp !== undefined ? chatOpenProp : chatOpenInternal;
+  const setChatOpen = onChatToggle
+    ? () => onChatToggle()
+    : setChatOpenInternal;
   const [editedCode, setEditedCode] = useState(BUILD_MODE_SEED_CODE);
   const [isBusy, setIsBusy] = useState(false);
   const [location, setLocation] = useState(buildLocation(targetWorkbook?.name, DEFAULT_MODULE_LABEL));
@@ -110,7 +123,8 @@ const BuildMode = ({
   const [runOutcome, setRunOutcome] = useState('idle');
   const [savedMacroName, setSavedMacroName] = useState('');
   const [lastPrompt, setLastPrompt] = useState('');
-  const [includeCurrentCode, setIncludeCurrentCode] = useState(false);
+  const [includeCurrentCode, setIncludeCurrentCode] = useState(true);
+  const [splitPct, setSplitPct] = useState(40);
   const [exitDialog, setExitDialog] = useState(null);
   const [savedShortcutLetter, setSavedShortcutLetter] = useState('');
   const [draftShortcutLetter, setDraftShortcutLetter] = useState('');
@@ -750,7 +764,13 @@ const BuildMode = ({
     }
   }, []);
 
-  const toggleChat = useCallback(() => setChatOpen((previous) => !previous), []);
+  const toggleChat = useCallback(() => {
+    if (onChatToggle) {
+      onChatToggle();
+    } else {
+      setChatOpenInternal((previous) => !previous);
+    }
+  }, [onChatToggle]);
 
   const handleSubmit = useCallback(async () => {
     const submittedPrompt = String(promptRef.current || '').trim();
@@ -811,6 +831,160 @@ const BuildMode = ({
       isBusyRef.current = false;
     }
   }, [includeCurrentCode, markLocalDirty]);
+
+  const handleFirstSubmit = useCallback(async () => {
+    const submittedPrompt = String(promptRef.current || '').trim();
+    if (isBusyRef.current || !submittedPrompt) return;
+
+    const generateVbaApi = window.excel?.ai?.generateVba;
+    if (typeof generateVbaApi !== 'function') {
+      setErrorInfo({ title: 'Generation failed: AI generation API is unavailable.', line: null });
+      return;
+    }
+
+    setLastPrompt(submittedPrompt);
+    setPrompt('');
+    setBuildState('initializing');
+    setIsBusy(true);
+    isBusyRef.current = true;
+    setErrorInfo(null);
+    setRunOutcome('idle');
+
+    try {
+      const apiCheck = ensureBuildApis();
+      if (!apiCheck.ok) {
+        stopWithError(apiCheck.message, { restartRequired: apiCheck.restartRequired });
+        return;
+      }
+      const {
+        modulesByWorkbook: modulesByWorkbookApi,
+        injectByWorkbook: injectByWorkbookApi,
+        workbookInfo: workbookInfoApi
+      } = apiCheck.apis;
+
+      // Phase 1: Resolve workbook
+      let selectedResolution = null;
+      let activeResolution = null;
+
+      const selectedCandidate = normalizeBuildWorkbook(normalizedWorkbook);
+      if (selectedCandidate) {
+        const selectedModulesResult = await modulesByWorkbookApi(toWorkbookRequest(selectedCandidate));
+        if (!selectedModulesResult?.success) {
+          throw new Error(selectedModulesResult?.message || 'Unable to inspect selected workbook.');
+        }
+        if (selectedModulesResult?.workbookFound !== false) {
+          selectedResolution = {
+            workbook: normalizeBuildWorkbook(selectedModulesResult?.workbook || selectedCandidate) || selectedCandidate,
+            modules: Array.isArray(selectedModulesResult?.modules) ? selectedModulesResult.modules : []
+          };
+        }
+      }
+
+      if (!selectedResolution) {
+        const workbookInfoResult = await workbookInfoApi();
+        if (!workbookInfoResult?.success) {
+          throw new Error(workbookInfoResult?.message || 'No active workbook is available.');
+        }
+        const activeCandidate = toActiveWorkbookModel(workbookInfoResult);
+        if (!activeCandidate) {
+          throw new Error('No active workbook is available.');
+        }
+        const activeModulesResult = await modulesByWorkbookApi(toWorkbookRequest(activeCandidate));
+        if (!activeModulesResult?.success) {
+          throw new Error(activeModulesResult?.message || 'Unable to inspect active workbook.');
+        }
+        if (activeModulesResult?.workbookFound === false) {
+          throw new Error('No valid workbook is available for Build Mode.');
+        }
+        activeResolution = {
+          workbook: normalizeBuildWorkbook(activeModulesResult?.workbook || activeCandidate) || activeCandidate,
+          modules: Array.isArray(activeModulesResult?.modules) ? activeModulesResult.modules : []
+        };
+      }
+
+      const resolvedWorkbook = resolveBuildWorkbookTarget({
+        selectedWorkbook: selectedResolution?.workbook,
+        selectedWorkbookFound: Boolean(selectedResolution),
+        activeWorkbook: activeResolution?.workbook
+      });
+      if (!resolvedWorkbook) {
+        throw new Error('No valid workbook is available for Build Mode.');
+      }
+      const resolvedModules = selectedResolution?.modules || activeResolution?.modules || [];
+
+      // Phase 2: Create module
+      const nextModuleName = selectNextModuleName(resolvedModules, MODULE_PREFIX);
+      setLocation(buildLocation(resolvedWorkbook.name, nextModuleName));
+
+      const injectResult = await injectByWorkbookApi({
+        workbookName: resolvedWorkbook.name,
+        workbookPath: resolvedWorkbook.path,
+        moduleName: nextModuleName,
+        code: BUILD_MODE_SEED_CODE,
+        createIfMissing: true
+      });
+      if (!injectResult?.success) {
+        throw new Error(injectResult?.message || 'Unable to create the Build Mode module.');
+      }
+      if (injectResult?.workbookFound === false) {
+        const workbookLabel = resolvedWorkbook.path || resolvedWorkbook.name;
+        throw new Error(`Workbook "${workbookLabel}" is not open.`);
+      }
+
+      const createdWorkbook = normalizeBuildWorkbook(injectResult?.workbook || resolvedWorkbook) || resolvedWorkbook;
+      const createdModuleName = String(injectResult?.moduleName || nextModuleName).trim() || nextModuleName;
+      setLocation(buildLocation(createdWorkbook.name, createdModuleName));
+
+      // Phase 3: Set session context
+      const nextSession = {
+        workbook: createdWorkbook,
+        moduleName: createdModuleName,
+        createdAt: Date.now()
+      };
+      sessionContextRef.current = nextSession;
+      setSessionContext(nextSession);
+
+      // Phase 4: Generate VBA
+      const result = await generateVbaApi({
+        prompt: submittedPrompt,
+        workbookName: createdWorkbook.name,
+        moduleName: createdModuleName,
+        includeCurrentCode: false
+      });
+
+      if (!result?.success) {
+        throw new Error(mapAiGenerationMessage(result));
+      }
+      const generatedCode = String(result?.code || '').trim();
+      if (!generatedCode) {
+        throw new Error('OpenAI returned empty VBA output.');
+      }
+
+      setEditedCode(generatedCode);
+      setSavedMacroName(extractPrimaryMacroName(generatedCode));
+      setBuildState('ready');
+      markLocalDirty();
+
+      if (typeof onRefreshSearchData === 'function') {
+        await onRefreshSearchData({ silent: true });
+      }
+    } catch (error) {
+      const message = String(error?.message || 'Unable to generate VBA.');
+      setBuildState('idle');
+      setErrorInfo({ title: `Generation failed: ${message}`, line: null });
+    } finally {
+      setIsBusy(false);
+      isBusyRef.current = false;
+    }
+  }, [ensureBuildApis, normalizedWorkbook, markLocalDirty, onRefreshSearchData, stopWithError]);
+
+  const dispatchSubmit = useCallback(() => {
+    if (sessionContextRef.current) {
+      void handleSubmit();
+    } else {
+      void handleFirstSubmit();
+    }
+  }, [handleSubmit, handleFirstSubmit]);
 
   const cancelModuleRename = useCallback(() => {
     const restoreName = String(
@@ -1050,6 +1224,13 @@ const BuildMode = ({
   ]);
 
   useEffect(() => {
+    if (!strictLaunchMode) {
+      setBuildState('idle');
+      setIsBusy(false);
+      isBusyRef.current = false;
+      return;
+    }
+
     const bootstrapTimerId = window.setTimeout(() => {
       void bootstrapSessionRef.current();
     }, 0);
@@ -1059,6 +1240,7 @@ const BuildMode = ({
       activeBootstrapIdRef.current += 1;
     };
   }, [
+    strictLaunchMode,
     normalizedLaunchMode,
     normalizedWorkbook?.key,
     normalizedWorkbook?.name,
@@ -1218,42 +1400,15 @@ const BuildMode = ({
 
   const conversationPanel = (
     <div className="conversation-panel">
-      <div className="user-prompt">
-        {lastPrompt || 'Build session is ready. Describe what macro you want to generate.'}
-      </div>
-      <label className="build-ai-context-toggle">
-        <input
-          type="checkbox"
-          checked={includeCurrentCode}
-          onChange={(event) => setIncludeCurrentCode(event.target.checked)}
-          disabled={isBusy}
-        />
-        <span>Include current module code</span>
-      </label>
+      {lastPrompt && (
+        <div className="user-prompt">
+          {lastPrompt}
+        </div>
+      )}
 
       {errorInfo && (
         <div className="error-title">{errorInfo.title}</div>
       )}
-
-      <div className="status-steps">
-        {steps.map((step) => (
-          <div
-            key={step.key}
-            className={`status-step ${step.status === 'complete' ? 'completed' : ''}`}
-          >
-            {step.status === 'complete' ? (
-              <span className="status-checkbox checked">
-                <CheckIcon size={12} />
-              </span>
-            ) : step.status === 'loading' ? (
-              <span className="status-spinner" />
-            ) : (
-              <span className="status-checkbox" />
-            )}
-            <span>{step.text}</span>
-          </div>
-        ))}
-      </div>
 
       {errorInfo?.restartRequired && (
         <div className="completion-message">
@@ -1265,109 +1420,124 @@ const BuildMode = ({
 
   return (
     <>
-      <header className="header">
-        <div className="drag-region" />
-        <button
-          className="header-back-btn"
-          onClick={() => {
-            void attemptExitRef.current('back');
-          }}
-        >
-          <ArrowLeftIcon size={20} />
-        </button>
-
-        {showCodePanel && (
-          <button className="chat-toggle-icon-btn" onClick={toggleChat} title={chatOpen ? 'Close Chat' : 'Open Chat'}>
-            <SidebarIcon size={18} />
-          </button>
-        )}
-
-        <div className="search-input-wrapper">
-          <input
-            type="text"
-            className="search-input"
-            placeholder={
-              showCodePanel
-                ? 'Describe the macro change...'
-                : buildState === 'initializing'
-                  ? 'Preparing build session...'
-                  : 'Build session unavailable'
-            }
-            value={prompt}
-            onChange={(event) => setPrompt(event.target.value)}
-            disabled={!showCodePanel || buildState === 'initializing' || Boolean(errorInfo?.restartRequired)}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter' && showCodePanel && prompt.trim()) {
-                event.preventDefault();
-                void handleSubmit();
-              }
-            }}
-          />
-        </div>
-
-        <div className="header-actions">
-          <button
-            className="close-btn"
-            onClick={() => {
-              void attemptExitRef.current('close');
-            }}
-          >
-            <CloseIcon />
-          </button>
-        </div>
-      </header>
-
       <main className="main-content">
         {!showCodePanel ? (
-          <div className="build-empty-state">
-            <h1 className="build-empty-title">
-              {buildState === 'initializing' ? 'Preparing Build Session' : 'Build Session Unavailable'}
-            </h1>
-            <p className="build-empty-subtitle">
-              {buildState === 'initializing'
-                ? strictLaunchMode
-                  ? 'Locating the selected module and loading entry sync...'
-                  : 'Creating a workbook-bound module and loading entry sync...'
-                : 'Fix the error and retry build session initialization.'}
-            </p>
-            <div className="conversation-panel">
+          buildState === 'idle' || (buildState === 'initializing' && !strictLaunchMode) ? (
+            <div className="build-empty-state build-idle-state">
+              <h1 className="build-empty-title">Create a Macro</h1>
+              <p className="build-empty-subtitle">
+                Describe what you want your macro to do and AI will generate the VBA code.
+              </p>
               {errorInfo && <div className="error-title">{errorInfo.title}</div>}
-              <div className="status-steps">
-                {steps.map((step) => (
-                  <div
-                    key={step.key}
-                    className={`status-step ${step.status === 'complete' ? 'completed' : ''}`}
+              <div className="build-prompt-input-wrap">
+                <div className="build-prompt-input-box">
+                  <textarea
+                    className="build-prompt-input"
+                    placeholder="Describe the macro you want"
+                    rows={2}
+                    value={prompt}
+                    onChange={(event) => setPrompt(event.target.value)}
+                    disabled={isBusy}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' && !event.shiftKey && prompt.trim()) {
+                        event.preventDefault();
+                        void dispatchSubmit();
+                      }
+                    }}
+                  />
+                  <button
+                    type="button"
+                    className="build-prompt-send-btn"
+                    onClick={() => { if (prompt.trim()) void dispatchSubmit(); }}
+                    disabled={isBusy || !prompt.trim()}
+                    title="Send"
                   >
-                    {step.status === 'complete' ? (
-                      <span className="status-checkbox checked">
-                        <CheckIcon size={12} />
-                      </span>
-                    ) : step.status === 'loading' ? (
-                      <span className="status-spinner" />
-                    ) : (
-                      <span className="status-checkbox" />
-                    )}
-                    <span>{step.text}</span>
-                  </div>
-                ))}
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                      <line x1="12" y1="19" x2="12" y2="5" />
+                      <polyline points="5,12 12,5 19,12" />
+                    </svg>
+                  </button>
+                </div>
               </div>
+              {isBusy && (
+                <div className="build-generating-indicator">
+                  <span className="status-spinner" />
+                  <span>Generating macro...</span>
+                </div>
+              )}
             </div>
-          </div>
+          ) : (
+            <div className="build-empty-state">
+              {buildState === 'initializing' ? (
+                <span className="status-spinner" />
+              ) : (
+                <>
+                  <h1 className="build-empty-title">Build Session Unavailable</h1>
+                  {errorInfo && <div className="error-title">{errorInfo.title}</div>}
+                </>
+              )}
+            </div>
+          )
         ) : chatOpen ? (
           <div className="split-view">
-            <div className="split-left build-chat-panel">
+            <div className="split-left build-chat-panel" style={{ width: `${splitPct}%` }}>
+              <div className="build-chat-header">
+                <div className="build-chat-header-left">
+                  <FolderIcon size={16} />
+                  <span className="build-chat-module-name">{location.module}</span>
+                </div>
+              </div>
               {conversationPanel}
+              <div className="build-prompt-input-wrap">
+                <div className="build-prompt-input-box">
+                  <textarea
+                    className="build-prompt-input"
+                    placeholder="Ask for follow-up changes"
+                    rows={2}
+                    value={prompt}
+                    onChange={(event) => setPrompt(event.target.value)}
+                    disabled={isBusy || buildState === 'initializing' || Boolean(errorInfo?.restartRequired)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' && !event.shiftKey && prompt.trim()) {
+                        event.preventDefault();
+                        void dispatchSubmit();
+                      }
+                    }}
+                  />
+                  <button
+                    type="button"
+                    className="build-prompt-send-btn"
+                    onClick={() => { if (prompt.trim()) void dispatchSubmit(); }}
+                    disabled={isBusy || !prompt.trim() || buildState === 'initializing'}
+                    title="Send"
+                  >
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                      <line x1="12" y1="19" x2="12" y2="5" />
+                      <polyline points="5,12 12,5 19,12" />
+                    </svg>
+                  </button>
+                </div>
+              </div>
             </div>
+            <SplitDivider onResize={setSplitPct} />
             <div className="split-right">
               <div className="build-code-bar">
-                <div className="code-breadcrumb">
-                  <DocumentIcon size={14} className="code-breadcrumb-icon" />
-                  <span className="code-breadcrumb-text">
-                    {location.workbook}
-                    <span className="code-breadcrumb-separator"> &gt; </span>
-                    {renderModuleBreadcrumb()}
-                  </span>
-                </div>
+                <button
+                  type="button"
+                  className="build-run-action"
+                  onClick={() => {
+                    if (!isBusy) {
+                      if (hasPendingChanges) {
+                        void handleSave();
+                        return;
+                      }
+                      void handleRunMacro();
+                    }
+                  }}
+                  disabled={isBusy}
+                >
+                  {primaryActionLabel}
+                </button>
               </div>
               <CodePreview
                 code={currentCode}
@@ -1382,14 +1552,26 @@ const BuildMode = ({
         ) : (
           <div className="build-code-fullwidth">
             <div className="build-code-bar">
-              <div className="code-breadcrumb">
-                <DocumentIcon size={14} className="code-breadcrumb-icon" />
-                <span className="code-breadcrumb-text">
-                  {location.workbook}
-                  <span className="code-breadcrumb-separator"> &gt; </span>
-                  {renderModuleBreadcrumb()}
-                </span>
+              <div className="build-chat-header-left">
+                <FolderIcon size={16} />
+                <span className="build-chat-module-name">{location.module}</span>
               </div>
+              <button
+                type="button"
+                className="build-run-action"
+                onClick={() => {
+                  if (!isBusy) {
+                    if (hasPendingChanges) {
+                      void handleSave();
+                      return;
+                    }
+                    void handleRunMacro();
+                  }
+                }}
+                disabled={isBusy}
+              >
+                {primaryActionLabel}
+              </button>
             </div>
             <CodePreview
               code={currentCode}
@@ -1402,86 +1584,6 @@ const BuildMode = ({
           </div>
         )}
       </main>
-
-      {showCodePanel ? (
-        <footer className="footer">
-          <div className="footer-left">
-            <div className={`logo ${footerContent.logoClass || ''}`}>
-              <MacroFlowLogo size={20} />
-            </div>
-            {footerContent.text && (
-              <span className={`footer-text ${footerContent.textClass || ''}`}>
-                {footerContent.text}
-              </span>
-            )}
-          </div>
-          <div className="footer-right build-footer-actions">
-            <button
-              type="button"
-              className="build-run-action"
-              onClick={() => {
-                if (!isBusy) {
-                  if (hasPendingChanges) {
-                    void handleSave();
-                    return;
-                  }
-                  void handleRunMacro();
-                }
-              }}
-              disabled={isBusy}
-            >
-              {primaryActionLabel}
-            </button>
-            <div
-              className={`shortcut-binding build-shortcut-binding ${shortcutSaving ? 'saving' : ''}`}
-              onClick={(event) => event.stopPropagation()}
-            >
-              <span className="shortcut-prefix">Ctrl +</span>
-              {shortcutPrefix.includes('Shift') && (
-                <span className="shortcut-shift">Shift +</span>
-              )}
-              <input
-                type="text"
-                className={`shortcut-keycap-input ${draftShortcutLetter ? '' : 'is-empty'} ${shortcutInputError ? 'has-error' : ''}`}
-                value={draftShortcutLetter}
-                placeholder=""
-                maxLength={1}
-                autoCapitalize="off"
-                autoComplete="off"
-                spellCheck={false}
-                aria-label="Excel shortcut letter for the current Build Mode macro"
-                onChange={(event) => handleShortcutDraftChange(event.target.value)}
-                onBlur={() => {
-                  void commitShortcutDraft();
-                }}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter') {
-                    event.preventDefault();
-                    event.stopPropagation();
-                    event.currentTarget.blur();
-                  } else if (event.key === 'Escape') {
-                    event.preventDefault();
-                    event.stopPropagation();
-                    setDraftShortcutLetter(savedShortcutLetterRef.current || '');
-                    setShortcutInputError(false);
-                    event.currentTarget.blur();
-                  }
-                }}
-                onClick={(event) => event.stopPropagation()}
-                disabled={shortcutInputDisabled}
-              />
-            </div>
-          </div>
-        </footer>
-      ) : (
-        <footer className="footer">
-          <div className="footer-left">
-            <div className="logo">
-              <MacroFlowLogo size={20} />
-            </div>
-          </div>
-        </footer>
-      )}
 
       {exitDialog && (
         <div className="build-exit-overlay" role="dialog" aria-modal="true" aria-label="Exit build mode save conflict">
@@ -1535,4 +1637,4 @@ const BuildMode = ({
   );
 };
 
-export default BuildMode;
+export default CreatePage;

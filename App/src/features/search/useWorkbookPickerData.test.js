@@ -8,7 +8,7 @@ import {
   resolveSelectedWorkbookKey,
   qualifyMacroFullName,
   namespaceMacrosForWorkbook
-} from './useWorkbookPickerData.js';
+} from '../workbooks/workbook-model.js';
 
 test('getWorkbookKey prefers workbook path and falls back to workbook name', () => {
   assert.equal(getWorkbookKey({ name: 'Book1.xlsm', path: 'C:/Book1.xlsm' }), 'C:/Book1.xlsm');

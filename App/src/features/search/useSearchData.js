@@ -116,6 +116,38 @@ export function shouldSkipForegroundRefresh({
   return false;
 }
 
+export function isSearchDataMode(mode) {
+  return mode === 'search' || mode === 'explorer';
+}
+
+export function shouldRefreshOnModeEntry({
+  mode,
+  previousMode,
+  status,
+  isPaused = false,
+  lastFullRefreshAt = 0,
+  now = Date.now(),
+  staleThresholdMs = SEARCH_PERIODIC_DEEP_REFRESH_STALE_MS
+}) {
+  if (!isSearchDataMode(mode)) {
+    return false;
+  }
+
+  if (previousMode === mode) {
+    return false;
+  }
+
+  if (!isSearchDataMode(previousMode)) {
+    return true;
+  }
+
+  if (isPaused || status !== 'ready') {
+    return true;
+  }
+
+  return now - Number(lastFullRefreshAt || 0) > staleThresholdMs;
+}
+
 export function useSearchData({ mode, runState, macroRunInFlightRef, shortcutSaveInFlightRef }) {
   const [searchData, setSearchData] = useState(INITIAL_SEARCH_DATA);
   const searchRequestSequence = useRef(0);
@@ -135,6 +167,11 @@ export function useSearchData({ mode, runState, macroRunInFlightRef, shortcutSav
   const lastFullSearchRefreshAt = useRef(0);
   const lastWorkbookSignature = useRef('');
   const resolveInstanceAttempted = useRef(false);
+  const previousModeRef = useRef(null);
+  const searchStatusRef = useRef(INITIAL_SEARCH_DATA.status);
+  const refreshSearchOnForegroundRef = useRef(null);
+
+  searchStatusRef.current = searchData.status;
 
   const resetPausedReconnectBackoff = () => {
     pausedReconnectDelayMsRef.current = SEARCH_PAUSED_RECONNECT_INITIAL_DELAY_MS;
@@ -416,7 +453,7 @@ export function useSearchData({ mode, runState, macroRunInFlightRef, shortcutSav
   }, []);
 
   const refreshSearchOnForeground = useCallback(async ({ trigger = 'interval' } = {}) => {
-    if ((mode !== 'search' && mode !== 'explorer') || runState === 'running' || Boolean(macroRunInFlightRef?.current) || Boolean(shortcutSaveInFlightRef?.current)) {
+    if (!isSearchDataMode(mode) || runState === 'running' || Boolean(macroRunInFlightRef?.current) || Boolean(shortcutSaveInFlightRef?.current)) {
       return;
     }
     if (trigger === 'paused-loop' && !pollingPausedRef.current) {
@@ -517,22 +554,41 @@ export function useSearchData({ mode, runState, macroRunInFlightRef, shortcutSav
   }, [loadSearchData, macroRunInFlightRef, shortcutSaveInFlightRef, mode, runState, searchData.status]);
 
   useEffect(() => {
-    if ((mode !== 'search' && mode !== 'explorer') || runState === 'running') {
+    refreshSearchOnForegroundRef.current = refreshSearchOnForeground;
+  }, [refreshSearchOnForeground]);
+
+  useEffect(() => {
+    const previousMode = previousModeRef.current;
+    const didModeChange = previousMode !== mode;
+    previousModeRef.current = mode;
+
+    if (!isSearchDataMode(mode) || runState === 'running') {
       return undefined;
     }
 
-    modeEntryAtRef.current = Date.now();
-    lastForegroundRefreshAtRef.current = 0;
+    const now = Date.now();
+    if (didModeChange || modeEntryAtRef.current === 0) {
+      modeEntryAtRef.current = now;
+      lastForegroundRefreshAtRef.current = 0;
+    }
 
-    // Entering Search should always perform one full refresh.
-    loadSearchData({ silent: true });
+    if (shouldRefreshOnModeEntry({
+      mode,
+      previousMode,
+      status: searchStatusRef.current,
+      isPaused: pollingPausedRef.current,
+      lastFullRefreshAt: lastFullSearchRefreshAt.current,
+      now
+    })) {
+      void loadSearchData({ silent: true });
+    }
 
     const handleFocus = () => {
-      refreshSearchOnForeground({ trigger: 'focus' });
+      void refreshSearchOnForegroundRef.current?.({ trigger: 'focus' });
     };
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
-        refreshSearchOnForeground({ trigger: 'visibility' });
+        void refreshSearchOnForegroundRef.current?.({ trigger: 'visibility' });
       }
     };
 
@@ -570,17 +626,17 @@ export function useSearchData({ mode, runState, macroRunInFlightRef, shortcutSav
           return;
         }
         helperRefreshInFlightRef.current = true;
-        Promise.resolve(refreshSearchOnForeground({ trigger: 'helper' })).finally(() => {
+        Promise.resolve(refreshSearchOnForegroundRef.current?.({ trigger: 'helper' })).finally(() => {
           helperRefreshInFlightRef.current = false;
         });
       }, SEARCH_HELPER_EVENT_DEBOUNCE_MS);
     });
 
     const periodicId = setInterval(() => {
-      refreshSearchOnForeground({ trigger: 'interval' });
+      void refreshSearchOnForegroundRef.current?.({ trigger: 'interval' });
     }, SEARCH_PERIODIC_REFRESH_MS);
     const pausedReconnectId = setInterval(() => {
-      refreshSearchOnForeground({ trigger: 'paused-loop' });
+      void refreshSearchOnForegroundRef.current?.({ trigger: 'paused-loop' });
     }, SEARCH_PAUSED_RECONNECT_TICK_MS);
 
     return () => {
@@ -596,7 +652,7 @@ export function useSearchData({ mode, runState, macroRunInFlightRef, shortcutSav
         unsubscribeForegroundChange();
       }
     };
-  }, [loadSearchData, mode, refreshSearchOnForeground, runState]);
+  }, [loadSearchData, mode, runState]);
 
   return {
     searchData,

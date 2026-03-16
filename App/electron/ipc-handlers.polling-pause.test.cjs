@@ -917,6 +917,7 @@ test('workbook:context burst cache invalidates after reconnect and resolve succe
 
 test('personal channels route to bridge and return payloads', async () => {
   let statusCalls = 0;
+  let contextCalls = 0;
   let openCalls = 0;
   let createCalls = 0;
 
@@ -930,6 +931,18 @@ test('personal channels route to bridge and return payloads', async () => {
           workbook: null,
           fileExists: false,
           workbookPath: 'C:\\XLSTART\\PERSONAL.XLSB'
+        };
+      },
+      getPersonalWorkbookContext: () => {
+        contextCalls += 1;
+        return {
+          success: true,
+          workbookFound: true,
+          workbook: { name: 'PERSONAL.XLSB', path: 'C:\\XLSTART\\PERSONAL.XLSB' },
+          fileExists: true,
+          workbookPath: 'C:\\XLSTART\\PERSONAL.XLSB',
+          procedures: [{ module: 'GlobalMacros', name: 'RunPersonal', kind: 'Sub', scope: 'Public' }],
+          shortcutAudit: { success: true, shortcuts: [], unmapped: [] }
         };
       },
       openPersonalWorkbook: () => {
@@ -963,6 +976,12 @@ test('personal channels route to bridge and return payloads', async () => {
   assert.equal(statusResult.success, true);
   assert.equal(statusResult.fileExists, false);
   assert.equal(statusCalls, 1);
+
+  const contextResult = await handlers['personal:context']();
+  assert.equal(contextResult.success, true);
+  assert.equal(contextResult.workbookFound, true);
+  assert.equal(contextResult.procedures.length, 1);
+  assert.equal(contextCalls, 1);
 
   const openResult = await handlers['personal:open']();
   assert.equal(openResult.success, true);

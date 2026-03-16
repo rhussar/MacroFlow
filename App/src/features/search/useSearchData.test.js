@@ -2,15 +2,18 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   isTerminalConnectionStatus,
+  isSearchDataMode,
   inferPauseReasonCodeFromResult,
   mapPauseReasonCodeToSearchStatus,
   getNextPausedReconnectDelayMs,
+  shouldRefreshOnModeEntry,
   shouldSkipForegroundRefresh,
   shouldAttemptPausedReconnect
 } from './useSearchData.js';
 import {
   SEARCH_FOCUS_REFRESH_COOLDOWN_MS,
   SEARCH_MODE_ENTRY_QUIET_MS,
+  SEARCH_PERIODIC_DEEP_REFRESH_STALE_MS,
   SEARCH_PAUSED_RECONNECT_INITIAL_DELAY_MS,
   SEARCH_PAUSED_RECONNECT_MAX_DELAY_MS
 } from './search-constants.js';
@@ -21,6 +24,13 @@ test('isTerminalConnectionStatus identifies paused terminal states only', () => 
   assert.equal(isTerminalConnectionStatus('excel_background'), true);
   assert.equal(isTerminalConnectionStatus('ready'), false);
   assert.equal(isTerminalConnectionStatus('multi_instance'), false);
+});
+
+test('isSearchDataMode limits warm-refresh behavior to shortcuts and files tabs', () => {
+  assert.equal(isSearchDataMode('search'), true);
+  assert.equal(isSearchDataMode('explorer'), true);
+  assert.equal(isSearchDataMode('build'), false);
+  assert.equal(isSearchDataMode('shortcuts'), false);
 });
 
 test('inferPauseReasonCodeFromResult prefers reasonCode and parses message fallback', () => {
@@ -126,6 +136,95 @@ test('shouldAttemptPausedReconnect ignores cooldown arg and relies on nextAttemp
     cooldownMs: SEARCH_FOCUS_REFRESH_COOLDOWN_MS + 1000
   });
   assert.equal(allowed, true);
+});
+
+test('shouldRefreshOnModeEntry refreshes the first active entry and build-to-search transitions', () => {
+  const now = 10_000;
+
+  assert.equal(
+    shouldRefreshOnModeEntry({
+      mode: 'search',
+      previousMode: null,
+      status: 'idle',
+      now
+    }),
+    true
+  );
+
+  assert.equal(
+    shouldRefreshOnModeEntry({
+      mode: 'search',
+      previousMode: 'build',
+      status: 'ready',
+      lastFullRefreshAt: now,
+      now
+    }),
+    true
+  );
+});
+
+test('shouldRefreshOnModeEntry skips warm search-files tab switches and same-mode reruns', () => {
+  const now = 10_000;
+
+  assert.equal(
+    shouldRefreshOnModeEntry({
+      mode: 'explorer',
+      previousMode: 'search',
+      status: 'ready',
+      lastFullRefreshAt: now - 1,
+      now
+    }),
+    false
+  );
+
+  assert.equal(
+    shouldRefreshOnModeEntry({
+      mode: 'search',
+      previousMode: 'search',
+      status: 'ready',
+      lastFullRefreshAt: now - 1,
+      now
+    }),
+    false
+  );
+});
+
+test('shouldRefreshOnModeEntry reloads active-tab transitions when paused, invalid, or stale', () => {
+  const now = 10_000;
+
+  assert.equal(
+    shouldRefreshOnModeEntry({
+      mode: 'search',
+      previousMode: 'explorer',
+      status: 'ready',
+      isPaused: true,
+      lastFullRefreshAt: now - 1,
+      now
+    }),
+    true
+  );
+
+  assert.equal(
+    shouldRefreshOnModeEntry({
+      mode: 'search',
+      previousMode: 'explorer',
+      status: 'error',
+      lastFullRefreshAt: now - 1,
+      now
+    }),
+    true
+  );
+
+  assert.equal(
+    shouldRefreshOnModeEntry({
+      mode: 'search',
+      previousMode: 'explorer',
+      status: 'ready',
+      lastFullRefreshAt: now - SEARCH_PERIODIC_DEEP_REFRESH_STALE_MS - 1,
+      now
+    }),
+    true
+  );
 });
 
 test('shouldSkipForegroundRefresh blocks focus/visibility/helper during mode-entry quiet window', () => {

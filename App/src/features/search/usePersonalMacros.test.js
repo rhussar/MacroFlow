@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  resolvePersonalCacheSignature,
   shouldDeferPersonalInitialFetch,
   shouldUsePersonalCache
 } from './usePersonalMacros.js';
@@ -30,6 +31,20 @@ test('shouldUsePersonalCache returns false when signature changes', () => {
   });
 
   assert.equal(result, false);
+});
+
+test('shouldUsePersonalCache treats missing next signature as a warm remount and reuses cached signature', () => {
+  const result = shouldUsePersonalCache({
+    cachedData: { status: 'ready', macros: [] },
+    cachedAt: 5_000,
+    cachedSignature: 'active|personal',
+    nextSignature: '',
+    now: 7_500,
+    ttlMs: 10_000
+  });
+
+  assert.equal(result, true);
+  assert.equal(resolvePersonalCacheSignature('', 'active|personal'), 'active|personal');
 });
 
 test('shouldUsePersonalCache returns false when TTL expires', () => {

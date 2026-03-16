@@ -1,45 +1,72 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import './App.css';
+import lightningIcon from '../assets/lightning.png';
 
-// Import components
-import SearchMode from './components/SearchMode';
-import BuildMode from './components/BuildMode';
-import FileExplorer from './components/FileExplorer';
+// Import pages
+import ShortcutsPage from './pages/ShortcutsPage';
+import CreatePage from './pages/CreatePage';
+import FilesPage from './pages/FilesPage';
 import SettingsMenu from './components/SettingsMenu';
-import { MacroFlowLogo } from './components/icons';
+import { SettingsIcon, SidebarIcon, MinimizeIcon, CloseIcon } from './components/icons';
 import { useSearchData } from './features/search/useSearchData';
 import { useMacroRun } from './features/run/useMacroRun';
-import { useShortcutState } from './features/shortcuts/useShortcutState';
+import { shouldClearShortcutState, useShortcutState } from './features/shortcuts/useShortcutState';
 import { normalizeBuildWorkbook, resolveBuildLaunchMode } from './features/build/build-target';
+
+const TAB_ITEMS = [
+  { key: 'shortcuts', label: 'Shortcuts' },
+  { key: 'create', label: 'Create' },
+  { key: 'files', label: 'Files' }
+];
 
 /**
  * Main App Component
  *
  * Modes:
- * - 'search': Main search window with files and VBA shortcuts
- * - 'build': AI Build mode for generating macros (includes inline code editor)
- * - 'explorer': File explorer with details panel
+ * - 'shortcuts': Macro shortcuts grid with workbook picker
+ * - 'create': AI Build mode for generating macros (includes inline code editor)
+ * - 'files': File explorer with details panel
  */
 function App() {
   // Current view mode
-  const [mode, setMode] = useState('search');
-
-  // Search query (shared between search and explorer)
-  const [searchQuery, setSearchQuery] = useState('');
+  const [mode, setMode] = useState('shortcuts');
 
   // Settings menu open state
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [actionState, setActionState] = useState('idle');
   const [actionMessage, setActionMessage] = useState('');
-  const [explorerContext, setExplorerContext] = useState(null);
   const [selectedWorkbookForBuild, setSelectedWorkbookForBuild] = useState(null);
   const [buildLaunchContext, setBuildLaunchContext] = useState(() => ({
     mode: 'new_module',
     moduleName: '',
-    source: 'toolbar'
+    source: 'toolbar',
+    originMode: 'shortcuts'
   }));
+  const [buildChatOpen, setBuildChatOpen] = useState(true);
+  const [filesSidebarOpen, setFilesSidebarOpen] = useState(true);
   const loadSearchDataRef = useRef(null);
   const shortcutSaveInFlightRef = useRef(false);
+
+  useEffect(() => {
+    const preloadKey = 'lightning-icon';
+    let preloadLink = document.querySelector(`link[data-preload-key="${preloadKey}"]`);
+    if (!preloadLink) {
+      preloadLink = document.createElement('link');
+      preloadLink.rel = 'preload';
+      preloadLink.as = 'image';
+      preloadLink.href = lightningIcon;
+      preloadLink.setAttribute('data-preload-key', preloadKey);
+      document.head.appendChild(preloadLink);
+    }
+
+    const image = new Image();
+    image.decoding = 'async';
+    image.src = lightningIcon;
+
+    return () => {
+      image.src = '';
+    };
+  }, []);
 
   const setActionStatus = useCallback((status, message) => {
     setActionState(status);
@@ -71,7 +98,7 @@ function App() {
   });
 
   const { searchData, loadSearchData } = useSearchData({
-    mode,
+    mode: mode === 'shortcuts' ? 'search' : mode === 'create' ? 'build' : 'explorer',
     runState,
     macroRunInFlightRef,
     shortcutSaveInFlightRef
@@ -104,7 +131,12 @@ function App() {
     handleShortcutDraftChange,
     handleShortcutCommit
   } = useShortcutState({
-    searchData,
+    scope: 'active',
+    enabled: searchData.status === 'ready',
+    clearOnDisabled: shouldClearShortcutState(searchData.status),
+    workbook: searchData.workbook,
+    macros: searchData.macros,
+    seededAudit: searchData.shortcutAudit,
     setActionStatus,
     shortcutSaveInFlightRef
   });
@@ -162,6 +194,9 @@ function App() {
     const launchMode = resolveBuildLaunchMode(launchOptions?.mode);
     const launchModuleName = String(launchOptions?.moduleName || '').trim();
     const launchSource = String(launchOptions?.source || '').trim() || 'toolbar';
+    const launchOriginMode = String(launchOptions?.originMode || '').trim() === 'files'
+      ? 'files'
+      : 'shortcuts';
 
     if (normalizedWorkbook) {
       setSelectedWorkbookForBuild(normalizedWorkbook);
@@ -169,9 +204,10 @@ function App() {
     setBuildLaunchContext({
       mode: launchMode,
       moduleName: launchMode === 'existing_module' ? launchModuleName : '',
-      source: launchSource
+      source: launchSource,
+      originMode: launchOriginMode
     });
-    setMode('build');
+    setMode('create');
   }, []);
 
   openBuildModeRef.current = openBuildMode;
@@ -179,29 +215,31 @@ function App() {
   // Handle keyboard shortcuts — uses refs so the listener is registered once
   useEffect(() => {
     const handleKeyDown = (e) => {
-      // Tab opens Build mode from Search mode only.
-      // Build-mode exits are handled inside BuildMode so boundary-save cannot be bypassed.
+      // Tab opens Create mode from Shortcuts mode only.
       if (e.key === 'Tab' && !e.ctrlKey && !e.shiftKey && !e.altKey) {
-        if (modeRef.current !== 'search') {
+        if (modeRef.current !== 'shortcuts') {
           return;
         }
 
         const target = e.target;
-        const isSearchInput = target.classList?.contains('search-input');
+        const tagName = String(target?.tagName || '').toUpperCase();
+        const isEditableTarget = Boolean(
+          target?.isContentEditable
+          || tagName === 'INPUT'
+          || tagName === 'TEXTAREA'
+          || tagName === 'SELECT'
+        );
 
-        if (isSearchInput || target.tagName !== 'INPUT') {
+        if (!isEditableTarget) {
           e.preventDefault();
           openBuildModeRef.current(null, { mode: 'new_module', source: 'hotkey' });
         }
       }
 
-      // Escape to close or go back
+      // Escape to close settings
       if (e.key === 'Escape') {
         if (settingsOpenRef.current) {
           setSettingsOpen(false);
-        } else if (modeRef.current === 'explorer') {
-          setExplorerContext(null);
-          setMode('search');
         }
       }
     };
@@ -217,67 +255,56 @@ function App() {
     }
   }, []);
 
+  const handleMinimize = useCallback(() => {
+    if (window.excel?.app?.minimize) {
+      window.excel.app.minimize();
+    }
+  }, []);
+
   const handleQuit = useCallback(() => {
     if (window.excel?.app?.close) {
       window.excel.app.close();
     }
   }, []);
 
-  const handleFileClick = useCallback((fileContext) => {
-    const workbook = fileContext?.workbook || null;
-    const workbookName = String(workbook?.name || '').trim();
-    const workbookPath = String(workbook?.path || '').trim();
-    const workbookKey = String(workbook?.key || workbookPath || workbookName).trim();
-    const moduleId = String(fileContext?.moduleId || fileContext?.module?.id || '').trim();
-    const moduleName = String(fileContext?.moduleName || fileContext?.module?.name || '').trim();
-    const source = String(fileContext?.source || '').trim();
+  const goToCreate = useCallback((workbook = null) => {
+    openBuildMode(workbook, { mode: 'new_module', source: 'toolbar', originMode: 'shortcuts' });
+  }, [openBuildMode]);
 
-    if (source === 'all-open-workbooks') {
-      openBuildMode(workbook, {
-        mode: 'existing_module',
-        moduleName,
-        source: 'all-files'
-      });
+  const handleCreateBack = useCallback(() => {
+    if (buildLaunchContext.originMode === 'files') {
+      setMode('files');
       return;
     }
+    setMode('shortcuts');
+  }, [buildLaunchContext.originMode]);
 
-    setExplorerContext(
-      workbookKey || moduleId || moduleName
-        ? {
-            workbook: {
-              name: workbookName,
-              path: workbookPath,
-              key: workbookKey
-            },
-            initialModuleId: moduleId,
-            initialModuleName: moduleName
-          }
-        : null
-    );
-    setMode('explorer');
-  }, [openBuildMode]);
-
-  const goToBuild = useCallback((workbook = null) => {
-    openBuildMode(workbook, { mode: 'new_module', source: 'toolbar' });
-  }, [openBuildMode]);
-  const goToSearch = useCallback(() => {
-    setExplorerContext(null);
-    setMode('search');
-  }, []);
   const toggleSettings = useCallback(() => setSettingsOpen((prev) => !prev), []);
   const closeSettings = useCallback(() => setSettingsOpen(false), []);
-  const handleExplorerContextConsumed = useCallback(() => {}, []);
+
+  const handleTabChange = useCallback((newMode) => {
+    if (newMode === 'create') {
+      openBuildMode(null, { mode: 'new_module', source: 'tab', originMode: 'shortcuts' });
+    } else {
+      setMode(newMode);
+    }
+  }, [openBuildMode]);
+
+  const toggleBuildChat = useCallback(() => {
+    setBuildChatOpen((prev) => !prev);
+  }, []);
+
+  const toggleFilesSidebar = useCallback(() => {
+    setFilesSidebarOpen((prev) => !prev);
+  }, []);
 
   // Render current mode content
   const renderContent = () => {
     switch (mode) {
-      case 'search':
+      case 'shortcuts':
         return (
-          <SearchMode
-            searchQuery={searchQuery}
-            onSearchChange={setSearchQuery}
-            onBuildModeClick={goToBuild}
-            onFileClick={handleFileClick}
+          <ShortcutsPage
+            onBuildModeClick={goToCreate}
             onRunMacro={handleRunMacro}
             searchData={searchData}
             selectedMacroId={selectedMacro?.id || null}
@@ -291,35 +318,32 @@ function App() {
             shortcutSaveInFlightRef={shortcutSaveInFlightRef}
             selectedWorkbookForBuild={selectedWorkbookForBuild}
             onSelectedWorkbookForBuildChange={handleSelectedWorkbookForBuildChange}
-            onRefreshSearchData={loadSearchData}
-            onClose={handleClose}
           />
         );
 
-      case 'build':
+      case 'create':
         return (
-          <BuildMode
-            onBack={goToSearch}
+          <CreatePage
+            onBack={handleCreateBack}
             onClose={handleClose}
             targetWorkbook={selectedWorkbookForBuild}
             launchMode={buildLaunchContext.mode}
             launchModuleName={buildLaunchContext.moduleName}
             launchSource={buildLaunchContext.source}
             onRefreshSearchData={loadSearchData}
+            chatOpen={buildChatOpen}
+            onChatToggle={toggleBuildChat}
           />
         );
 
-      case 'explorer':
+      case 'files':
         return (
-          <FileExplorer
-            onBack={goToSearch}
-            onClose={handleClose}
+          <FilesPage
             searchData={searchData}
-            shortcutByMacroId={shortcutByMacroId}
-            explorerContext={explorerContext}
-            onExplorerContextConsumed={handleExplorerContextConsumed}
             onActionStatus={setActionStatus}
             onRefreshSearchData={loadSearchData}
+            sidebarOpen={filesSidebarOpen}
+            onEditModule={openBuildMode}
           />
         );
 
@@ -328,17 +352,59 @@ function App() {
     }
   };
 
-  // Check if we should show the default footer
-  const showDefaultFooter = mode === 'search' || mode === 'explorer';
   const showBottomActionBanner = (
-    (mode === 'search' || mode === 'explorer') &&
-    showDefaultFooter &&
+    (mode === 'shortcuts' || mode === 'files') &&
     (actionState === 'running' || actionState === 'success' || actionState === 'error') &&
     Boolean(actionMessage)
   );
 
   return (
     <div className="app-container">
+      {/* Shared Header with Tab Navigator */}
+      <header className="header">
+        <div className="drag-region" />
+        <div className="header-left">
+          {(mode === 'create' || mode === 'files') && (
+            <button
+              className="sidebar-toggle-btn"
+              onClick={mode === 'create' ? toggleBuildChat : toggleFilesSidebar}
+              title="Toggle sidebar"
+            >
+              <SidebarIcon size={19} />
+            </button>
+          )}
+        </div>
+        <div className="header-center">
+          <nav className="tab-navigator">
+            {TAB_ITEMS.map((tab) => (
+              <button
+                key={tab.key}
+                className={`tab-navigator-btn${mode === tab.key ? ' active' : ''}`}
+                onClick={() => handleTabChange(tab.key)}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </nav>
+        </div>
+        <div className="header-right">
+          <button
+            className="window-control-btn"
+            onClick={handleMinimize}
+            title="Minimize"
+          >
+            <MinimizeIcon size={18} />
+          </button>
+          <button
+            className="window-control-btn close"
+            onClick={handleClose}
+            title="Close"
+          >
+            <CloseIcon size={18} />
+          </button>
+        </div>
+      </header>
+
       {/* Main Content */}
       {renderContent()}
 
@@ -356,18 +422,11 @@ function App() {
         </div>
       )}
 
-      {/* Default Footer (for search and explorer modes) */}
-      {showDefaultFooter && (
-        <footer className="footer">
-          <div className="footer-left">
-            <div
-              className="logo"
-              onClick={toggleSettings}
-            >
-              <MacroFlowLogo size={20} />
-            </div>
-          </div>
-        </footer>
+      {/* Settings button (bottom-left) */}
+      {mode !== 'create' && !(mode === 'files' && !filesSidebarOpen) && (
+        <div className="settings-floating" onClick={toggleSettings}>
+          <SettingsIcon size={16} />
+        </div>
       )}
 
       {/* Settings Menu */}

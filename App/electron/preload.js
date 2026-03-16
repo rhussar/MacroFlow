@@ -256,6 +256,12 @@ contextBridge.exposeInMainWorld('excel', {
     status: () => ipcRenderer.invoke('personal:status'),
 
     /**
+     * Get PERSONAL.XLSB status, procedures, and shortcut audit in one call.
+     * @returns {Promise<{ success: boolean, workbookFound: boolean, workbook?: { name: string, path: string } | null, fileExists: boolean, workbookPath?: string, procedures: Array, shortcutAudit: { success: boolean, shortcuts: Array, unmapped: Array, note?: string, message?: string }, message?: string }>}
+     */
+    context: () => ipcRenderer.invoke('personal:context'),
+
+    /**
      * Open PERSONAL.XLSB from XLSTART.
      * @returns {Promise<{ success: boolean, workbookFound: boolean, opened: boolean, alreadyOpen: boolean, workbook?: { name: string, path: string } | null, fileExists: boolean, workbookPath?: string, message?: string }>}
      */
@@ -376,6 +382,10 @@ contextBridge.exposeInMainWorld('excel', {
   // APP CONTROLS
   // ==========================================================================
   app: {
+    /**
+     * Minimize the application window
+     */
+    minimize: () => ipcRenderer.send('app:minimize'),
     /**
      * Close the application
      */

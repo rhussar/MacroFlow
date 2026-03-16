@@ -1,24 +1,22 @@
 import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import {
   FolderIcon,
-  FolderIconLarge,
   ReturnIcon,
-  ArrowLeftIcon,
-  CloseIcon,
-  ListIcon,
   ChevronDownIcon,
   WorkbookIcon,
-} from './icons';
+} from '../components/icons';
+import CodePreview from '../components/CodePreview';
+import SplitDivider from '../components/SplitDivider';
 import {
   buildExplorerTree,
-  filterExplorerTree,
   buildNodeMetadata,
   countTreeItems,
   getDefaultExpandedIds,
 } from '../features/search/explorer-selectors';
 import { getSearchStatusView } from '../features/search/search-selectors';
 import { usePersonalMacros } from '../features/search/usePersonalMacros';
-import { resolveInitialModuleNode, useExplorerWorkbookData } from '../features/search/useExplorerWorkbookData';
+import { useExplorerAllFilesData } from '../features/search/useExplorerAllFilesData';
+import { resolveInitialModuleNode } from '../features/search/explorer-selection';
 import {
   buildWorkbookModuleRequest,
   canShowModuleContextActions,
@@ -34,49 +32,85 @@ const defaultSearchData = {
   error: null,
 };
 
-const FileExplorer = ({
-  onBack,
-  onClose,
+function getNodeWorkbookTarget(node, fallbackWorkbook = null) {
+  return {
+    name: String(node?.data?.workbookName || fallbackWorkbook?.name || '').trim(),
+    path: String(node?.data?.workbookPath || fallbackWorkbook?.path || '').trim()
+  };
+}
+
+function isSameWorkbookTarget(target, workbook) {
+  const targetName = String(target?.workbookName || target?.name || '').trim().toLowerCase();
+  const targetPath = String(target?.workbookPath || target?.path || '').trim().toLowerCase();
+  const workbookName = String(workbook?.name || '').trim().toLowerCase();
+  const workbookPath = String(workbook?.path || '').trim().toLowerCase();
+
+  if (targetPath && workbookPath) {
+    return targetPath === workbookPath;
+  }
+
+  if (targetName && workbookName) {
+    return targetName === workbookName;
+  }
+
+  return false;
+}
+
+const FilesPage = ({
   searchData = defaultSearchData,
-  shortcutByMacroId = {},
   explorerContext = null,
   onExplorerContextConsumed,
   onActionStatus,
-  onRefreshSearchData
+  onRefreshSearchData,
+  sidebarOpen = true,
+  onEditModule
 }) => {
-  const [searchQuery, setSearchQuery] = useState('');
   const [selectedNode, setSelectedNode] = useState(null);
   const [expandedIds, setExpandedIds] = useState(new Set());
   const [moduleContextMenu, setModuleContextMenu] = useState(null);
   const [moduleRenameState, setModuleRenameState] = useState(null);
   const [moduleDeleteTarget, setModuleDeleteTarget] = useState(null);
   const [moduleActionInFlight, setModuleActionInFlight] = useState(false);
+  const [previewCode, setPreviewCode] = useState(null);
+  const [splitPct, setSplitPct] = useState(50);
   const hasInitializedRef = useRef(false);
   const consumedContextRef = useRef('');
   const moduleContextMenuRef = useRef(null);
   const renameCommitInFlightRef = useRef(false);
-  const resolvedSearchData = useExplorerWorkbookData(searchData, explorerContext);
-  const status = resolvedSearchData?.status || 'idle';
-  const personalState = usePersonalMacros(resolvedSearchData);
+  const status = searchData?.status || 'idle';
+  const {
+    workbooks: explorerWorkbooks,
+    modules: explorerModules,
+    refreshExplorerAllFiles
+  } = useExplorerAllFilesData(searchData);
+  const personalState = usePersonalMacros(searchData);
 
   // Build the full tree
   const tree = useMemo(
-    () => buildExplorerTree(resolvedSearchData, personalState),
-    [resolvedSearchData, personalState]
+    () => buildExplorerTree({
+      searchData,
+      personalState,
+      workbooks: explorerWorkbooks,
+      allFilesModules: explorerModules
+    }),
+    [explorerModules, explorerWorkbooks, personalState, searchData]
   );
 
-  // Initialize expand state when tree first becomes available
+  // Initialize expand state and auto-select first node when tree first becomes available
   useEffect(() => {
     if (tree.length > 0 && !hasInitializedRef.current) {
       hasInitializedRef.current = true;
-      setExpandedIds(getDefaultExpandedIds(tree));
+      setExpandedIds(getDefaultExpandedIds());
+      if (!selectedNode) {
+        setSelectedNode(tree[0]);
+      }
     }
-  }, [tree]);
+  }, [tree, selectedNode]);
 
   // Reset init flag when workbook changes
   useEffect(() => {
     hasInitializedRef.current = false;
-  }, [resolvedSearchData?.workbook?.path, resolvedSearchData?.workbook?.name]);
+  }, [searchData?.workbook?.path, searchData?.workbook?.name]);
 
   useEffect(() => {
     const workbookKey = String(explorerContext?.workbook?.key || explorerContext?.workbook?.path || explorerContext?.workbook?.name || '').trim();
@@ -122,24 +156,32 @@ const FileExplorer = ({
     tree
   ]);
 
-  // Filter tree by search query
-  const { filteredTree, matchedIds } = useMemo(
-    () => filterExplorerTree(tree, searchQuery, shortcutByMacroId),
-    [tree, searchQuery, shortcutByMacroId]
-  );
-
-  // During search, auto-expand all matched branches; otherwise use manual state
-  const effectiveExpandedIds = useMemo(() => {
-    if (searchQuery.trim()) return matchedIds;
-    return expandedIds;
-  }, [searchQuery, matchedIds, expandedIds]);
-
-  const itemCount = useMemo(() => countTreeItems(filteredTree), [filteredTree]);
+  const itemCount = useMemo(() => countTreeItems(tree), [tree]);
 
   const metadata = useMemo(
     () => buildNodeMetadata(selectedNode),
     [selectedNode]
   );
+
+  const previewTarget = useMemo(() => {
+    if (!selectedNode || selectedNode.nodeType === 'workbook') {
+      return null;
+    }
+
+    const moduleName = selectedNode.nodeType === 'module'
+      ? String(selectedNode.data?.name || selectedNode.label || '').trim()
+      : String(selectedNode.data?.module || '').trim();
+    if (!moduleName) {
+      return null;
+    }
+
+    const targetWorkbook = getNodeWorkbookTarget(selectedNode, searchData?.workbook);
+    return {
+      moduleName,
+      workbookName: targetWorkbook.name,
+      workbookPath: targetWorkbook.path
+    };
+  }, [searchData?.workbook?.name, searchData?.workbook?.path, selectedNode]);
 
   // Clear stale selection when tree changes
   useEffect(() => {
@@ -154,6 +196,34 @@ const FileExplorer = ({
     if (!findNode(tree, selectedNode.id)) setSelectedNode(null);
   }, [tree, selectedNode]);
 
+  // Fetch module code when a module or macro is selected
+  useEffect(() => {
+    if (!previewTarget) {
+      setPreviewCode(null);
+      return;
+    }
+
+    const moduleCodeApi = window.excel?.vba?.moduleCodeByWorkbook;
+    if (typeof moduleCodeApi !== 'function') {
+      setPreviewCode(null);
+      return;
+    }
+
+    let cancelled = false;
+    moduleCodeApi(previewTarget).then((result) => {
+      if (cancelled) return;
+      if (result?.success && result?.code) {
+        setPreviewCode(String(result.code));
+      } else {
+        setPreviewCode(null);
+      }
+    }).catch(() => {
+      if (!cancelled) setPreviewCode(null);
+    });
+
+    return () => { cancelled = true; };
+  }, [previewTarget]);
+
   const toggleExpand = useCallback((nodeId) => {
     setExpandedIds((prev) => {
       const next = new Set(prev);
@@ -167,11 +237,15 @@ const FileExplorer = ({
     setModuleContextMenu(null);
   }, []);
 
-  const refreshExplorerData = useCallback(async () => {
-    if (typeof onRefreshSearchData === 'function') {
-      await Promise.resolve(onRefreshSearchData({ silent: true }));
-    }
-  }, [onRefreshSearchData]);
+  const refreshExplorerData = useCallback(async (targetWorkbook = null) => {
+    const shouldRefreshActiveWorkbook = isSameWorkbookTarget(targetWorkbook, searchData?.workbook);
+    await Promise.all([
+      shouldRefreshActiveWorkbook && typeof onRefreshSearchData === 'function'
+        ? Promise.resolve(onRefreshSearchData({ silent: true }))
+        : Promise.resolve(),
+      Promise.resolve(refreshExplorerAllFiles({ silent: true }))
+    ]);
+  }, [onRefreshSearchData, refreshExplorerAllFiles, searchData?.workbook]);
 
   const handleOpenModuleContextMenu = useCallback((event, node) => {
     event.preventDefault();
@@ -204,6 +278,23 @@ const FileExplorer = ({
     });
     setModuleContextMenu(null);
   }, []);
+
+  const handleEditModule = useCallback((target) => {
+    const moduleItem = target?.module || null;
+    if (!moduleItem || typeof onEditModule !== 'function') return;
+    setModuleContextMenu(null);
+    const workbook = {
+      name: String(moduleItem?.workbookName || '').trim(),
+      path: String(moduleItem?.workbookPath || '').trim(),
+      key: String(moduleItem?.workbookPath || moduleItem?.workbookName || '').trim()
+    };
+    onEditModule(workbook, {
+      mode: 'existing_module',
+      moduleName: moduleItem.name,
+      source: 'all-files',
+      originMode: 'files'
+    });
+  }, [onEditModule]);
 
   const handleRenameDraftChange = useCallback((nextDraft) => {
     setModuleRenameState((previous) => {
@@ -249,7 +340,7 @@ const FileExplorer = ({
       return;
     }
 
-    const request = buildWorkbookModuleRequest(currentRename.module, resolvedSearchData?.workbook);
+    const request = buildWorkbookModuleRequest(currentRename.module, searchData?.workbook);
     if (!request.workbookName && !request.workbookPath) {
       onActionStatus?.('error', 'Unable to resolve workbook for this module.');
       return;
@@ -270,7 +361,10 @@ const FileExplorer = ({
       }
 
       setModuleRenameState(null);
-      await refreshExplorerData();
+      await refreshExplorerData(request);
+      if (String(request.workbookName || '').trim().toUpperCase() === 'PERSONAL.XLSB') {
+        personalState.refresh();
+      }
       onActionStatus?.('success', String(result?.message || `Renamed module "${currentName}" to "${nextName}".`));
     } catch (error) {
       const message = error?.message ? String(error.message) : 'Unable to rename module.';
@@ -279,7 +373,7 @@ const FileExplorer = ({
       setModuleActionInFlight(false);
       renameCommitInFlightRef.current = false;
     }
-  }, [moduleRenameState, onActionStatus, refreshExplorerData, resolvedSearchData?.workbook]);
+  }, [moduleRenameState, onActionStatus, personalState, refreshExplorerData, searchData?.workbook]);
 
   const handleRequestDeleteModule = useCallback((target) => {
     setModuleDeleteTarget(target?.module || null);
@@ -301,7 +395,7 @@ const FileExplorer = ({
       return;
     }
 
-    const request = buildWorkbookModuleRequest(moduleDeleteTarget, resolvedSearchData?.workbook);
+    const request = buildWorkbookModuleRequest(moduleDeleteTarget, searchData?.workbook);
     if (!request.workbookName && !request.workbookPath) {
       onActionStatus?.('error', 'Unable to resolve workbook for this module.');
       return;
@@ -322,7 +416,10 @@ const FileExplorer = ({
       setModuleRenameState((previous) => (
         previous?.module?.name === moduleName ? null : previous
       ));
-      await refreshExplorerData();
+      await refreshExplorerData(request);
+      if (String(request.workbookName || '').trim().toUpperCase() === 'PERSONAL.XLSB') {
+        personalState.refresh();
+      }
       onActionStatus?.('success', String(result?.message || `Deleted module "${moduleName}".`));
     } catch (error) {
       const message = error?.message ? String(error.message) : 'Unable to delete module.';
@@ -330,7 +427,7 @@ const FileExplorer = ({
     } finally {
       setModuleActionInFlight(false);
     }
-  }, [moduleActionInFlight, moduleDeleteTarget, onActionStatus, refreshExplorerData, resolvedSearchData?.workbook]);
+  }, [moduleActionInFlight, moduleDeleteTarget, onActionStatus, personalState, refreshExplorerData, searchData?.workbook]);
 
   useEffect(() => {
     if (!moduleContextMenu) {
@@ -371,7 +468,7 @@ const FileExplorer = ({
   // --- Render helpers ---
 
   const renderNonReadyState = () => {
-    const statusView = getSearchStatusView(resolvedSearchData);
+    const statusView = getSearchStatusView(searchData);
 
     return (
       <div className={`search-status-panel search-status-${statusView.status}`}>
@@ -385,7 +482,7 @@ const FileExplorer = ({
   };
 
   const renderTreeNode = (node, depth = 0) => {
-    const isExpanded = effectiveExpandedIds.has(node.id);
+    const isExpanded = expandedIds.has(node.id);
     const isSelected = selectedNode?.id === node.id;
     const hasChildren = node.children.length > 0;
     const paddingLeft = 8 + depth * 16;
@@ -399,6 +496,11 @@ const FileExplorer = ({
           onClick={() => {
             if (!isRenaming) {
               setSelectedNode(node);
+            }
+          }}
+          onDoubleClick={() => {
+            if (node.nodeType === 'module' && canShowModuleContextActions(node.data)) {
+              handleStartRenameModule({ nodeId: node.id, module: node.data });
             }
           }}
           onContextMenu={(event) => {
@@ -466,34 +568,6 @@ const FileExplorer = ({
 
   return (
     <>
-      {/* Header */}
-      <header className="header">
-        <button className="header-back-btn" onClick={onBack}>
-          <ArrowLeftIcon size={20} />
-        </button>
-
-        <div className="search-input-wrapper">
-          <input
-            type="text"
-            className="search-input"
-            placeholder="Search files..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-          />
-        </div>
-
-        <div className="header-actions">
-          <button className="filter-dropdown">
-            <ListIcon size={14} />
-            All files
-            <ChevronDownIcon size={14} />
-          </button>
-          <button className="close-btn" onClick={onClose}>
-            <CloseIcon />
-          </button>
-        </div>
-      </header>
-
       {/* Main area */}
       {status !== 'ready' ? (
         <main className="main-content">
@@ -502,29 +576,65 @@ const FileExplorer = ({
       ) : (
         <div className="split-view">
           {/* Left Panel - Tree */}
-          <div className="split-left">
+          {sidebarOpen && <div className="split-left" style={{ width: `${splitPct}%` }}>
             <div className="section-header">
               <span className="section-title">Explorer</span>
               <span className="section-count">{itemCount} items</span>
             </div>
 
             <div className="tree-list">
-              {filteredTree.length === 0 && (
-                <div className="search-empty-state">No items match this search.</div>
+              {tree.length === 0 && (
+                <div className="search-empty-state">No files are available.</div>
               )}
-              {filteredTree.map((rootNode) => renderTreeNode(rootNode, 0))}
+              {tree.map((rootNode) => renderTreeNode(rootNode, 0))}
             </div>
-          </div>
+          </div>}
+
+          {sidebarOpen && <SplitDivider onResize={setSplitPct} />}
 
           {/* Right Panel - Details */}
           <div className="split-right">
             {selectedNode ? (
               <div className="details-panel">
-                <div className="folder-icon-large">
-                  {selectedNode.nodeType === 'workbook' && <WorkbookIcon size={80} />}
-                  {selectedNode.nodeType === 'module' && <FolderIconLarge size={80} />}
-                  {selectedNode.nodeType === 'macro' && <ReturnIcon size={60} />}
-                </div>
+                {selectedNode.nodeType === 'workbook' && (
+                  <div className="folder-icon-large">
+                    <WorkbookIcon size={80} />
+                  </div>
+                )}
+                {previewCode && (selectedNode.nodeType === 'module' || selectedNode.nodeType === 'macro') && (
+                  <>
+                    <CodePreview
+                      code={previewCode}
+                      showHeader={false}
+                      editable={false}
+                      status="normal"
+                    />
+                    <button
+                      type="button"
+                      className="details-edit-btn"
+                      onClick={() => {
+                        if (typeof onEditModule !== 'function') return;
+                        const moduleName = selectedNode.nodeType === 'module'
+                          ? (selectedNode.data?.name || selectedNode.label)
+                          : (selectedNode.data?.module || '');
+                        if (!moduleName) return;
+                        const targetWorkbook = getNodeWorkbookTarget(selectedNode, searchData?.workbook);
+                        onEditModule({
+                          name: targetWorkbook.name,
+                          path: targetWorkbook.path,
+                          key: targetWorkbook.path || targetWorkbook.name
+                        }, {
+                          mode: 'existing_module',
+                          moduleName,
+                          source: 'all-files',
+                          originMode: 'files'
+                        });
+                      }}
+                    >
+                      Edit
+                    </button>
+                  </>
+                )}
                 <div className="metadata-section">
                   <div className="metadata-title">Metadata</div>
                   {metadata.rows.map((row) => (
@@ -553,6 +663,14 @@ const FileExplorer = ({
           <button
             type="button"
             className="module-context-menu-item"
+            onClick={() => handleEditModule(moduleContextMenu)}
+            disabled={moduleActionInFlight}
+          >
+            Edit
+          </button>
+          <button
+            type="button"
+            className="module-context-menu-item"
             onClick={() => handleStartRenameModule(moduleContextMenu)}
             disabled={moduleActionInFlight}
           >
@@ -574,7 +692,7 @@ const FileExplorer = ({
           <div className="module-action-dialog">
             <h3 className="module-action-title">Delete module?</h3>
             <p className="module-action-message">
-              {`Delete "${moduleDeleteTarget.name}" from "${moduleDeleteTarget.workbookName || resolvedSearchData?.workbook?.name || 'workbook'}"?`}
+              {`Delete "${moduleDeleteTarget.name}" from "${moduleDeleteTarget.workbookName || searchData?.workbook?.name || 'workbook'}"?`}
             </p>
             <div className="module-action-buttons">
               <button
@@ -601,4 +719,4 @@ const FileExplorer = ({
   );
 };
 
-export default FileExplorer;
+export default FilesPage;

@@ -1710,6 +1710,110 @@ class ExcelBridge {
   }
 
   /**
+   * Return PERSONAL.XLSB status, procedures, and shortcut audit in one COM session.
+   * @returns {{
+   *   success: boolean,
+   *   workbookFound: boolean,
+   *   workbook: { name: string, path: string } | null,
+   *   fileExists: boolean,
+   *   workbookPath: string,
+   *   procedures: Array,
+   *   shortcutAudit: { success: boolean, shortcuts: Array, unmapped: Array, note?: string, message?: string },
+   *   message?: string
+   * }}
+   */
+  getPersonalWorkbookContext(options = {}) {
+    const { activate = true } = options;
+    let workbookPath = '';
+    let fileExists = false;
+
+    try {
+      workbookPath = this._getPersonalWorkbookPath();
+      fileExists = fs.existsSync(workbookPath);
+    } catch (error) {
+      return {
+        success: false,
+        workbookFound: false,
+        workbook: null,
+        fileExists: false,
+        workbookPath: '',
+        procedures: [],
+        shortcutAudit: { success: false, shortcuts: [], unmapped: [], message: error.message },
+        message: error.message
+      };
+    }
+
+    try {
+      return this._withExcelApp((excel) => {
+        const workbook = this._findOpenWorkbook(excel, {
+          workbookName: PERSONAL_WORKBOOK_NAME,
+          workbookPath
+        });
+
+        if (!workbook) {
+          return {
+            success: true,
+            workbookFound: false,
+            workbook: null,
+            fileExists,
+            workbookPath,
+            procedures: [],
+            shortcutAudit: { success: true, shortcuts: [], unmapped: [] },
+            message: fileExists
+              ? 'PERSONAL.XLSB is not open.'
+              : 'PERSONAL.XLSB was not found in XLSTART.'
+          };
+        }
+
+        let vbProject = null;
+        try {
+          vbProject = this._getVBProjectForWorkbook(workbook);
+          const procedures = this._listProceduresForWorkbook(workbook, vbProject);
+          let shortcutAudit = {
+            success: true,
+            shortcuts: [],
+            unmapped: [],
+            note: 'Excel does not expose global shortcut listings. Only MacroFlow-tracked shortcuts are available.'
+          };
+          try {
+            shortcutAudit = this._auditShortcutsForWorkbook(workbook);
+          } catch (error) {
+            shortcutAudit = {
+              success: false,
+              shortcuts: [],
+              unmapped: [],
+              message: String(error?.message || 'Shortcut audit failed.')
+            };
+          }
+
+          return {
+            success: true,
+            workbookFound: true,
+            workbook: this._describeWorkbook(workbook),
+            fileExists: true,
+            workbookPath,
+            procedures,
+            shortcutAudit
+          };
+        } finally {
+          this._safeRelease(vbProject, workbook);
+        }
+      }, { activate });
+    } catch (error) {
+      return {
+        success: false,
+        workbookFound: false,
+        workbook: null,
+        fileExists,
+        workbookPath,
+        procedures: [],
+        shortcutAudit: { success: false, shortcuts: [], unmapped: [], message: error.message },
+        message: error.message
+      };
+    }
+  }
+
+  /**
    * Open PERSONAL.XLSB from XLSTART in the currently connected Excel instance.
    * @returns {{
    *   success: boolean,

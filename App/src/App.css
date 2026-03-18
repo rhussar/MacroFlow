@@ -525,17 +525,75 @@ body {
   position: absolute;
   top: calc(100% + 4px);
   left: 0;
-  width: 280px;
-  padding: 8px 12px;
+  width: 244px;
+  padding: 9px 10px;
   background: var(--bg-surface);
   border: 1px solid var(--border-subtle);
   border-radius: 6px;
   box-shadow: 0 6px 16px rgba(0, 0, 0, 0.35);
   font-size: 12px;
   color: var(--text-secondary);
-  line-height: 1.45;
+  line-height: 1.35;
   z-index: 25;
 }
+
+.personal-info-text {
+  margin-bottom: 8px;
+}
+
+.personal-visibility-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.personal-visibility-copy {
+  min-width: 0;
+}
+
+.personal-visibility-label {
+  color: var(--text-primary);
+  font-size: 11px;
+}
+
+.personal-visibility-switch {
+  position: relative;
+  width: 34px;
+  height: 20px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  transition: background 0.16s ease, border-color 0.16s ease;
+  flex: 0 0 auto;
+}
+
+.personal-visibility-switch.on {
+  background: rgba(71, 169, 102, 0.3);
+  border-color: rgba(71, 169, 102, 0.55);
+}
+
+.personal-visibility-switch:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.personal-visibility-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #f4f7f4;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.28);
+  transition: transform 0.16s ease;
+}
+
+.personal-visibility-switch.on .personal-visibility-thumb {
+  transform: translateX(14px);
+}
+
 
 .macro-workbook-menu {
   position: absolute;
@@ -654,14 +712,19 @@ body {
 .module-inline-rename-input {
   width: 180px;
   max-width: 100%;
-  height: 24px;
-  padding: 0 8px;
-  border-radius: var(--border-radius-sm);
+  height: 22px;
+  padding: 0 3px;
+  border-radius: 4px;
   border: 1px solid var(--border-subtle);
   background: transparent;
   color: var(--text-primary);
-  font-size: 12px;
+  font-size: 13px;
   outline: none;
+  margin: -3px 0;
+}
+
+.tree-node__label:has(.module-inline-rename-input) {
+  overflow: visible;
 }
 
 .module-inline-rename-input:focus {
@@ -927,19 +990,32 @@ body {
 
 .app-bottom-status {
   position: fixed;
-  bottom: 12px;
+  top: 52px;
   right: 12px;
-  padding: 6px 12px;
+  max-width: 320px;
+  padding: 8px 14px;
   display: flex;
-  align-items: center;
-  gap: 6px;
-  background: rgba(44, 44, 42, 0.75);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
+  align-items: flex-start;
+  gap: 8px;
+  background: var(--bg-surface);
   border: 1px solid var(--border-subtle);
   border-radius: var(--border-radius-sm);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.35);
+  overflow: hidden;
   -webkit-app-region: no-drag;
   z-index: 100;
+  animation: status-slide-in 0.2s ease-out;
+}
+
+@keyframes status-slide-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .app-bottom-status .status-spinner {
@@ -956,17 +1032,18 @@ body {
 .app-bottom-status-message {
   font-size: 12px;
   color: var(--text-secondary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  line-height: 1.4;
+  min-width: 0;
 }
 
 .app-bottom-status-success {
   border-color: var(--accent-green);
+  background: #2a2e26;
 }
 
 .app-bottom-status-running {
   border-color: var(--accent-blue);
+  background: #262a2e;
 }
 
 .app-bottom-status-running .app-bottom-status-label {
@@ -979,6 +1056,7 @@ body {
 
 .app-bottom-status-error {
   border-color: var(--accent-red);
+  background: #2e2626;
 }
 
 .app-bottom-status-error .app-bottom-status-label {
@@ -1085,15 +1163,29 @@ body {
   display: flex;
   align-items: center;
   gap: 10px;
+  width: 100%;
   padding: 10px 14px;
   font-size: 13px;
+  font-family: inherit;
   color: var(--text-primary);
+  background: transparent;
+  border: 0;
   cursor: pointer;
+  text-align: left;
   transition: background 0.15s;
 }
 
 .settings-menu-item:hover {
   background: var(--bg-elevated);
+}
+
+.settings-menu-item:disabled {
+  cursor: default;
+  opacity: 0.74;
+}
+
+.settings-menu-item:disabled:hover {
+  background: transparent;
 }
 
 .settings-menu-item.danger {
@@ -1111,10 +1203,28 @@ body {
   align-items: center;
   justify-content: center;
   color: var(--text-tertiary);
+  flex: 0 0 auto;
 }
 
 .settings-menu-item.danger .settings-menu-icon {
   color: var(--accent-red);
+}
+
+.settings-menu-item-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.settings-menu-item-label {
+  color: inherit;
+}
+
+.settings-menu-item-subtitle {
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--text-tertiary);
 }
 
 /* ============================================
@@ -1289,6 +1399,19 @@ body {
   background: var(--bg-hover);
 }
 
+.details-workbook-actions {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+
+.details-workbook-actions .details-edit-btn {
+  padding: 6px 12px;
+}
+
 .metadata-section {
   background: var(--bg-surface);
   border-radius: var(--border-radius-sm);
@@ -1331,6 +1454,24 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  min-width: 0;
+}
+
+.metadata-value--editable {
+  cursor: pointer;
+  border-radius: var(--border-radius-xs);
+  padding: 1px 4px;
+  margin: -1px -4px;
+  transition: background 0.15s;
+}
+
+.metadata-value--editable:hover {
+  background: var(--bg-hover);
+}
+
+.metadata-rename-input {
+  text-align: right;
+  width: 100%;
   min-width: 0;
 }
 

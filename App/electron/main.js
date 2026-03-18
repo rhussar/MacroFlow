@@ -1,4 +1,4 @@
-const { app, BrowserWindow, screen, ipcMain } = require('electron');
+const { app, BrowserWindow, screen, ipcMain, shell } = require('electron');
 const path = require('node:path');
 
 const iconPath = path.join(__dirname, '../assets', process.platform === 'win32' ? 'app-icon.ico' : 'app-icon.png');
@@ -545,7 +545,48 @@ if (!gotLock) {
         logger.error('[AddinInstaller] first-run install failed', { error: error.message });
       }
 
-      app.quit();
+      // Show installer completion window
+      const { exec } = require('child_process');
+      const firstRunWindow = new BrowserWindow({
+        width: 420,
+        height: 340,
+        resizable: false,
+        maximizable: false,
+        minimizable: false,
+        frame: false,
+        transparent: true,
+        center: true,
+        alwaysOnTop: true,
+        skipTaskbar: false,
+        title: 'MacroFlow Setup',
+        icon: iconPath,
+        webPreferences: {
+          preload: path.join(__dirname, 'first-run-preload.js'),
+          contextIsolation: true,
+          sandbox: true,
+          nodeIntegration: false,
+        }
+      });
+
+      firstRunWindow.loadFile(path.join(__dirname, 'first-run.html'));
+
+      firstRunWindow.once('ready-to-show', () => {
+        firstRunWindow.show();
+      });
+
+      ipcMain.on('first-run:open-excel', () => {
+        exec('start excel', { shell: true });
+        app.quit();
+      });
+
+      ipcMain.on('first-run:done', () => {
+        app.quit();
+      });
+
+      firstRunWindow.on('closed', () => {
+        app.quit();
+      });
+
       return;
     }
 

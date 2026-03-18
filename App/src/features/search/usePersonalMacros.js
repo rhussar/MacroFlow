@@ -12,6 +12,8 @@ const INITIAL_PERSONAL_MACROS_STATE = {
   workbook: null,
   fileExists: false,
   workbookPath: '',
+  windowVisible: null,
+  windowHidden: false,
   error: null
 };
 
@@ -200,6 +202,8 @@ export function usePersonalMacros(searchData, workbookListSignature = '') {
         let workbook = null;
         let workbookPath = '';
         let fileExists = false;
+        let windowVisible = null;
+        let windowHidden = false;
         let macros = [];
         let shortcutAudit = null;
 
@@ -219,6 +223,8 @@ export function usePersonalMacros(searchData, workbookListSignature = '') {
               workbook: null,
               fileExists: false,
               workbookPath: '',
+              windowVisible: null,
+              windowHidden: false,
               error: { message }
             });
             return;
@@ -228,6 +234,10 @@ export function usePersonalMacros(searchData, workbookListSignature = '') {
           workbook = contextResult?.workbook || null;
           workbookPath = String(contextResult?.workbookPath || workbook?.path || '').trim();
           fileExists = contextResult?.fileExists === true || workbookFound;
+          windowVisible = typeof contextResult?.windowVisible === 'boolean'
+            ? contextResult.windowVisible
+            : null;
+          windowHidden = contextResult?.windowHidden === true;
           shortcutAudit = contextResult?.shortcutAudit && typeof contextResult.shortcutAudit === 'object'
             ? contextResult.shortcutAudit
             : null;
@@ -257,6 +267,8 @@ export function usePersonalMacros(searchData, workbookListSignature = '') {
               workbook: null,
               fileExists: false,
               workbookPath: '',
+              windowVisible: null,
+              windowHidden: false,
               error: { message }
             });
             return;
@@ -266,6 +278,10 @@ export function usePersonalMacros(searchData, workbookListSignature = '') {
           workbook = statusResult?.workbook || null;
           workbookPath = String(statusResult?.workbookPath || workbook?.path || '').trim();
           fileExists = statusResult?.fileExists === true || workbookFound;
+          windowVisible = typeof statusResult?.windowVisible === 'boolean'
+            ? statusResult.windowVisible
+            : null;
+          windowHidden = statusResult?.windowHidden === true;
 
           if (workbookFound) {
             const proceduresResult = await proceduresByWorkbookApi({
@@ -286,6 +302,8 @@ export function usePersonalMacros(searchData, workbookListSignature = '') {
                 workbook: null,
                 fileExists,
                 workbookPath,
+                windowVisible,
+                windowHidden,
                 error: { message }
               });
               return;
@@ -314,6 +332,8 @@ export function usePersonalMacros(searchData, workbookListSignature = '') {
           workbook,
           fileExists,
           workbookPath,
+          windowVisible,
+          windowHidden,
           error: null
         };
         sharedPersonalCache.fetchedAt = Date.now();
@@ -336,6 +356,8 @@ export function usePersonalMacros(searchData, workbookListSignature = '') {
           workbook: null,
           fileExists: false,
           workbookPath: '',
+          windowVisible: null,
+          windowHidden: false,
           error: { message }
         }));
       }

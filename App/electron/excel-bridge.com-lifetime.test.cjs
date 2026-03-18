@@ -1,4 +1,6 @@
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
 const test = require('node:test');
 const path = require('node:path');
 const Module = require('node:module');
@@ -82,6 +84,28 @@ function loadExcelBridge({
   };
 }
 
+function withFakeAppData(run, { createPersonalWorkbookFile = true } = {}) {
+  const originalAppData = process.env.APPDATA;
+  const appDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'macroflow-appdata-'));
+  const workbookPath = path.join(appDataDir, 'Microsoft', 'Excel', 'XLSTART', 'PERSONAL.XLSB');
+
+  try {
+    process.env.APPDATA = appDataDir;
+    if (createPersonalWorkbookFile) {
+      fs.mkdirSync(path.dirname(workbookPath), { recursive: true });
+      fs.writeFileSync(workbookPath, '');
+    }
+    return run({ appDataDir, workbookPath });
+  } finally {
+    if (typeof originalAppData === 'string') {
+      process.env.APPDATA = originalAppData;
+    } else {
+      delete process.env.APPDATA;
+    }
+    fs.rmSync(appDataDir, { recursive: true, force: true });
+  }
+}
+
 test('core operations release COM handles on completion', () => {
   const workbook = {
     Name: 'Book1.xlsx',
@@ -140,6 +164,147 @@ test('failure paths release COM handles', () => {
   const releasedObjects = releaseCalls.flat();
   assert.ok(releasedObjects.includes(excelApp), 'Excel application should be released on failure');
 });
+
+test('getPersonalWorkbookStatus reports hidden PERSONAL.XLSB state', () => withFakeAppData(({ workbookPath }) => {
+  const personalWindow = { Visible: false };
+  const personalWorkbook = {
+    Name: 'PERSONAL.XLSB',
+    FullName: workbookPath,
+    Windows: {
+      Count: 1,
+      Item: () => personalWindow
+    }
+  };
+  const excelApp = {
+    Workbooks: {
+      Count: 1,
+      Item: () => personalWorkbook
+    }
+  };
+
+  const { bridge } = loadExcelBridge({
+    processIds: [3131],
+    objectFactory: () => excelApp
+  });
+
+  const result = bridge.getPersonalWorkbookStatus();
+  assert.equal(result.success, true);
+  assert.equal(result.workbookFound, true);
+  assert.equal(result.windowVisible, false);
+  assert.equal(result.windowHidden, true);
+}));
+
+test('getPersonalWorkbookLocation resolves XLSTART path without COM', () => withFakeAppData(({ workbookPath }) => {
+  const { bridge, getObjectCalls } = loadExcelBridge({
+    processIds: [3132],
+    objectFactory: () => ({})
+  });
+
+  const result = bridge.getPersonalWorkbookLocation();
+  assert.equal(result.success, true);
+  assert.equal(result.workbookPath, workbookPath);
+  assert.equal(result.fileExists, true);
+  assert.equal(getObjectCalls(), 0);
+}));
+
+test('createPersonalWorkbook hides PERSONAL.XLSB when another workbook window remains visible', () => withFakeAppData(({ workbookPath }) => {
+  let saveCalls = 0;
+  const otherWorkbook = {
+    Name: 'Budget.xlsx',
+    FullName: 'C:\\Budget.xlsx',
+    Windows: {
+      Count: 1,
+      Item: () => ({ Visible: true })
+    }
+  };
+  const personalWindow = { Visible: true };
+  const personalWorkbook = {
+    Name: 'PERSONAL.XLSB',
+    FullName: workbookPath,
+    Saved: true,
+    SaveAs: () => {},
+    Save: () => {
+      saveCalls += 1;
+    },
+    Windows: {
+      Count: 1,
+      Item: () => personalWindow
+    }
+  };
+  const workbooks = [otherWorkbook];
+  const workbooksProxy = {
+    get Count() {
+      return workbooks.length;
+    },
+    Item: (index) => workbooks[index - 1],
+    Add: () => {
+      workbooks.push(personalWorkbook);
+      return personalWorkbook;
+    }
+  };
+  const excelApp = {
+    DisplayAlerts: true,
+    Workbooks: workbooksProxy
+  };
+
+  const { bridge } = loadExcelBridge({
+    processIds: [3232],
+    objectFactory: () => excelApp
+  });
+
+  const result = bridge.createPersonalWorkbook();
+  assert.equal(result.success, true);
+  assert.equal(result.created, true);
+  assert.equal(result.windowVisible, false);
+  assert.equal(result.windowHidden, true);
+  assert.equal(result.visibilityApplied, true);
+  assert.equal(personalWindow.Visible, false);
+  assert.equal(saveCalls, 1);
+}, { createPersonalWorkbookFile: false }));
+
+test('createPersonalWorkbook keeps PERSONAL.XLSB visible when it is the only workbook window', () => withFakeAppData(({ workbookPath }) => {
+  const personalWindow = { Visible: true };
+  const personalWorkbook = {
+    Name: 'PERSONAL.XLSB',
+    FullName: workbookPath,
+    Saved: true,
+    SaveAs: () => {},
+    Save: () => {
+      throw new Error('Save should not be called when hide is blocked');
+    },
+    Windows: {
+      Count: 1,
+      Item: () => personalWindow
+    }
+  };
+  const workbooks = [];
+  const excelApp = {
+    DisplayAlerts: true,
+    Workbooks: {
+      get Count() {
+        return workbooks.length;
+      },
+      Item: (index) => workbooks[index - 1],
+      Add: () => {
+        workbooks.push(personalWorkbook);
+        return personalWorkbook;
+      }
+    }
+  };
+
+  const { bridge } = loadExcelBridge({
+    processIds: [3333],
+    objectFactory: () => excelApp
+  });
+
+  const result = bridge.createPersonalWorkbook();
+  assert.equal(result.success, true);
+  assert.equal(result.created, true);
+  assert.equal(result.windowVisible, true);
+  assert.equal(result.windowHidden, false);
+  assert.equal(result.visibilityApplied, false);
+  assert.match(result.message, /only visible workbook window/i);
+}, { createPersonalWorkbookFile: false }));
 
 test('NO_EXCEL preflight occurs before COM attach', () => {
   const { bridge, getObjectCalls } = loadExcelBridge({

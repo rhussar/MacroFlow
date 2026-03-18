@@ -16,6 +16,9 @@ function ShortcutGrid({
   const shortcutSavingMacroId = shortcutState?.shortcutSavingMacroId || null;
   const handleShortcutDraftChange = shortcutState?.handleShortcutDraftChange;
   const handleShortcutCommit = shortcutState?.handleShortcutCommit;
+  const selectShortcutInputValue = (event) => {
+    event.currentTarget.select();
+  };
 
   return (
     <div className="shortcuts-grid">
@@ -62,6 +65,7 @@ function ShortcutGrid({
                 spellCheck={false}
                 aria-label={`Shortcut letter for ${macro.name}`}
                 onChange={(event) => handleShortcutDraftChange?.(macro.id, event.target.value)}
+                onFocus={selectShortcutInputValue}
                 onBlur={() => handleShortcutCommit?.(macro, 'blur')}
                 onKeyDown={(event) => {
                   if (event.key === 'Enter') {
@@ -73,7 +77,10 @@ function ShortcutGrid({
                     event.currentTarget.blur();
                   }
                 }}
-                onClick={(event) => event.stopPropagation()}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  selectShortcutInputValue(event);
+                }}
                 disabled={isSaving}
               />
             </div>

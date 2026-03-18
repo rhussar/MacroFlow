@@ -13,7 +13,7 @@
  *   3. Expose it in preload.js
  */
 
-const { ipcMain, app, BrowserWindow } = require('electron');
+const { ipcMain, app, BrowserWindow, shell } = require('electron');
 const excel = require('./excel-bridge');
 const { generateVba } = require('./openai-client');
 const {
@@ -1203,6 +1203,44 @@ function registerHandlers() {
   });
 
   /**
+   * Rename a VBA macro (Sub/Function) inside a module by editing its source code.
+   * Channel: 'vba:macro:rename:by-workbook'
+   * Args: { workbookName?: string, workbookPath?: string, moduleName: string, macroName: string, nextMacroName: string }
+   */
+  ipcMain.handle('vba:macro:rename:by-workbook', async (_, {
+    workbookName,
+    workbookPath,
+    moduleName = '',
+    macroName = '',
+    nextMacroName = ''
+  } = {}) => {
+    logIpc('vba:macro:rename:by-workbook', 'start', {
+      workbookName,
+      workbookPath,
+      moduleName,
+      macroName,
+      nextMacroName
+    });
+
+    const result = await withHighRiskComRelease(
+      () => excel.renameMacroByWorkbookName(workbookName, moduleName, macroName, nextMacroName, { workbookPath })
+    );
+
+    if (result?.success && result?.renamed) {
+      clearWorkbookContextBurstCache();
+    }
+    logIpc('vba:macro:rename:by-workbook', 'end', {
+      success: result.success,
+      workbookFound: result.workbookFound,
+      moduleFound: result.moduleFound,
+      macroFound: result.macroFound,
+      renamed: result.renamed,
+      macroName: result.macroName
+    });
+    return result;
+  });
+
+  /**
    * Delete a VBA module in a specific open workbook.
    * Channel: 'vba:module:delete:by-workbook'
    * Args: { workbookName?: string, workbookPath?: string, moduleName: string }
@@ -1699,11 +1737,20 @@ function registerHandlers() {
   /**
    * Open PERSONAL.XLSB from XLSTART.
    * Channel: 'personal:open'
-   * Returns: { success, workbookFound, opened, alreadyOpen, workbook, fileExists, workbookPath, message? }
+   * Args: { visible?: boolean }
+   * Returns: { success, workbookFound, opened, alreadyOpen, workbook, fileExists, workbookPath, windowVisible, windowHidden, message? }
    */
-  ipcMain.handle('personal:open', async () => {
-    logIpc('personal:open', 'start');
-    const result = await withComRelease(() => excel.openPersonalWorkbook());
+  ipcMain.handle('personal:open', async (_, args) => {
+    const payload = args && typeof args === 'object' ? args : {};
+    if (
+      !hasOnlyKeys(payload, ['visible']) ||
+      (Object.prototype.hasOwnProperty.call(payload, 'visible') && typeof payload.visible !== 'boolean')
+    ) {
+      return buildBlockedResult('VALIDATION_FAILED', 'personal:open only accepts an optional boolean "visible" flag.');
+    }
+
+    logIpc('personal:open', 'start', { visible: payload.visible });
+    const result = await withComRelease(() => excel.openPersonalWorkbook(payload));
     if (result?.success) {
       clearPollingPaused();
       clearWorkbookContextBurstCache();
@@ -1711,7 +1758,8 @@ function registerHandlers() {
     logIpc('personal:open', 'end', {
       success: result.success,
       opened: result.opened,
-      alreadyOpen: result.alreadyOpen
+      alreadyOpen: result.alreadyOpen,
+      windowVisible: result.windowVisible
     });
     return result;
   });
@@ -1719,11 +1767,20 @@ function registerHandlers() {
   /**
    * Create PERSONAL.XLSB in XLSTART, then open it.
    * Channel: 'personal:create'
-   * Returns: { success, created, opened, workbookFound, workbook, fileExists, workbookPath, message? }
+   * Args: { visible?: boolean }
+   * Returns: { success, created, opened, workbookFound, workbook, fileExists, workbookPath, windowVisible, windowHidden, message? }
    */
-  ipcMain.handle('personal:create', async () => {
-    logIpc('personal:create', 'start');
-    const result = await withComRelease(() => excel.createPersonalWorkbook());
+  ipcMain.handle('personal:create', async (_, args) => {
+    const payload = args && typeof args === 'object' ? args : {};
+    if (
+      !hasOnlyKeys(payload, ['visible']) ||
+      (Object.prototype.hasOwnProperty.call(payload, 'visible') && typeof payload.visible !== 'boolean')
+    ) {
+      return buildBlockedResult('VALIDATION_FAILED', 'personal:create only accepts an optional boolean "visible" flag.');
+    }
+
+    logIpc('personal:create', 'start', { visible: payload.visible });
+    const result = await withComRelease(() => excel.createPersonalWorkbook(payload));
     if (result?.success) {
       clearPollingPaused();
       clearWorkbookContextBurstCache();
@@ -1731,9 +1788,77 @@ function registerHandlers() {
     logIpc('personal:create', 'end', {
       success: result.success,
       created: result.created,
-      opened: result.opened
+      opened: result.opened,
+      windowVisible: result.windowVisible
     });
     return result;
+  });
+
+  /**
+   * Show or hide the open PERSONAL.XLSB workbook window.
+   * Channel: 'personal:visibility:set'
+   * Args: { visible: boolean }
+   * Returns: { success, workbookFound, workbook, fileExists, workbookPath, windowVisible, windowHidden, visibilityChanged, message? }
+   */
+  ipcMain.handle('personal:visibility:set', async (_, args) => {
+    const payload = args && typeof args === 'object' ? args : {};
+    if (!hasOnlyKeys(payload, ['visible']) || typeof payload.visible !== 'boolean') {
+      return buildBlockedResult('VALIDATION_FAILED', 'personal:visibility:set requires a boolean "visible" flag.');
+    }
+
+    logIpc('personal:visibility:set', 'start', { visible: payload.visible });
+    const result = await withComRelease(() => excel.setPersonalWorkbookVisibility(payload));
+    logIpc('personal:visibility:set', 'end', {
+      success: result.success,
+      workbookFound: result.workbookFound,
+      windowVisible: result.windowVisible,
+      visibilityChanged: result.visibilityChanged
+    });
+    return result;
+  });
+
+  /**
+   * Open the Excel XLSTART folder for PERSONAL.XLSB.
+   * Channel: 'personal:open-folder'
+   * Returns: { success, workbookPath, folderPath, fileExists, message? }
+   */
+  ipcMain.handle('personal:open-folder', async () => {
+    logIpc('personal:open-folder', 'start');
+    const location = excel.getPersonalWorkbookLocation();
+    if (!location?.success) {
+      logIpc('personal:open-folder', 'end', { success: false });
+      return location;
+    }
+
+    try {
+      if (location.fileExists && location.workbookPath) {
+        shell.showItemInFolder(location.workbookPath);
+      } else {
+        const openResult = await shell.openPath(location.folderPath);
+        if (openResult) {
+          throw new Error(String(openResult));
+        }
+      }
+
+      const result = {
+        success: true,
+        workbookPath: location.workbookPath,
+        folderPath: location.folderPath,
+        fileExists: location.fileExists
+      };
+      logIpc('personal:open-folder', 'end', { success: true, fileExists: location.fileExists });
+      return result;
+    } catch (error) {
+      const result = {
+        success: false,
+        workbookPath: location.workbookPath,
+        folderPath: location.folderPath,
+        fileExists: location.fileExists,
+        message: String(error?.message || 'Unable to open the XLSTART folder.')
+      };
+      logIpc('personal:open-folder', 'end', { success: false, message: result.message });
+      return result;
+    }
   });
 
   /**
@@ -1918,4 +2043,3 @@ function registerHandlers() {
 }
 
 module.exports = { registerHandlers };
-

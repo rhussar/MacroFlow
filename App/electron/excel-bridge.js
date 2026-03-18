@@ -510,6 +510,26 @@ class ExcelBridge {
     return path.join(appData, 'Microsoft', 'Excel', 'XLSTART', PERSONAL_WORKBOOK_NAME);
   }
 
+  getPersonalWorkbookLocation() {
+    try {
+      const workbookPath = this._getPersonalWorkbookPath();
+      return {
+        success: true,
+        workbookPath,
+        folderPath: path.dirname(workbookPath),
+        fileExists: fs.existsSync(workbookPath)
+      };
+    } catch (error) {
+      return {
+        success: false,
+        workbookPath: '',
+        folderPath: '',
+        fileExists: false,
+        message: error.message
+      };
+    }
+  }
+
   _ensureDirectoryExists(filePath) {
     const directory = path.dirname(String(filePath || '').trim());
     if (!directory) {
@@ -605,6 +625,215 @@ class ExcelBridge {
       return matchedWorkbook;
     } finally {
       this._safeRelease(...nonMatchingRefs, workbooks);
+    }
+  }
+
+  _getWorkbookWindowState(workbook) {
+    let windowsProxy = null;
+    let workbookWindow = null;
+
+    try {
+      windowsProxy = workbook?.Windows;
+      const windowCount = windowsProxy ? Number(windowsProxy.Count) : 0;
+      if (!Number.isFinite(windowCount) || windowCount < 1) {
+        return {
+          hasWindow: false,
+          windowVisible: null,
+          windowHidden: false
+        };
+      }
+
+      workbookWindow = windowsProxy.Item(1);
+      const rawVisible = workbookWindow?.Visible;
+      const windowVisible = !(rawVisible === false || Number(rawVisible) === 0);
+      return {
+        hasWindow: true,
+        windowVisible,
+        windowHidden: windowVisible === false
+      };
+    } catch {
+      return {
+        hasWindow: false,
+        windowVisible: null,
+        windowHidden: false
+      };
+    } finally {
+      this._safeRelease(workbookWindow, windowsProxy);
+    }
+  }
+
+  _countVisibleWorkbookWindows(excel, { excludeWorkbook } = {}) {
+    let workbooks = null;
+    const workbookRefs = [];
+    const windowsRefs = [];
+    const windowRefs = [];
+    const excludeKey = excludeWorkbook ? this._getWorkbookCacheKey(excludeWorkbook) : '';
+    let visibleCount = 0;
+
+    try {
+      workbooks = excel?.Workbooks;
+      const count = workbooks ? Number(workbooks.Count) : 0;
+      for (let i = 1; i <= count; i += 1) {
+        const workbook = workbooks.Item(i);
+        if (!workbook) {
+          continue;
+        }
+        workbookRefs.push(workbook);
+
+        if (excludeKey && this._getWorkbookCacheKey(workbook) === excludeKey) {
+          continue;
+        }
+
+        let windowsProxy = null;
+        let workbookWindow = null;
+        try {
+          windowsProxy = workbook.Windows;
+          if (windowsProxy) {
+            windowsRefs.push(windowsProxy);
+          }
+
+          const windowCount = windowsProxy ? Number(windowsProxy.Count) : 0;
+          if (!Number.isFinite(windowCount) || windowCount < 1) {
+            continue;
+          }
+
+          workbookWindow = windowsProxy.Item(1);
+          if (workbookWindow) {
+            windowRefs.push(workbookWindow);
+          }
+
+          const rawVisible = workbookWindow?.Visible;
+          const windowVisible = !(rawVisible === false || Number(rawVisible) === 0);
+          if (windowVisible) {
+            visibleCount += 1;
+          }
+        } catch {
+          // Ignore per-workbook visibility failures.
+        }
+      }
+
+      return visibleCount;
+    } finally {
+      this._safeRelease(...windowRefs, ...windowsRefs, ...workbookRefs, workbooks);
+    }
+  }
+
+  _canPersistWorkbookWindowState(workbook) {
+    try {
+      const rawSaved = workbook?.Saved;
+      return !(rawSaved === false || Number(rawSaved) === 0);
+    } catch {
+      return false;
+    }
+  }
+
+  _setWorkbookWindowVisibility(
+    workbook,
+    excel,
+    {
+      visible,
+      activateOnShow = false,
+      persistWhenSafe = false,
+      allowHideWithoutAlternateWindow = false
+    } = {}
+  ) {
+    const targetVisible = Boolean(visible);
+    let windowsProxy = null;
+    let workbookWindow = null;
+
+    try {
+      windowsProxy = workbook?.Windows;
+      const windowCount = windowsProxy ? Number(windowsProxy.Count) : 0;
+      if (!Number.isFinite(windowCount) || windowCount < 1) {
+        return {
+          success: false,
+          blockedByOnlyVisibleWindow: false,
+          visibilityChanged: false,
+          windowVisible: null,
+          windowHidden: false,
+          statePersisted: false,
+          message: 'Unable to access the workbook window.'
+        };
+      }
+
+      workbookWindow = windowsProxy.Item(1);
+      const rawCurrentVisible = workbookWindow?.Visible;
+      const currentVisible = !(rawCurrentVisible === false || Number(rawCurrentVisible) === 0);
+
+      if (!targetVisible && !allowHideWithoutAlternateWindow) {
+        const visibleAlternates = this._countVisibleWorkbookWindows(excel, { excludeWorkbook: workbook });
+        if (visibleAlternates < 1) {
+          return {
+            success: false,
+            blockedByOnlyVisibleWindow: true,
+            visibilityChanged: false,
+            windowVisible: currentVisible,
+            windowHidden: currentVisible === false,
+            statePersisted: false,
+            message: 'PERSONAL.XLSB cannot be hidden while it is the only visible workbook window.'
+          };
+        }
+      }
+
+      if (currentVisible === targetVisible) {
+        return {
+          success: true,
+          blockedByOnlyVisibleWindow: false,
+          visibilityChanged: false,
+          windowVisible: currentVisible,
+          windowHidden: currentVisible === false,
+          statePersisted: false,
+          message: targetVisible
+            ? 'PERSONAL.XLSB is already visible.'
+            : 'PERSONAL.XLSB is already hidden.'
+        };
+      }
+
+      const canPersistState = persistWhenSafe && this._canPersistWorkbookWindowState(workbook);
+      workbookWindow.Visible = targetVisible;
+
+      if (targetVisible && activateOnShow) {
+        try {
+          workbook.Activate();
+        } catch {
+          // Ignore activation failures when surfacing the workbook.
+        }
+      }
+
+      let statePersisted = false;
+      let persistenceMessage = '';
+      if (canPersistState) {
+        try {
+          workbook.Save();
+          statePersisted = true;
+        } catch (error) {
+          persistenceMessage = String(error?.message || 'Workbook visibility changed, but MacroFlow could not save PERSONAL.XLSB.');
+        }
+      }
+
+      const rawFinalVisible = workbookWindow?.Visible;
+      const finalVisible = !(rawFinalVisible === false || Number(rawFinalVisible) === 0);
+      return {
+        success: true,
+        blockedByOnlyVisibleWindow: false,
+        visibilityChanged: finalVisible !== currentVisible,
+        windowVisible: finalVisible,
+        windowHidden: finalVisible === false,
+        statePersisted,
+        message: persistenceMessage
+      };
+    } catch (error) {
+      return {
+        success: false,
+        blockedByOnlyVisibleWindow: false,
+        visibilityChanged: false,
+        windowVisible: null,
+        windowHidden: false,
+        statePersisted: false,
+        message: String(error?.message || 'Unable to change workbook visibility.')
+      };
+    } finally {
+      this._safeRelease(workbookWindow, windowsProxy);
     }
   }
 
@@ -1643,6 +1872,8 @@ class ExcelBridge {
    *   workbook: { name: string, path: string } | null,
    *   fileExists: boolean,
    *   workbookPath: string,
+   *   windowVisible: boolean | null,
+   *   windowHidden: boolean,
    *   message?: string
    * }}
    */
@@ -1661,6 +1892,8 @@ class ExcelBridge {
         workbook: null,
         fileExists: false,
         workbookPath: '',
+        windowVisible: null,
+        windowHidden: false,
         message: error.message
       };
     }
@@ -1679,6 +1912,8 @@ class ExcelBridge {
             workbook: null,
             fileExists,
             workbookPath,
+            windowVisible: null,
+            windowHidden: false,
             message: fileExists
               ? 'PERSONAL.XLSB is not open.'
               : 'PERSONAL.XLSB was not found in XLSTART.'
@@ -1686,12 +1921,15 @@ class ExcelBridge {
         }
 
         try {
+          const windowState = this._getWorkbookWindowState(workbook);
           return {
             success: true,
             workbookFound: true,
             workbook: this._describeWorkbook(workbook),
             fileExists: true,
-            workbookPath
+            workbookPath,
+            windowVisible: windowState.windowVisible,
+            windowHidden: windowState.windowHidden
           };
         } finally {
           this._safeRelease(workbook);
@@ -1704,6 +1942,8 @@ class ExcelBridge {
         workbook: null,
         fileExists,
         workbookPath,
+        windowVisible: null,
+        windowHidden: false,
         message: error.message
       };
     }
@@ -1717,6 +1957,8 @@ class ExcelBridge {
    *   workbook: { name: string, path: string } | null,
    *   fileExists: boolean,
    *   workbookPath: string,
+   *   windowVisible: boolean | null,
+   *   windowHidden: boolean,
    *   procedures: Array,
    *   shortcutAudit: { success: boolean, shortcuts: Array, unmapped: Array, note?: string, message?: string },
    *   message?: string
@@ -1737,6 +1979,8 @@ class ExcelBridge {
         workbook: null,
         fileExists: false,
         workbookPath: '',
+        windowVisible: null,
+        windowHidden: false,
         procedures: [],
         shortcutAudit: { success: false, shortcuts: [], unmapped: [], message: error.message },
         message: error.message
@@ -1757,6 +2001,8 @@ class ExcelBridge {
             workbook: null,
             fileExists,
             workbookPath,
+            windowVisible: null,
+            windowHidden: false,
             procedures: [],
             shortcutAudit: { success: true, shortcuts: [], unmapped: [] },
             message: fileExists
@@ -1769,6 +2015,7 @@ class ExcelBridge {
         try {
           vbProject = this._getVBProjectForWorkbook(workbook);
           const procedures = this._listProceduresForWorkbook(workbook, vbProject);
+          const windowState = this._getWorkbookWindowState(workbook);
           let shortcutAudit = {
             success: true,
             shortcuts: [],
@@ -1792,6 +2039,8 @@ class ExcelBridge {
             workbook: this._describeWorkbook(workbook),
             fileExists: true,
             workbookPath,
+            windowVisible: windowState.windowVisible,
+            windowHidden: windowState.windowHidden,
             procedures,
             shortcutAudit
           };
@@ -1806,6 +2055,8 @@ class ExcelBridge {
         workbook: null,
         fileExists,
         workbookPath,
+        windowVisible: null,
+        windowHidden: false,
         procedures: [],
         shortcutAudit: { success: false, shortcuts: [], unmapped: [], message: error.message },
         message: error.message
@@ -1823,11 +2074,16 @@ class ExcelBridge {
    *   workbook: { name: string, path: string } | null,
    *   fileExists: boolean,
    *   workbookPath: string,
+   *   windowVisible: boolean | null,
+   *   windowHidden: boolean,
+   *   visibilityApplied: boolean,
+   *   visibilityChanged: boolean,
+   *   statePersisted: boolean,
    *   message?: string
    * }}
    */
   openPersonalWorkbook(options = {}) {
-    const { activate = true } = options;
+    const { activate = true, visible = false } = options;
     let workbookPath = '';
     let fileExists = false;
 
@@ -1843,6 +2099,10 @@ class ExcelBridge {
         workbook: null,
         fileExists: false,
         workbookPath: '',
+        windowVisible: null,
+        windowHidden: false,
+        visibilityChanged: false,
+        statePersisted: false,
         message: error.message
       };
     }
@@ -1856,6 +2116,10 @@ class ExcelBridge {
         workbook: null,
         fileExists: false,
         workbookPath,
+        windowVisible: null,
+        windowHidden: false,
+        visibilityChanged: false,
+        statePersisted: false,
         message: 'PERSONAL.XLSB was not found in XLSTART.'
       };
     }
@@ -1869,21 +2133,31 @@ class ExcelBridge {
 
         if (workbook) {
           try {
-            workbook.Activate();
-          } catch {
-            // Ignore activation failures.
-          }
-
-          try {
+            const visibilityResult = this._setWorkbookWindowVisibility(workbook, excel, {
+              visible,
+              activateOnShow: visible,
+              persistWhenSafe: false
+            });
             return {
-              success: true,
+              success: visibilityResult.success || visibilityResult.blockedByOnlyVisibleWindow,
               workbookFound: true,
               opened: false,
               alreadyOpen: true,
               workbook: this._describeWorkbook(workbook),
               fileExists: true,
               workbookPath,
-              message: 'PERSONAL.XLSB is already open.'
+              windowVisible: visibilityResult.windowVisible,
+              windowHidden: visibilityResult.windowHidden,
+              visibilityApplied: visibilityResult.success,
+              visibilityChanged: visibilityResult.visibilityChanged,
+              statePersisted: visibilityResult.statePersisted,
+              message: visibilityResult.success
+                ? (visibilityResult.message || (visible
+                  ? 'PERSONAL.XLSB is already open and visible.'
+                  : 'PERSONAL.XLSB is open in the background.'))
+                : (visibilityResult.blockedByOnlyVisibleWindow
+                  ? 'PERSONAL.XLSB is open and stays visible because it is the only visible workbook window.'
+                  : visibilityResult.message)
             };
           } finally {
             this._safeRelease(workbook);
@@ -1899,21 +2173,32 @@ class ExcelBridge {
           throw openError;
         }
         try {
-          try {
-            workbook.Activate();
-          } catch {
-            // Ignore activation failures.
-          }
+          const visibilityResult = this._setWorkbookWindowVisibility(workbook, excel, {
+            visible,
+            activateOnShow: visible,
+            persistWhenSafe: false
+          });
 
           return {
-            success: true,
+            success: visibilityResult.success || visibilityResult.blockedByOnlyVisibleWindow,
             workbookFound: true,
             opened: true,
             alreadyOpen: false,
             workbook: this._describeWorkbook(workbook),
             fileExists: true,
             workbookPath,
-            message: 'Opened PERSONAL.XLSB.'
+            windowVisible: visibilityResult.windowVisible,
+            windowHidden: visibilityResult.windowHidden,
+            visibilityApplied: visibilityResult.success,
+            visibilityChanged: visibilityResult.visibilityChanged,
+            statePersisted: visibilityResult.statePersisted,
+            message: visibilityResult.success
+              ? (visibilityResult.message || (visible
+                ? 'Opened PERSONAL.XLSB.'
+                : 'Opened PERSONAL.XLSB in the background.'))
+              : (visibilityResult.blockedByOnlyVisibleWindow
+                ? 'Opened PERSONAL.XLSB. It stays visible because it is the only visible workbook window.'
+                : visibilityResult.message)
           };
         } finally {
           this._safeRelease(workbook, workbooksProxy);
@@ -1928,6 +2213,10 @@ class ExcelBridge {
         workbook: null,
         fileExists,
         workbookPath,
+        windowVisible: null,
+        windowHidden: false,
+        visibilityChanged: false,
+        statePersisted: false,
         message: error.message
       };
     }
@@ -1943,11 +2232,16 @@ class ExcelBridge {
    *   workbook: { name: string, path: string } | null,
    *   fileExists: boolean,
    *   workbookPath: string,
+   *   windowVisible: boolean | null,
+   *   windowHidden: boolean,
+   *   visibilityApplied: boolean,
+   *   visibilityChanged: boolean,
+   *   statePersisted: boolean,
    *   message?: string
    * }}
    */
   createPersonalWorkbook(options = {}) {
-    const { activate = true } = options;
+    const { activate = true, visible = false } = options;
     let workbookPath = '';
     let fileExists = false;
 
@@ -1964,12 +2258,16 @@ class ExcelBridge {
         workbook: null,
         fileExists: false,
         workbookPath: '',
+        windowVisible: null,
+        windowHidden: false,
+        visibilityChanged: false,
+        statePersisted: false,
         message: error.message
       };
     }
 
     if (fileExists) {
-      const openResult = this.openPersonalWorkbook({ activate });
+      const openResult = this.openPersonalWorkbook({ activate, visible });
       return {
         ...openResult,
         created: false
@@ -1987,22 +2285,33 @@ class ExcelBridge {
           workbooksProxy = excel.Workbooks;
           workbook = workbooksProxy.Add();
           workbook.SaveAs(workbookPath, XLSB_FILE_FORMAT);
-
-          try {
-            workbook.Activate();
-          } catch {
-            // Ignore activation failures.
-          }
+          const visibilityResult = this._setWorkbookWindowVisibility(workbook, excel, {
+            visible,
+            activateOnShow: visible,
+            persistWhenSafe: true,
+            allowHideWithoutAlternateWindow: false
+          });
 
           return {
-            success: true,
+            success: visibilityResult.success || visibilityResult.blockedByOnlyVisibleWindow,
             created: true,
             opened: true,
             workbookFound: true,
             workbook: this._describeWorkbook(workbook),
             fileExists: true,
             workbookPath,
-            message: 'Created and opened PERSONAL.XLSB.'
+            windowVisible: visibilityResult.windowVisible,
+            windowHidden: visibilityResult.windowHidden,
+            visibilityApplied: visibilityResult.success,
+            visibilityChanged: visibilityResult.visibilityChanged,
+            statePersisted: visibilityResult.statePersisted,
+            message: visibilityResult.success
+              ? (visibilityResult.message || (visible
+                ? 'Created and opened PERSONAL.XLSB.'
+                : 'Created PERSONAL.XLSB and hid it.'))
+              : (visibilityResult.blockedByOnlyVisibleWindow
+                ? 'Created PERSONAL.XLSB. It stays visible because it is the only visible workbook window.'
+                : visibilityResult.message)
           };
         } finally {
           try {
@@ -2022,6 +2331,115 @@ class ExcelBridge {
         workbook: null,
         fileExists,
         workbookPath,
+        windowVisible: null,
+        windowHidden: false,
+        visibilityChanged: false,
+        statePersisted: false,
+        message: error.message
+      };
+    }
+  }
+
+  /**
+   * Show or hide the open PERSONAL.XLSB workbook window.
+   * @returns {{
+   *   success: boolean,
+   *   workbookFound: boolean,
+   *   workbook: { name: string, path: string } | null,
+   *   fileExists: boolean,
+   *   workbookPath: string,
+   *   windowVisible: boolean | null,
+   *   windowHidden: boolean,
+   *   visibilityChanged: boolean,
+   *   statePersisted: boolean,
+   *   message?: string
+   * }}
+   */
+  setPersonalWorkbookVisibility(options = {}) {
+    const { activate = true, visible } = options;
+    const targetVisible = Boolean(visible);
+    let workbookPath = '';
+    let fileExists = false;
+
+    try {
+      workbookPath = this._getPersonalWorkbookPath();
+      fileExists = fs.existsSync(workbookPath);
+    } catch (error) {
+      return {
+        success: false,
+        workbookFound: false,
+        workbook: null,
+        fileExists: false,
+        workbookPath: '',
+        windowVisible: null,
+        windowHidden: false,
+        visibilityChanged: false,
+        statePersisted: false,
+        message: error.message
+      };
+    }
+
+    try {
+      return this._withExcelApp((excel) => {
+        const workbook = this._findOpenWorkbook(excel, {
+          workbookName: PERSONAL_WORKBOOK_NAME,
+          workbookPath
+        });
+
+        if (!workbook) {
+          return {
+            success: false,
+            workbookFound: false,
+            workbook: null,
+            fileExists,
+            workbookPath,
+            windowVisible: null,
+            windowHidden: false,
+            visibilityChanged: false,
+            statePersisted: false,
+            message: fileExists
+              ? 'PERSONAL.XLSB is not open.'
+              : 'PERSONAL.XLSB was not found in XLSTART.'
+          };
+        }
+
+        try {
+          const visibilityResult = this._setWorkbookWindowVisibility(workbook, excel, {
+            visible: targetVisible,
+            activateOnShow: targetVisible,
+            persistWhenSafe: true
+          });
+          return {
+            success: visibilityResult.success,
+            workbookFound: true,
+            workbook: this._describeWorkbook(workbook),
+            fileExists: true,
+            workbookPath,
+            windowVisible: visibilityResult.windowVisible,
+            windowHidden: visibilityResult.windowHidden,
+            visibilityChanged: visibilityResult.visibilityChanged,
+            statePersisted: visibilityResult.statePersisted,
+            message: visibilityResult.success
+              ? (visibilityResult.message || (targetVisible
+                ? 'PERSONAL.XLSB is now visible.'
+                : 'PERSONAL.XLSB is now hidden.'))
+              : visibilityResult.message
+          };
+        } finally {
+          this._safeRelease(workbook);
+        }
+      }, { activate });
+    } catch (error) {
+      return {
+        success: false,
+        workbookFound: false,
+        workbook: null,
+        fileExists,
+        workbookPath,
+        windowVisible: null,
+        windowHidden: false,
+        visibilityChanged: false,
+        statePersisted: false,
         message: error.message
       };
     }
@@ -2197,38 +2615,54 @@ class ExcelBridge {
     try {
       return this._withActiveWorkbook(({ workbook }) => {
         const workbookInfo = this._describeWorkbookWithActiveSheet(workbook);
-        const vbProject = this._getVBProjectForWorkbook(workbook);
-        try {
-          const modules = this._listModulesForWorkbook(workbook, vbProject);
-          const procedures = this._listProceduresForWorkbook(workbook, vbProject);
 
-          let shortcutAudit = {
-            success: true,
+        let modules = [];
+        let procedures = [];
+        let vbProject = null;
+        let vbaLocked = false;
+
+        try {
+          vbProject = this._getVBProjectForWorkbook(workbook);
+          modules = this._listModulesForWorkbook(workbook, vbProject);
+          procedures = this._listProceduresForWorkbook(workbook, vbProject);
+        } catch (vbaError) {
+          // Determine if this is a lock/protection issue vs a generic VBA error
+          const errMsg = String(vbaError?.message || '').toUpperCase();
+          vbaLocked = errMsg.includes('VBA_BLOCKED')
+            || errMsg.includes('NOT ACCESSIBLE')
+            || errMsg.includes("READING 'COUNT'")
+            || errMsg.includes('PROGRAMMATIC ACCESS');
+          modules = [];
+          procedures = [];
+        } finally {
+          if (vbProject) this._safeRelease(vbProject);
+        }
+
+        let shortcutAudit = {
+          success: true,
+          shortcuts: [],
+          unmapped: [],
+          note: 'Excel does not expose global shortcut listings. Only MacroFlow-tracked shortcuts are available.'
+        };
+        try {
+          shortcutAudit = this._auditShortcutsForWorkbook(workbook);
+        } catch (error) {
+          shortcutAudit = {
+            success: false,
             shortcuts: [],
             unmapped: [],
-            note: 'Excel does not expose global shortcut listings. Only MacroFlow-tracked shortcuts are available.'
+            message: String(error?.message || 'Shortcut audit failed.')
           };
-          try {
-            shortcutAudit = this._auditShortcutsForWorkbook(workbook);
-          } catch (error) {
-            shortcutAudit = {
-              success: false,
-              shortcuts: [],
-              unmapped: [],
-              message: String(error?.message || 'Shortcut audit failed.')
-            };
-          }
-
-          return {
-            success: true,
-            workbook: workbookInfo,
-            modules,
-            procedures,
-            shortcutAudit
-          };
-        } finally {
-          this._safeRelease(vbProject);
         }
+
+        return {
+          success: true,
+          workbook: workbookInfo,
+          modules,
+          procedures,
+          shortcutAudit,
+          vbaLocked
+        };
       }, { activate });
     } catch (error) {
       return {
@@ -3015,6 +3449,179 @@ class ExcelBridge {
         moduleName: normalizedNextModuleName,
         message: error.message
       };
+    }
+  }
+
+  /**
+   * Rename a VBA macro (Sub/Function) inside a module by editing the module's source code.
+   * @param {string} workbookName
+   * @param {string} moduleName
+   * @param {string} macroName
+   * @param {string} nextMacroName
+   * @param {{ activate?: boolean, workbookPath?: string }} options
+   * @returns {{
+   *   success: boolean,
+   *   workbookFound: boolean,
+   *   moduleFound: boolean,
+   *   macroFound: boolean,
+   *   renamed: boolean,
+   *   workbook?: { name: string, path: string } | null,
+   *   moduleName?: string,
+   *   previousMacroName?: string,
+   *   macroName?: string,
+   *   message?: string
+   * }}
+   */
+  renameMacroByWorkbookName(workbookName, moduleName, macroName, nextMacroName, options = {}) {
+    const { activate = true, workbookPath = '' } = options;
+    const normalizedWorkbookName = String(workbookName || '').trim();
+    const normalizedWorkbookPath = String(workbookPath || '').trim();
+    const normalizedModuleName = String(moduleName || '').trim();
+    const normalizedMacroName = String(macroName || '').trim();
+    const normalizedNextMacroName = String(nextMacroName || '').trim();
+
+    const fail = (overrides) => ({
+      success: false,
+      workbookFound: false,
+      moduleFound: false,
+      macroFound: false,
+      renamed: false,
+      workbook: null,
+      moduleName: normalizedModuleName,
+      previousMacroName: normalizedMacroName,
+      macroName: normalizedNextMacroName,
+      ...overrides
+    });
+
+    if (!normalizedWorkbookName && !normalizedWorkbookPath) {
+      return fail({ message: 'Workbook name or workbook path is required.' });
+    }
+    if (!normalizedModuleName) {
+      return fail({ message: 'Module name is required.' });
+    }
+    if (!normalizedMacroName) {
+      return fail({ message: 'Macro name is required.' });
+    }
+    if (!normalizedNextMacroName) {
+      return fail({ message: 'New macro name is required.' });
+    }
+    if (!this._isValidVbaModuleName(normalizedNextMacroName)) {
+      return fail({ message: 'Invalid macro name. Use letters, numbers, and underscores, and start with a letter.' });
+    }
+
+    if (normalizedMacroName.toLowerCase() === normalizedNextMacroName.toLowerCase()) {
+      return fail({
+        success: true,
+        workbookFound: true,
+        moduleFound: true,
+        macroFound: true,
+        renamed: false,
+        message: 'Macro name is unchanged.'
+      });
+    }
+
+    try {
+      return this._withExcelApp((excel) => {
+        const workbook = this._findOpenWorkbook(excel, {
+          workbookName: normalizedWorkbookName,
+          workbookPath: normalizedWorkbookPath
+        });
+
+        if (!workbook) {
+          const workbookLabel = normalizedWorkbookPath || normalizedWorkbookName;
+          return fail({ success: true, message: `Workbook "${workbookLabel}" is not open.` });
+        }
+
+        const workbookSummary = this._describeWorkbook(workbook);
+        let vbProject = null;
+
+        try {
+          vbProject = this._getVBProjectForWorkbook(workbook);
+          const codeResult = this._getModuleCodeForWorkbook(vbProject, normalizedModuleName);
+
+          if (!codeResult.moduleFound) {
+            return fail({
+              success: true,
+              workbookFound: true,
+              workbook: workbookSummary,
+              message: `Module "${normalizedModuleName}" was not found.`
+            });
+          }
+
+          const code = codeResult.code || '';
+          // Match procedure declaration: (Public|Private)? (Sub|Function) MacroName(
+          const declPattern = new RegExp(
+            `(^|\\n)([ \\t]*(?:Public\\s+|Private\\s+)?(?:Sub|Function)\\s+)${normalizedMacroName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(\\s*\\()`,
+            'im'
+          );
+
+          if (!declPattern.test(code)) {
+            return fail({
+              success: true,
+              workbookFound: true,
+              moduleFound: true,
+              workbook: workbookSummary,
+              message: `Macro "${normalizedMacroName}" was not found in module "${normalizedModuleName}".`
+            });
+          }
+
+          // Check if the new name conflicts with an existing procedure in this module
+          const conflictPattern = new RegExp(
+            `(?:^|\\n)[ \\t]*(?:Public\\s+|Private\\s+)?(?:Sub|Function)\\s+${normalizedNextMacroName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\(`,
+            'im'
+          );
+
+          if (conflictPattern.test(code)) {
+            return fail({
+              success: false,
+              workbookFound: true,
+              moduleFound: true,
+              macroFound: true,
+              workbook: workbookSummary,
+              message: `A procedure named "${normalizedNextMacroName}" already exists in module "${normalizedModuleName}".`
+            });
+          }
+
+          // Replace the procedure name in declaration lines (Sub/Function)
+          const escapedName = normalizedMacroName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          const renamePattern = new RegExp(
+            `((?:Public\\s+|Private\\s+)?(?:Sub|Function)\\s+)${escapedName}(\\s*\\()`,
+            'gi'
+          );
+          const updatedCode = code.replace(renamePattern, `$1${normalizedNextMacroName}$2`);
+
+          // Write the updated code back
+          const setResult = this._setModuleCodeForWorkbook(vbProject, normalizedModuleName, updatedCode);
+
+          if (!setResult.success) {
+            return fail({
+              success: false,
+              workbookFound: true,
+              moduleFound: true,
+              macroFound: true,
+              workbook: workbookSummary,
+              message: `Failed to write updated code: ${setResult.message}`
+            });
+          }
+
+          return {
+            success: true,
+            workbookFound: true,
+            moduleFound: true,
+            macroFound: true,
+            renamed: true,
+            workbook: workbookSummary,
+            moduleName: normalizedModuleName,
+            previousMacroName: normalizedMacroName,
+            macroName: normalizedNextMacroName,
+            message: `Renamed macro "${normalizedMacroName}" to "${normalizedNextMacroName}" in module "${normalizedModuleName}".`
+          };
+        } finally {
+          this._safeRelease(vbProject, workbook);
+        }
+      }, { activate });
+    } catch (error) {
+      return fail({ message: error.message });
     }
   }
 

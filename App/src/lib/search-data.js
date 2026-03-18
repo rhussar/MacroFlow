@@ -163,9 +163,26 @@ export function mapSearchError(message) {
     };
   }
 
+  if (normalizedMessage.includes('VBA_BLOCKED')) {
+    return {
+      status: 'error',
+      code: 'VBA_BLOCKED',
+      message: 'VBA project access is disabled. Enable it in File > Options > Trust Center > Macro Settings.'
+    };
+  }
+
+  if (normalizedMessage.includes('COUNT') && normalizedMessage.includes('UNDEFINED')
+    || normalizedMessage.includes('VBA PROJECT NOT ACCESSIBLE')) {
+    return {
+      status: 'error',
+      code: 'VBA_LOCKED',
+      message: 'This workbook is locked.'
+    };
+  }
+
   return {
     status: 'error',
-    code: normalizedMessage.includes('VBA_BLOCKED') ? 'VBA_BLOCKED' : 'UNKNOWN',
+    code: 'UNKNOWN',
     message: rawMessage || 'Unable to load live workbook data.'
   };
 }

@@ -39,3 +39,21 @@ export function buildWorkbookModuleRequest(moduleItem, fallbackWorkbook = null) 
     moduleName
   };
 }
+
+export function canShowMacroContextActions(macroItem) {
+  return Boolean(macroItem) && Boolean(normalizeModuleName(macroItem?.name)) && Boolean(normalizeModuleName(macroItem?.module));
+}
+
+export function buildMacroRenameRequest(macroItem, fallbackWorkbook = null) {
+  const macroName = normalizeModuleName(macroItem?.name);
+  const moduleName = normalizeModuleName(macroItem?.module);
+  const workbookName = normalizeModuleName(macroItem?.workbookName || fallbackWorkbook?.name);
+  const workbookPath = normalizeModuleName(macroItem?.workbookPath || fallbackWorkbook?.path);
+
+  return {
+    workbookName,
+    workbookPath,
+    moduleName,
+    macroName
+  };
+}

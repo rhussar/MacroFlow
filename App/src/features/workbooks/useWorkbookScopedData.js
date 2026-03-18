@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { normalizeMacros, normalizeModules } from '../../lib/search-data.js';
+import { normalizeMacros, normalizeModules, mapSearchError } from '../../lib/search-data.js';
 import { WORKBOOK_SCOPED_DATA_REFRESH_TTL_MS } from '../search/search-constants.js';
 import {
   namespaceMacrosForWorkbook,
@@ -201,12 +201,13 @@ export function useWorkbookScopedData(options = {}) {
         }
 
         if (!result?.success) {
+          const mapped = mapSearchError(result?.message);
           const nextData = {
             status: 'error',
             workbook: normalizedWorkbook,
             modules: [],
             macros: [],
-            error: { message: String(result?.message || 'Unable to load workbook data.') }
+            error: { message: mapped.message }
           };
           workbookScopedDataCache.set(cacheKey, {
             fetchedAt: Date.now(),
@@ -260,14 +261,13 @@ export function useWorkbookScopedData(options = {}) {
           return;
         }
 
+        const mapped = mapSearchError(error?.message);
         const nextData = {
           status: 'error',
           workbook: normalizedWorkbook,
           modules: [],
           macros: [],
-          error: {
-            message: error?.message ? String(error.message) : 'Unable to load workbook data.'
-          }
+          error: { message: mapped.message }
         };
         workbookScopedDataCache.set(cacheKey, {
           fetchedAt: Date.now(),

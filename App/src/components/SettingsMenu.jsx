@@ -6,7 +6,7 @@ import {
   SettingsIcon,
   ExitIcon,
   SunIcon,
-  MoonIcon,
+  MoonIcon
 } from './icons';
 
 function getTheme() {
@@ -20,8 +20,6 @@ function setTheme(theme) {
 
 const SettingsMenu = ({ isOpen, onClose, onQuit }) => {
   const [theme, setThemeState] = useState(getTheme);
-
-  if (!isOpen) return null;
   const noAction = () => {};
 
   const toggleTheme = () => {
@@ -44,6 +42,10 @@ const SettingsMenu = ({ isOpen, onClose, onQuit }) => {
     { icon: <ExitIcon />, label: 'Quit MacroFlow', action: onQuit, danger: true },
   ];
 
+  if (!isOpen) {
+    return null;
+  }
+
   return (
     <>
       {/* Overlay to catch clicks outside */}
@@ -53,17 +55,29 @@ const SettingsMenu = ({ isOpen, onClose, onQuit }) => {
       <div className="settings-menu">
         <div className="settings-menu-header">MacroFlow v0.01.2.0</div>
         {menuItems.map((item, index) => (
-          <div
-            key={index}
+          <button
+            type="button"
+            key={`${item.label}-${index}`}
             className={`settings-menu-item ${item.danger ? 'danger' : ''}`}
+            disabled={item.disabled}
             onClick={() => {
+              if (item.disabled) {
+                return;
+              }
               item.action?.();
-              if (!item.keepOpen) onClose();
+              if (!item.keepOpen) {
+                onClose();
+              }
             }}
           >
             <span className="settings-menu-icon">{item.icon}</span>
-            <span>{item.label}</span>
-          </div>
+            <span className="settings-menu-item-body">
+              <span className="settings-menu-item-label">{item.label}</span>
+              {item.subtitle ? (
+                <span className="settings-menu-item-subtitle">{item.subtitle}</span>
+              ) : null}
+            </span>
+          </button>
         ))}
       </div>
     </>

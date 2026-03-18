@@ -19,7 +19,9 @@ import { useExplorerAllFilesData } from '../features/search/useExplorerAllFilesD
 import { resolveInitialModuleNode } from '../features/search/explorer-selection';
 import {
   buildWorkbookModuleRequest,
+  buildMacroRenameRequest,
   canShowModuleContextActions,
+  canShowMacroContextActions,
   isValidVbaModuleName,
   shouldCommitModuleRename
 } from '../features/search/module-actions';
@@ -56,6 +58,12 @@ function isSameWorkbookTarget(target, workbook) {
   return false;
 }
 
+function isPersonalWorkbook(node) {
+  if (node?.nodeType !== 'workbook') return false;
+  const name = String(node?.data?.name || node?.label || '').trim().toUpperCase();
+  return name === 'PERSONAL.XLSB';
+}
+
 const FilesPage = ({
   searchData = defaultSearchData,
   explorerContext = null,
@@ -72,11 +80,13 @@ const FilesPage = ({
   const [moduleDeleteTarget, setModuleDeleteTarget] = useState(null);
   const [moduleActionInFlight, setModuleActionInFlight] = useState(false);
   const [previewCode, setPreviewCode] = useState(null);
+  const [metadataRename, setMetadataRename] = useState(null);
   const [splitPct, setSplitPct] = useState(50);
   const hasInitializedRef = useRef(false);
   const consumedContextRef = useRef('');
   const moduleContextMenuRef = useRef(null);
   const renameCommitInFlightRef = useRef(false);
+  const clickTimerRef = useRef(null);
   const status = searchData?.status || 'idle';
   const {
     workbooks: explorerWorkbooks,
@@ -247,23 +257,32 @@ const FilesPage = ({
     ]);
   }, [onRefreshSearchData, refreshExplorerAllFiles, searchData?.workbook]);
 
-  const handleOpenModuleContextMenu = useCallback((event, node) => {
+  const handleOpenContextMenu = useCallback((event, node) => {
     event.preventDefault();
     event.stopPropagation();
 
-    const moduleItem = node?.data || null;
-    if (!canShowModuleContextActions(moduleItem)) {
+    const item = node?.data || null;
+    if (node.nodeType === 'module' && canShowModuleContextActions(item)) {
+      setSelectedNode(node);
+      setModuleContextMenu({
+        x: Number(event.clientX) || 0,
+        y: Number(event.clientY) || 0,
+        nodeId: String(node?.id || ''),
+        nodeType: 'module',
+        module: item
+      });
+    } else if (node.nodeType === 'macro' && canShowMacroContextActions(item)) {
+      setSelectedNode(node);
+      setModuleContextMenu({
+        x: Number(event.clientX) || 0,
+        y: Number(event.clientY) || 0,
+        nodeId: String(node?.id || ''),
+        nodeType: 'macro',
+        macro: item
+      });
+    } else {
       setModuleContextMenu(null);
-      return;
     }
-
-    setSelectedNode(node);
-    setModuleContextMenu({
-      x: Number(event.clientX) || 0,
-      y: Number(event.clientY) || 0,
-      nodeId: String(node?.id || ''),
-      module: moduleItem
-    });
   }, []);
 
   const handleStartRenameModule = useCallback((target) => {
@@ -273,8 +292,23 @@ const FilesPage = ({
     }
     setModuleRenameState({
       nodeId: String(target?.nodeId || ''),
+      type: 'module',
       module: moduleItem,
       draft: String(moduleItem?.name || '')
+    });
+    setModuleContextMenu(null);
+  }, []);
+
+  const handleStartRenameMacro = useCallback((target) => {
+    const macroItem = target?.macro || null;
+    if (!macroItem) {
+      return;
+    }
+    setModuleRenameState({
+      nodeId: String(target?.nodeId || ''),
+      type: 'macro',
+      macro: macroItem,
+      draft: String(macroItem?.name || '')
     });
     setModuleContextMenu(null);
   }, []);
@@ -330,25 +364,25 @@ const FilesPage = ({
     }
 
     if (!isValidVbaModuleName(nextName)) {
-      onActionStatus?.('error', 'Invalid module name. Use letters, numbers, and underscores, and start with a letter.');
+      onActionStatus?.('error', 'Invalid name.');
       return;
     }
 
     const renameApi = window.excel?.vba?.renameModuleByWorkbook;
     if (typeof renameApi !== 'function') {
-      onActionStatus?.('error', 'Module rename API is unavailable.');
+      onActionStatus?.('error', 'Rename unavailable.');
       return;
     }
 
     const request = buildWorkbookModuleRequest(currentRename.module, searchData?.workbook);
     if (!request.workbookName && !request.workbookPath) {
-      onActionStatus?.('error', 'Unable to resolve workbook for this module.');
+      onActionStatus?.('error', 'Workbook not found.');
       return;
     }
 
     renameCommitInFlightRef.current = true;
     setModuleActionInFlight(true);
-    onActionStatus?.('running', `Renaming module "${currentName}"...`);
+    onActionStatus?.('running', 'Renaming...');
     try {
       const result = await renameApi({
         ...request,
@@ -365,7 +399,7 @@ const FilesPage = ({
       if (String(request.workbookName || '').trim().toUpperCase() === 'PERSONAL.XLSB') {
         personalState.refresh();
       }
-      onActionStatus?.('success', String(result?.message || `Renamed module "${currentName}" to "${nextName}".`));
+      onActionStatus?.('success', `Renamed to "${nextName}".`);
     } catch (error) {
       const message = error?.message ? String(error.message) : 'Unable to rename module.';
       onActionStatus?.('error', message);
@@ -374,6 +408,142 @@ const FilesPage = ({
       renameCommitInFlightRef.current = false;
     }
   }, [moduleRenameState, onActionStatus, personalState, refreshExplorerData, searchData?.workbook]);
+
+  const handleCommitRenameMacro = useCallback(async () => {
+    if (renameCommitInFlightRef.current) {
+      return;
+    }
+
+    const currentRename = moduleRenameState;
+    if (!currentRename?.macro || currentRename?.type !== 'macro') {
+      return;
+    }
+
+    const currentName = String(currentRename.macro.name || '').trim();
+    const nextName = String(currentRename.draft || '').trim();
+    if (!shouldCommitModuleRename({ currentName, nextName })) {
+      setModuleRenameState(null);
+      return;
+    }
+
+    if (!isValidVbaModuleName(nextName)) {
+      onActionStatus?.('error', 'Invalid name.');
+      return;
+    }
+
+    const renameApi = window.excel?.vba?.renameMacroByWorkbook;
+    if (typeof renameApi !== 'function') {
+      onActionStatus?.('error', 'Rename unavailable.');
+      return;
+    }
+
+    const request = buildMacroRenameRequest(currentRename.macro, searchData?.workbook);
+    if (!request.workbookName && !request.workbookPath) {
+      onActionStatus?.('error', 'Workbook not found.');
+      return;
+    }
+
+    renameCommitInFlightRef.current = true;
+    setModuleActionInFlight(true);
+    onActionStatus?.('running', 'Renaming...');
+    try {
+      const result = await renameApi({
+        ...request,
+        nextMacroName: nextName
+      });
+      if (!result?.success) {
+        const message = String(result?.message || 'Unable to rename macro.');
+        onActionStatus?.('error', message);
+        return;
+      }
+
+      setModuleRenameState(null);
+      await refreshExplorerData(request);
+      if (String(request.workbookName || '').trim().toUpperCase() === 'PERSONAL.XLSB') {
+        personalState.refresh();
+      }
+      onActionStatus?.('success', `Renamed to "${nextName}".`);
+    } catch (error) {
+      const message = error?.message ? String(error.message) : 'Unable to rename macro.';
+      onActionStatus?.('error', message);
+    } finally {
+      setModuleActionInFlight(false);
+      renameCommitInFlightRef.current = false;
+    }
+  }, [moduleRenameState, onActionStatus, personalState, refreshExplorerData, searchData?.workbook]);
+
+  const commitMetadataRename = useCallback(async () => {
+    const draft = (metadataRename || '').trim();
+    setMetadataRename(null);
+    if (!selectedNode || !draft) return;
+
+    const currentName = String(selectedNode.data?.name || selectedNode.label || '').trim();
+    if (!shouldCommitModuleRename({ currentName, nextName: draft })) return;
+    if (!isValidVbaModuleName(draft)) {
+      onActionStatus?.('error', 'Invalid name.');
+      return;
+    }
+
+    if (selectedNode.nodeType === 'module') {
+      const renameApi = window.excel?.vba?.renameModuleByWorkbook;
+      if (typeof renameApi !== 'function') {
+        onActionStatus?.('error', 'Rename unavailable.');
+        return;
+      }
+      const request = buildWorkbookModuleRequest(selectedNode.data, searchData?.workbook);
+      if (!request.workbookName && !request.workbookPath) {
+        onActionStatus?.('error', 'Workbook not found.');
+        return;
+      }
+      setModuleActionInFlight(true);
+      onActionStatus?.('running', 'Renaming...');
+      try {
+        const result = await renameApi({ ...request, nextModuleName: draft });
+        if (!result?.success) {
+          onActionStatus?.('error', String(result?.message || 'Unable to rename module.'));
+          return;
+        }
+        await refreshExplorerData(request);
+        if (String(request.workbookName || '').trim().toUpperCase() === 'PERSONAL.XLSB') {
+          personalState.refresh();
+        }
+        onActionStatus?.('success', `Renamed to "${draft}".`);
+      } catch (error) {
+        onActionStatus?.('error', error?.message ? String(error.message) : 'Unable to rename module.');
+      } finally {
+        setModuleActionInFlight(false);
+      }
+    } else if (selectedNode.nodeType === 'macro') {
+      const renameApi = window.excel?.vba?.renameMacroByWorkbook;
+      if (typeof renameApi !== 'function') {
+        onActionStatus?.('error', 'Rename unavailable.');
+        return;
+      }
+      const request = buildMacroRenameRequest(selectedNode.data, searchData?.workbook);
+      if (!request.workbookName && !request.workbookPath) {
+        onActionStatus?.('error', 'Workbook not found.');
+        return;
+      }
+      setModuleActionInFlight(true);
+      onActionStatus?.('running', 'Renaming...');
+      try {
+        const result = await renameApi({ ...request, nextMacroName: draft });
+        if (!result?.success) {
+          onActionStatus?.('error', String(result?.message || 'Unable to rename macro.'));
+          return;
+        }
+        await refreshExplorerData(request);
+        if (String(request.workbookName || '').trim().toUpperCase() === 'PERSONAL.XLSB') {
+          personalState.refresh();
+        }
+        onActionStatus?.('success', `Renamed to "${draft}".`);
+      } catch (error) {
+        onActionStatus?.('error', error?.message ? String(error.message) : 'Unable to rename macro.');
+      } finally {
+        setModuleActionInFlight(false);
+      }
+    }
+  }, [metadataRename, selectedNode, onActionStatus, searchData?.workbook, personalState, refreshExplorerData]);
 
   const handleRequestDeleteModule = useCallback((target) => {
     setModuleDeleteTarget(target?.module || null);
@@ -391,19 +561,19 @@ const FilesPage = ({
 
     const deleteApi = window.excel?.vba?.deleteModuleByWorkbook;
     if (typeof deleteApi !== 'function') {
-      onActionStatus?.('error', 'Module delete API is unavailable.');
+      onActionStatus?.('error', 'Delete unavailable.');
       return;
     }
 
     const request = buildWorkbookModuleRequest(moduleDeleteTarget, searchData?.workbook);
     if (!request.workbookName && !request.workbookPath) {
-      onActionStatus?.('error', 'Unable to resolve workbook for this module.');
+      onActionStatus?.('error', 'Workbook not found.');
       return;
     }
 
     const moduleName = String(moduleDeleteTarget?.name || '').trim();
     setModuleActionInFlight(true);
-    onActionStatus?.('running', `Deleting module "${moduleName}"...`);
+    onActionStatus?.('running', 'Deleting...');
     try {
       const result = await deleteApi(request);
       if (!result?.success) {
@@ -420,7 +590,7 @@ const FilesPage = ({
       if (String(request.workbookName || '').trim().toUpperCase() === 'PERSONAL.XLSB') {
         personalState.refresh();
       }
-      onActionStatus?.('success', String(result?.message || `Deleted module "${moduleName}".`));
+      onActionStatus?.('success', 'Module deleted.');
     } catch (error) {
       const message = error?.message ? String(error.message) : 'Unable to delete module.';
       onActionStatus?.('error', message);
@@ -486,7 +656,7 @@ const FilesPage = ({
     const isSelected = selectedNode?.id === node.id;
     const hasChildren = node.children.length > 0;
     const paddingLeft = 8 + depth * 16;
-    const isRenaming = node.nodeType === 'module' && moduleRenameState?.nodeId === node.id;
+    const isRenaming = (node.nodeType === 'module' || node.nodeType === 'macro') && moduleRenameState?.nodeId === node.id;
 
     return (
       <React.Fragment key={node.id}>
@@ -494,20 +664,25 @@ const FilesPage = ({
           className={`tree-node tree-node--${node.nodeType} ${isSelected ? 'tree-node--selected' : ''}`}
           style={{ paddingLeft }}
           onClick={() => {
-            if (!isRenaming) {
+            if (isRenaming) return;
+            clearTimeout(clickTimerRef.current);
+            clickTimerRef.current = setTimeout(() => {
               setSelectedNode(node);
-            }
+            }, 200);
           }}
           onDoubleClick={() => {
+            clearTimeout(clickTimerRef.current);
+            setSelectedNode(node);
             if (node.nodeType === 'module' && canShowModuleContextActions(node.data)) {
               handleStartRenameModule({ nodeId: node.id, module: node.data });
+            } else if (node.nodeType === 'macro' && canShowMacroContextActions(node.data)) {
+              handleStartRenameMacro({ nodeId: node.id, macro: node.data });
             }
           }}
           onContextMenu={(event) => {
-            if (node.nodeType !== 'module') {
-              return;
+            if (node.nodeType === 'module' || node.nodeType === 'macro') {
+              handleOpenContextMenu(event, node);
             }
-            handleOpenModuleContextMenu(event, node);
           }}
         >
           <span
@@ -545,14 +720,22 @@ const FilesPage = ({
                 onKeyDown={(event) => {
                   if (event.key === 'Enter') {
                     event.preventDefault();
-                    void handleCommitRenameModule();
+                    if (moduleRenameState?.type === 'macro') {
+                      void handleCommitRenameMacro();
+                    } else {
+                      void handleCommitRenameModule();
+                    }
                   } else if (event.key === 'Escape') {
                     event.preventDefault();
                     handleCancelRenameModule();
                   }
                 }}
                 onBlur={() => {
-                  void handleCommitRenameModule();
+                  if (moduleRenameState?.type === 'macro') {
+                    void handleCommitRenameMacro();
+                  } else {
+                    void handleCommitRenameModule();
+                  }
                 }}
               />
             ) : (
@@ -584,7 +767,9 @@ const FilesPage = ({
 
             <div className="tree-list">
               {tree.length === 0 && (
-                <div className="search-empty-state">No files are available.</div>
+                <div className="search-empty-state">
+                  {searchData?.vbaLocked ? 'This workbook\'s VBA project is locked.' : 'No files are available.'}
+                </div>
               )}
               {tree.map((rootNode) => renderTreeNode(rootNode, 0))}
             </div>
@@ -599,6 +784,67 @@ const FilesPage = ({
                 {selectedNode.nodeType === 'workbook' && (
                   <div className="folder-icon-large">
                     <WorkbookIcon size={80} />
+                  </div>
+                )}
+                {selectedNode.nodeType === 'workbook' && isPersonalWorkbook(selectedNode) && (
+                  <div className="details-workbook-actions">
+                    <button
+                      type="button"
+                      className="details-edit-btn"
+                      onClick={async () => {
+                        const openFolderApi = window.excel?.personal?.openFolder;
+                        if (typeof openFolderApi !== 'function') {
+                          onActionStatus?.('error', 'Action unavailable.');
+                          return;
+                        }
+                        try {
+                          const result = await openFolderApi();
+                          if (!result?.success) {
+                            onActionStatus?.('error', String(result?.message || 'Unable to open folder.'));
+                          }
+                        } catch (error) {
+                          onActionStatus?.('error', error?.message ? String(error.message) : 'Unable to open folder.');
+                        }
+                      }}
+                    >
+                      Open in File Explorer
+                    </button>
+                    <button
+                      type="button"
+                      className="details-edit-btn"
+                      onClick={async () => {
+                        const personalApi = window.excel?.personal;
+                        if (!personalApi) return;
+                        const isVisible = personalState.workbookFound
+                          && personalState.windowVisible === true
+                          && personalState.windowHidden !== true;
+                        try {
+                          if (isVisible) {
+                            if (typeof personalApi.setVisibility !== 'function') return;
+                            onActionStatus?.('running', 'Hiding...');
+                            const result = await personalApi.setVisibility({ visible: false });
+                            onActionStatus?.(result?.success ? 'success' : 'error', String(result?.message || 'Updated.'));
+                          } else if (personalState.workbookFound) {
+                            if (typeof personalApi.setVisibility !== 'function') return;
+                            onActionStatus?.('running', 'Showing...');
+                            const result = await personalApi.setVisibility({ visible: true });
+                            onActionStatus?.(result?.success ? 'success' : 'error', String(result?.message || 'Updated.'));
+                          } else {
+                            if (typeof personalApi.open !== 'function') return;
+                            onActionStatus?.('running', 'Opening...');
+                            const result = await personalApi.open({ visible: true });
+                            onActionStatus?.(result?.success ? 'success' : 'error', String(result?.message || 'Updated.'));
+                          }
+                          personalState.refresh();
+                        } catch (error) {
+                          onActionStatus?.('error', error?.message ? String(error.message) : 'Unable to update visibility.');
+                        }
+                      }}
+                    >
+                      {personalState.workbookFound && personalState.windowVisible === true && personalState.windowHidden !== true
+                        ? 'Hide in Excel'
+                        : 'Show in Excel'}
+                    </button>
                   </div>
                 )}
                 {previewCode && (selectedNode.nodeType === 'module' || selectedNode.nodeType === 'macro') && (
@@ -637,12 +883,49 @@ const FilesPage = ({
                 )}
                 <div className="metadata-section">
                   <div className="metadata-title">Metadata</div>
-                  {metadata.rows.map((row) => (
-                    <div className="metadata-row" key={row.label}>
-                      <span className="metadata-label">{row.label}</span>
-                      <span className="metadata-value">{row.value}</span>
-                    </div>
-                  ))}
+                  {metadata.rows.map((row) => {
+                    const isNameRow = row.label === 'Name'
+                      && (selectedNode.nodeType === 'module' || selectedNode.nodeType === 'macro');
+                    const isEditingName = isNameRow && metadataRename != null;
+
+                    return (
+                      <div className="metadata-row" key={row.label}>
+                        <span className="metadata-label">{row.label}</span>
+                        {isEditingName ? (
+                          <input
+                            type="text"
+                            className="module-inline-rename-input metadata-rename-input"
+                            value={metadataRename}
+                            autoFocus
+                            spellCheck={false}
+                            maxLength={80}
+                            onChange={(e) => setMetadataRename(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                e.preventDefault();
+                                commitMetadataRename();
+                              } else if (e.key === 'Escape') {
+                                e.preventDefault();
+                                setMetadataRename(null);
+                              }
+                            }}
+                            onBlur={() => commitMetadataRename()}
+                          />
+                        ) : (
+                          <span
+                            className={`metadata-value${isNameRow ? ' metadata-value--editable' : ''}`}
+                            onDoubleClick={() => {
+                              if (isNameRow) {
+                                setMetadataRename(row.value);
+                              }
+                            }}
+                          >
+                            {row.value}
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             ) : (
@@ -660,30 +943,44 @@ const FilesPage = ({
           className="module-context-menu"
           style={{ left: `${moduleContextMenu.x}px`, top: `${moduleContextMenu.y}px` }}
         >
-          <button
-            type="button"
-            className="module-context-menu-item"
-            onClick={() => handleEditModule(moduleContextMenu)}
-            disabled={moduleActionInFlight}
-          >
-            Edit
-          </button>
-          <button
-            type="button"
-            className="module-context-menu-item"
-            onClick={() => handleStartRenameModule(moduleContextMenu)}
-            disabled={moduleActionInFlight}
-          >
-            Rename
-          </button>
-          <button
-            type="button"
-            className="module-context-menu-item danger"
-            onClick={() => handleRequestDeleteModule(moduleContextMenu)}
-            disabled={moduleActionInFlight}
-          >
-            Delete
-          </button>
+          {moduleContextMenu.nodeType === 'module' && (
+            <>
+              <button
+                type="button"
+                className="module-context-menu-item"
+                onClick={() => handleEditModule(moduleContextMenu)}
+                disabled={moduleActionInFlight}
+              >
+                Edit
+              </button>
+              <button
+                type="button"
+                className="module-context-menu-item"
+                onClick={() => handleStartRenameModule(moduleContextMenu)}
+                disabled={moduleActionInFlight}
+              >
+                Rename
+              </button>
+              <button
+                type="button"
+                className="module-context-menu-item danger"
+                onClick={() => handleRequestDeleteModule(moduleContextMenu)}
+                disabled={moduleActionInFlight}
+              >
+                Delete
+              </button>
+            </>
+          )}
+          {moduleContextMenu.nodeType === 'macro' && (
+            <button
+              type="button"
+              className="module-context-menu-item"
+              onClick={() => handleStartRenameMacro(moduleContextMenu)}
+              disabled={moduleActionInFlight}
+            >
+              Rename
+            </button>
+          )}
         </div>
       )}
 

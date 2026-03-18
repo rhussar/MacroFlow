@@ -291,7 +291,8 @@ export function useSearchData({ mode, runState, macroRunInFlightRef, shortcutSav
                 },
             shortcutAuditResult: contextResult?.success
               ? contextResult?.shortcutAudit || { success: true, shortcuts: [], unmapped: [] }
-              : { success: false, shortcuts: [], unmapped: [] }
+              : { success: false, shortcuts: [], unmapped: [] },
+            vbaLocked: contextResult?.vbaLocked === true
           };
         }
 
@@ -336,7 +337,8 @@ export function useSearchData({ mode, runState, macroRunInFlightRef, shortcutSav
         workbookResult,
         modulesResult,
         proceduresResult,
-        shortcutAuditResult
+        shortcutAuditResult,
+        vbaLocked: fetchVbaLocked
       } = await fetchBundle();
 
       if (requestId !== searchRequestSequence.current) {
@@ -425,6 +427,7 @@ export function useSearchData({ mode, runState, macroRunInFlightRef, shortcutSav
         modules,
         macros,
         shortcutAudit,
+        vbaLocked: fetchVbaLocked === true,
         error: null
       });
     } catch (error) {

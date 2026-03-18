@@ -21,6 +21,9 @@ function PersonalMacrosSection({
   showInfo,
   onInfoHoverChange,
   onInfoToggle,
+  visibilityControl,
+  onToggleVisibility,
+  onOpenFolder,
   actionInFlight,
   onAction,
   rows,
@@ -32,10 +35,30 @@ function PersonalMacrosSection({
     return null;
   }
 
+  const handleInfoBlur = (event) => {
+    const nextTarget = event.relatedTarget;
+    if (
+      infoRef?.current &&
+      nextTarget &&
+      typeof infoRef.current.contains === 'function' &&
+      infoRef.current.contains(nextTarget)
+    ) {
+      return;
+    }
+    onInfoHoverChange(false);
+  };
+
   return (
     <section className="search-ready-section">
       <div className="personal-picker-wrap">
-        <div ref={infoRef} className="personal-picker-group">
+        <div
+          ref={infoRef}
+          className="personal-picker-group"
+          onMouseEnter={() => onInfoHoverChange(true)}
+          onMouseLeave={() => onInfoHoverChange(false)}
+          onFocusCapture={() => onInfoHoverChange(true)}
+          onBlurCapture={handleInfoBlur}
+        >
           <div className="personal-picker">
             <span className="personal-picker-label">Global Macros</span>
           </div>
@@ -44,10 +67,6 @@ function PersonalMacrosSection({
             className="personal-info-btn"
             aria-label="About PERSONAL.XLSB"
             aria-expanded={showInfo}
-            onMouseEnter={() => onInfoHoverChange(true)}
-            onMouseLeave={() => onInfoHoverChange(false)}
-            onFocus={() => onInfoHoverChange(true)}
-            onBlur={() => onInfoHoverChange(false)}
             onClick={(event) => {
               event.stopPropagation();
               onInfoToggle();
@@ -56,8 +75,36 @@ function PersonalMacrosSection({
             <InfoIcon size={16} />
           </button>
           {showInfo && (
-            <div className="personal-info-tooltip" role="tooltip">
-              PERSONAL.XLSB is a hidden workbook that opens automatically with Excel. Macros stored here are available globally across all workbooks.
+            <div
+              className="personal-info-tooltip"
+              role="tooltip"
+              onMouseEnter={() => onInfoHoverChange(true)}
+              onMouseLeave={() => onInfoHoverChange(false)}
+            >
+              <div className="personal-info-text">Global macros in PERSONAL.XLSB are available across all workbooks.</div>
+              <div className="personal-visibility-row">
+                <div className="personal-visibility-copy">
+                  <span className="personal-visibility-label">
+                    {visibilityControl?.label || 'Show workbook'}
+                  </span>
+                </div>
+                {visibilityControl?.showSwitch ? (
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={visibilityControl.checked}
+                    aria-label="Toggle PERSONAL.XLSB visibility"
+                    className={`personal-visibility-switch ${visibilityControl.checked ? 'on' : ''}`}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onToggleVisibility?.();
+                    }}
+                    disabled={visibilityControl.disabled}
+                  >
+                    <span className="personal-visibility-thumb" />
+                  </button>
+                ) : null}
+              </div>
             </div>
           )}
         </div>

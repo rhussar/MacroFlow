@@ -17,6 +17,7 @@ function loadHandlers({
   const appEvents = {};
   let clearComCacheCalls = 0;
   let quitCalls = 0;
+  const shellCalls = [];
 
   const excelStub = {
     clearComCache: () => {
@@ -113,6 +114,22 @@ function loadHandlers({
       fileExists: true,
       workbookPath: 'C:\\Users\\Test\\AppData\\Roaming\\Microsoft\\Excel\\XLSTART\\PERSONAL.XLSB'
     }),
+    setPersonalWorkbookVisibility: () => ({
+      success: true,
+      workbookFound: true,
+      workbook: { name: 'PERSONAL.XLSB', path: 'C:\\Users\\Test\\AppData\\Roaming\\Microsoft\\Excel\\XLSTART\\PERSONAL.XLSB' },
+      fileExists: true,
+      workbookPath: 'C:\\Users\\Test\\AppData\\Roaming\\Microsoft\\Excel\\XLSTART\\PERSONAL.XLSB',
+      windowVisible: false,
+      windowHidden: true,
+      visibilityChanged: true
+    }),
+    getPersonalWorkbookLocation: () => ({
+      success: true,
+      workbookPath: 'C:\\Users\\Test\\AppData\\Roaming\\Microsoft\\Excel\\XLSTART\\PERSONAL.XLSB',
+      folderPath: 'C:\\Users\\Test\\AppData\\Roaming\\Microsoft\\Excel\\XLSTART',
+      fileExists: true
+    }),
     auditShortcuts: () => ({ success: true, shortcuts: [], unmapped: [] }),
     auditShortcutsByWorkbookName: () => ({ success: true, shortcuts: [], unmapped: [], workbookFound: true }),
     _focusHelper: {
@@ -139,6 +156,15 @@ function loadHandlers({
         appEvents[event] = handler;
       },
       ...appOverrides
+    },
+    shell: {
+      showItemInFolder: (target) => {
+        shellCalls.push({ fn: 'showItemInFolder', target });
+      },
+      openPath: async (target) => {
+        shellCalls.push({ fn: 'openPath', target });
+        return '';
+      }
     },
     BrowserWindow: {
       getAllWindows: () => []
@@ -231,6 +257,7 @@ function loadHandlers({
     auditStub,
     getQuitCalls: () => quitCalls,
     getClearComCacheCalls: () => clearComCacheCalls,
+    getShellCalls: () => shellCalls.slice(),
     triggerAppEvent: (event) => {
       if (typeof appEvents[event] === 'function') {
         appEvents[event]();
@@ -992,6 +1019,90 @@ test('personal channels route to bridge and return payloads', async () => {
   assert.equal(createResult.success, true);
   assert.equal(createResult.created, true);
   assert.equal(createCalls, 1);
+});
+
+test('personal visibility channels forward visibility args and validate payloads', async () => {
+  let openArgs = null;
+  let createArgs = null;
+  let visibilityArgs = null;
+
+  const { handlers } = loadHandlers({
+    excelOverrides: {
+      openPersonalWorkbook: (args) => {
+        openArgs = args;
+        return {
+          success: true,
+          workbookFound: true,
+          opened: true,
+          alreadyOpen: false,
+          workbook: { name: 'PERSONAL.XLSB', path: 'C:\\XLSTART\\PERSONAL.XLSB' },
+          fileExists: true,
+          workbookPath: 'C:\\XLSTART\\PERSONAL.XLSB',
+          windowVisible: true,
+          windowHidden: false
+        };
+      },
+      createPersonalWorkbook: (args) => {
+        createArgs = args;
+        return {
+          success: true,
+          created: true,
+          opened: true,
+          workbookFound: true,
+          workbook: { name: 'PERSONAL.XLSB', path: 'C:\\XLSTART\\PERSONAL.XLSB' },
+          fileExists: true,
+          workbookPath: 'C:\\XLSTART\\PERSONAL.XLSB',
+          windowVisible: false,
+          windowHidden: true
+        };
+      },
+      setPersonalWorkbookVisibility: (args) => {
+        visibilityArgs = args;
+        return {
+          success: true,
+          workbookFound: true,
+          workbook: { name: 'PERSONAL.XLSB', path: 'C:\\XLSTART\\PERSONAL.XLSB' },
+          fileExists: true,
+          workbookPath: 'C:\\XLSTART\\PERSONAL.XLSB',
+          windowVisible: false,
+          windowHidden: true,
+          visibilityChanged: true
+        };
+      }
+    }
+  });
+
+  const openResult = await handlers['personal:open'](null, { visible: true });
+  assert.equal(openResult.success, true);
+  assert.deepEqual(openArgs, { visible: true });
+
+  const createResult = await handlers['personal:create'](null, { visible: false });
+  assert.equal(createResult.success, true);
+  assert.deepEqual(createArgs, { visible: false });
+
+  const visibilityResult = await handlers['personal:visibility:set'](null, { visible: false });
+  assert.equal(visibilityResult.success, true);
+  assert.deepEqual(visibilityArgs, { visible: false });
+
+  const invalidResult = await handlers['personal:visibility:set'](null, { visible: 'nope' });
+  assert.equal(invalidResult.success, false);
+  assert.equal(invalidResult.reasonCode, 'VALIDATION_FAILED');
+});
+
+test('personal open-folder routes to shell using workbook path when PERSONAL.XLSB exists', async () => {
+  const { handlers, getShellCalls } = loadHandlers();
+
+  const result = await handlers['personal:open-folder']();
+  assert.equal(result.success, true);
+  assert.equal(result.fileExists, true);
+
+  const shellCalls = getShellCalls();
+  assert.deepEqual(shellCalls, [
+    {
+      fn: 'showItemInFolder',
+      target: 'C:\\Users\\Test\\AppData\\Roaming\\Microsoft\\Excel\\XLSTART\\PERSONAL.XLSB'
+    }
+  ]);
 });
 
 test('workbook:context burst cache invalidates after personal:open success', async () => {

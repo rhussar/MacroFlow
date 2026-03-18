@@ -353,7 +353,6 @@ function App() {
   };
 
   const showBottomActionBanner = (
-    (mode === 'shortcuts' || mode === 'files') &&
     (actionState === 'running' || actionState === 'success' || actionState === 'error') &&
     Boolean(actionMessage)
   );

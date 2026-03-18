@@ -64,6 +64,13 @@ contextBridge.exposeInMainWorld('excel', {
     renameModuleByWorkbook: (args) => ipcRenderer.invoke('vba:module:rename:by-workbook', args),
 
     /**
+     * Rename a VBA macro (Sub/Function) inside a module by editing its source code.
+     * @param {{ workbookName?: string, workbookPath?: string, moduleName: string, macroName: string, nextMacroName: string }} args
+     * @returns {Promise<{ success: boolean, workbookFound: boolean, moduleFound: boolean, macroFound: boolean, renamed: boolean, workbook?: object, moduleName?: string, previousMacroName?: string, macroName?: string, message?: string }>}
+     */
+    renameMacroByWorkbook: (args) => ipcRenderer.invoke('vba:macro:rename:by-workbook', args),
+
+    /**
      * Delete a VBA module in a specific open workbook.
      * @param {{ workbookName?: string, workbookPath?: string, moduleName: string }} args
      * @returns {Promise<{ success: boolean, workbookFound: boolean, moduleFound: boolean, deleted: boolean, workbook?: object, moduleName?: string, message?: string }>}
@@ -251,27 +258,42 @@ contextBridge.exposeInMainWorld('excel', {
   personal: {
     /**
      * Get PERSONAL.XLSB status from XLSTART + open workbook state.
-     * @returns {Promise<{ success: boolean, workbookFound: boolean, workbook?: { name: string, path: string } | null, fileExists: boolean, workbookPath?: string, message?: string }>}
+     * @returns {Promise<{ success: boolean, workbookFound: boolean, workbook?: { name: string, path: string } | null, fileExists: boolean, workbookPath?: string, windowVisible?: boolean | null, windowHidden?: boolean, message?: string }>}
      */
     status: () => ipcRenderer.invoke('personal:status'),
 
     /**
      * Get PERSONAL.XLSB status, procedures, and shortcut audit in one call.
-     * @returns {Promise<{ success: boolean, workbookFound: boolean, workbook?: { name: string, path: string } | null, fileExists: boolean, workbookPath?: string, procedures: Array, shortcutAudit: { success: boolean, shortcuts: Array, unmapped: Array, note?: string, message?: string }, message?: string }>}
+     * @returns {Promise<{ success: boolean, workbookFound: boolean, workbook?: { name: string, path: string } | null, fileExists: boolean, workbookPath?: string, windowVisible?: boolean | null, windowHidden?: boolean, procedures: Array, shortcutAudit: { success: boolean, shortcuts: Array, unmapped: Array, note?: string, message?: string }, message?: string }>}
      */
     context: () => ipcRenderer.invoke('personal:context'),
 
     /**
      * Open PERSONAL.XLSB from XLSTART.
-     * @returns {Promise<{ success: boolean, workbookFound: boolean, opened: boolean, alreadyOpen: boolean, workbook?: { name: string, path: string } | null, fileExists: boolean, workbookPath?: string, message?: string }>}
+     * @param {{ visible?: boolean }} [args]
+     * @returns {Promise<{ success: boolean, workbookFound: boolean, opened: boolean, alreadyOpen: boolean, workbook?: { name: string, path: string } | null, fileExists: boolean, workbookPath?: string, windowVisible?: boolean | null, windowHidden?: boolean, visibilityApplied?: boolean, visibilityChanged?: boolean, statePersisted?: boolean, message?: string }>}
      */
-    open: () => ipcRenderer.invoke('personal:open'),
+    open: (args) => ipcRenderer.invoke('personal:open', args),
 
     /**
      * Create PERSONAL.XLSB in XLSTART and open it.
-     * @returns {Promise<{ success: boolean, created: boolean, opened: boolean, workbookFound: boolean, workbook?: { name: string, path: string } | null, fileExists: boolean, workbookPath?: string, message?: string }>}
+     * @param {{ visible?: boolean }} [args]
+     * @returns {Promise<{ success: boolean, created: boolean, opened: boolean, workbookFound: boolean, workbook?: { name: string, path: string } | null, fileExists: boolean, workbookPath?: string, windowVisible?: boolean | null, windowHidden?: boolean, visibilityApplied?: boolean, visibilityChanged?: boolean, statePersisted?: boolean, message?: string }>}
      */
-    create: () => ipcRenderer.invoke('personal:create')
+    create: (args) => ipcRenderer.invoke('personal:create', args),
+
+    /**
+     * Show or hide the open PERSONAL.XLSB workbook window.
+     * @param {{ visible: boolean }} args
+     * @returns {Promise<{ success: boolean, workbookFound: boolean, workbook?: { name: string, path: string } | null, fileExists: boolean, workbookPath?: string, windowVisible?: boolean | null, windowHidden?: boolean, visibilityChanged?: boolean, statePersisted?: boolean, message?: string }>}
+     */
+    setVisibility: (args) => ipcRenderer.invoke('personal:visibility:set', args),
+
+    /**
+     * Open the XLSTART folder that contains PERSONAL.XLSB.
+     * @returns {Promise<{ success: boolean, workbookPath?: string, folderPath?: string, fileExists?: boolean, message?: string }>}
+     */
+    openFolder: () => ipcRenderer.invoke('personal:open-folder')
   },
 
   // ==========================================================================

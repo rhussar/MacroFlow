@@ -21,6 +21,38 @@ const defaultSearchData = {
   error: null
 };
 
+function buildPersonalVisibilityControl(personalState, actionInFlight) {
+  const fileExists = personalState?.fileExists === true;
+  const workbookFound = personalState?.workbookFound === true;
+  const isVisible = workbookFound && personalState?.windowVisible === true && personalState?.windowHidden !== true;
+  const isHidden = !isVisible;
+
+  if (!fileExists) {
+    return {
+      showSwitch: false,
+      checked: true,
+      disabled: true,
+      label: 'Hide workbook'
+    };
+  }
+
+  if (personalState?.status === 'error' || personalState?.status === 'loading') {
+    return {
+      showSwitch: true,
+      checked: isHidden,
+      disabled: true,
+      label: 'Hide workbook'
+    };
+  }
+
+  return {
+    showSwitch: true,
+    checked: isHidden,
+    disabled: actionInFlight,
+    label: 'Hide workbook'
+  };
+}
+
 const ShortcutsPage = ({
   onBuildModeClick,
   onRunMacro,
@@ -47,6 +79,7 @@ const ShortcutsPage = ({
   const [personalInfoPinned, setPersonalInfoPinned] = useState(false);
   const workbookMenuRef = useRef(null);
   const personalInfoRef = useRef(null);
+  const personalInfoHideTimerRef = useRef(null);
   const showPersonalInfo = personalInfoHover || personalInfoPinned;
 
   const selectedWorkbook = workbookPickerState.selectedWorkbook;
@@ -165,6 +198,17 @@ const ShortcutsPage = ({
       selectedWorkbook?.name
     ]
   );
+  const personalVisibilityControl = useMemo(
+    () => buildPersonalVisibilityControl(personalMacrosState, personalActionInFlight),
+    [
+      personalActionInFlight,
+      personalMacrosState.fileExists,
+      personalMacrosState.status,
+      personalMacrosState.windowHidden,
+      personalMacrosState.windowVisible,
+      personalMacrosState.workbookFound
+    ]
+  );
 
   const handlePersonalAction = useCallback(async (action) => {
     if (!action || personalActionInFlight) {
@@ -187,7 +231,7 @@ const ShortcutsPage = ({
 
     const personalApi = window.excel?.personal;
     if (!personalApi) {
-      onActionStatus?.('error', 'PERSONAL.XLSB actions are unavailable.');
+      onActionStatus?.('error', 'Action unavailable.');
       return;
     }
 
@@ -195,15 +239,12 @@ const ShortcutsPage = ({
       ? personalApi.create
       : personalApi.open;
     if (typeof runAction !== 'function') {
-      onActionStatus?.('error', 'PERSONAL.XLSB actions are unavailable.');
+      onActionStatus?.('error', 'Action unavailable.');
       return;
     }
 
     setPersonalActionInFlight(true);
-    onActionStatus?.(
-      'running',
-      action === 'create_file' ? 'Creating PERSONAL.xlsb...' : 'Opening PERSONAL.xlsb...'
-    );
+    onActionStatus?.('running', action === 'create_file' ? 'Creating...' : 'Opening...');
 
     try {
       const result = await runAction();
@@ -223,19 +264,9 @@ const ShortcutsPage = ({
         Promise.resolve(workbookPickerState.refreshWorkbooks?.({ silent: true }))
       ]);
 
-      onActionStatus?.(
-        'success',
-        action === 'create_file'
-          ? 'Created and opened PERSONAL.xlsb.'
-          : (result.alreadyOpen ? 'PERSONAL.xlsb is already open.' : 'Opened PERSONAL.xlsb.')
-      );
+      onActionStatus?.('success', action === 'create_file' ? 'File created.' : 'File opened.');
     } catch (error) {
-      const message = error?.message
-        ? String(error.message)
-        : (action === 'create_file'
-          ? 'Unable to create PERSONAL.xlsb.'
-          : 'Unable to open PERSONAL.xlsb.');
-      onActionStatus?.('error', message);
+      onActionStatus?.('error', error?.message ? String(error.message) : 'Operation failed.');
     } finally {
       setPersonalActionInFlight(false);
     }
@@ -248,6 +279,111 @@ const ShortcutsPage = ({
     personalMacrosState.workbookPath,
     workbookPickerState.refreshWorkbooks
   ]);
+
+  const handlePersonalVisibilityToggle = useCallback(async () => {
+    if (personalActionInFlight || !personalMacrosState.fileExists) {
+      return;
+    }
+
+    const personalApi = window.excel?.personal;
+    if (!personalApi) {
+      onActionStatus?.('error', 'Action unavailable.');
+      return;
+    }
+
+    const isVisible = personalMacrosState.workbookFound
+      && personalMacrosState.windowVisible === true
+      && personalMacrosState.windowHidden !== true;
+
+    let runAction = null;
+    let successMessage = 'Updated.';
+    if (isVisible) {
+      if (typeof personalApi.setVisibility !== 'function') {
+        onActionStatus?.('error', 'Action unavailable.');
+        return;
+      }
+      runAction = () => personalApi.setVisibility({ visible: false });
+      successMessage = 'Workbook hidden.';
+    } else if (personalMacrosState.workbookFound) {
+      if (typeof personalApi.setVisibility !== 'function') {
+        onActionStatus?.('error', 'Action unavailable.');
+        return;
+      }
+      runAction = () => personalApi.setVisibility({ visible: true });
+      successMessage = 'Workbook visible.';
+    } else {
+      if (typeof personalApi.open !== 'function') {
+        onActionStatus?.('error', 'Action unavailable.');
+        return;
+      }
+      runAction = () => personalApi.open({ visible: true });
+      successMessage = 'Workbook opened.';
+    }
+
+    setPersonalActionInFlight(true);
+    onActionStatus?.('running', 'Updating...');
+    try {
+      const result = await runAction();
+      if (!result?.success) {
+        onActionStatus?.('error', String(result?.message || 'Update failed.'));
+        return;
+      }
+
+      await Promise.allSettled([
+        Promise.resolve(personalMacrosState.refresh?.()),
+        Promise.resolve(workbookPickerState.refreshWorkbooks?.({ silent: true }))
+      ]);
+
+      onActionStatus?.('success', successMessage);
+    } catch (error) {
+      onActionStatus?.('error', error?.message ? String(error.message) : 'Update failed.');
+    } finally {
+      setPersonalActionInFlight(false);
+    }
+  }, [
+    onActionStatus,
+    personalActionInFlight,
+    personalMacrosState.fileExists,
+    personalMacrosState.refresh,
+    personalMacrosState.windowHidden,
+    personalMacrosState.windowVisible,
+    personalMacrosState.workbookFound,
+    workbookPickerState.refreshWorkbooks
+  ]);
+
+  const handleOpenPersonalFolder = useCallback(async () => {
+    const openFolderApi = window.excel?.personal?.openFolder;
+    if (typeof openFolderApi !== 'function') {
+      onActionStatus?.('error', 'Action unavailable.');
+      return;
+    }
+
+    try {
+      const result = await openFolderApi();
+      if (!result?.success) {
+        onActionStatus?.('error', String(result?.message || 'Could not open folder.'));
+      }
+    } catch (error) {
+      onActionStatus?.('error', error?.message ? String(error.message) : 'Could not open folder.');
+    }
+  }, [onActionStatus]);
+
+  const handlePersonalInfoHoverChange = useCallback((nextHovering) => {
+    if (personalInfoHideTimerRef.current) {
+      window.clearTimeout(personalInfoHideTimerRef.current);
+      personalInfoHideTimerRef.current = null;
+    }
+
+    if (nextHovering) {
+      setPersonalInfoHover(true);
+      return;
+    }
+
+    personalInfoHideTimerRef.current = window.setTimeout(() => {
+      personalInfoHideTimerRef.current = null;
+      setPersonalInfoHover(false);
+    }, 120);
+  }, []);
 
   const toggleWorkbookMenu = useCallback(() => {
     setWorkbookMenuOpen((previous) => {
@@ -328,11 +464,22 @@ const ShortcutsPage = ({
 
   useEffect(() => {
     if (status !== 'ready') {
+      if (personalInfoHideTimerRef.current) {
+        window.clearTimeout(personalInfoHideTimerRef.current);
+        personalInfoHideTimerRef.current = null;
+      }
       setWorkbookMenuOpen(false);
       setPersonalInfoHover(false);
       setPersonalInfoPinned(false);
     }
   }, [status]);
+
+  useEffect(() => () => {
+    if (personalInfoHideTimerRef.current) {
+      window.clearTimeout(personalInfoHideTimerRef.current);
+      personalInfoHideTimerRef.current = null;
+    }
+  }, []);
 
   const renderNonReadyState = () => {
     const statusView = getSearchStatusView(searchData);
@@ -360,7 +507,7 @@ const ShortcutsPage = ({
     : workbookDataHasError
       ? selectedWorkbookErrorMessage
       : workbookMacroCount < 1
-        ? 'This workbook has no macros.'
+        ? (searchData?.vbaLocked ? 'This workbook\'s VBA project is locked.' : 'This workbook has no macros.')
         : 'No macros match this search.';
 
   return (
@@ -394,8 +541,11 @@ const ShortcutsPage = ({
             sectionModel={personalSectionModel}
             infoRef={personalInfoRef}
             showInfo={showPersonalInfo}
-            onInfoHoverChange={setPersonalInfoHover}
+            onInfoHoverChange={handlePersonalInfoHoverChange}
             onInfoToggle={() => setPersonalInfoPinned((previous) => !previous)}
+            visibilityControl={personalVisibilityControl}
+            onToggleVisibility={handlePersonalVisibilityToggle}
+            onOpenFolder={handleOpenPersonalFolder}
             actionInFlight={personalActionInFlight}
             onAction={handlePersonalAction}
             rows={personalMacroRows}

@@ -364,7 +364,7 @@ export function useShortcutState({
 
     const macroName = macro?.fullName || macro?.runTarget || macro?.name || '';
     if (!macroName) {
-      setActionStatus?.('error', 'Shortcut assign failed: Macro identity is missing.');
+      setActionStatus?.('error', 'Macro not found.');
       return;
     }
 
@@ -384,12 +384,12 @@ export function useShortcutState({
       shortcutSaveInFlightRef.current = true;
     }
     setShortcutSavingMacroId(macro.id);
-    setActionStatus?.('running', `Saving shortcut for ${macro.name}...`);
+    setActionStatus?.('running', 'Saving shortcut...');
 
     try {
       const excelShortcutKey = toExcelShortcutKeyFromLetter(normalizedShortcut);
       if (!excelShortcutKey) {
-        setActionStatus?.('error', 'Shortcut assign failed: Enter a valid shortcut key.');
+        setActionStatus?.('error', 'Enter a valid key.');
         return;
       }
 
@@ -421,11 +421,11 @@ export function useShortcutState({
           delete next[macro.id];
           return next;
         });
-        setActionStatus?.('success', `Shortcut assigned: ${backendMessage}`);
+        setActionStatus?.('success', 'Shortcut assigned.');
         await loadMacroShortcuts({ force: true });
       } else {
         const backendMessage = result?.message || 'Unknown error.';
-        setActionStatus?.('error', `Shortcut assign failed: ${backendMessage}`);
+        setActionStatus?.('error', 'Shortcut failed.');
       }
     } catch (error) {
       const backendMessage = error?.message ? String(error.message) : 'Unexpected error.';

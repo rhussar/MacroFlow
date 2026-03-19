@@ -24,8 +24,11 @@ const LOG_LEVELS = {
     ERROR: 3
 };
 
-// Current log level (can be set via environment variable)
-let currentLogLevel = LOG_LEVELS[process.env.MACROFLOW_LOG_LEVEL?.toUpperCase()] ?? LOG_LEVELS.INFO;
+// Current log level (can be set via environment variable). Match the persistent
+// logger behavior so dev sessions show debug IPC traces by default.
+let currentLogLevel =
+    LOG_LEVELS[process.env.MACROFLOW_LOG_LEVEL?.toUpperCase()]
+    ?? (process.env.NODE_ENV === 'development' ? LOG_LEVELS.DEBUG : LOG_LEVELS.INFO);
 
 // In-memory log buffer for recent entries (circular buffer)
 const LOG_BUFFER_SIZE = 500;
@@ -83,7 +86,9 @@ function log(level, category, message, details = null) {
     // are still available after the app process exits.
     const normalizedLevel = String(level || '').toLowerCase();
     const fileMessage = `[${category}] ${message}`;
-    if (typeof persistentLogger[normalizedLevel] === 'function') {
+    if (typeof persistentLogger.writeToFileOnly === 'function') {
+        persistentLogger.writeToFileOnly(normalizedLevel, fileMessage, details || undefined);
+    } else if (typeof persistentLogger[normalizedLevel] === 'function') {
         persistentLogger[normalizedLevel](fileMessage, details || undefined);
     } else {
         persistentLogger.info(fileMessage, details || undefined);

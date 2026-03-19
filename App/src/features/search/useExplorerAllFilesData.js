@@ -15,6 +15,7 @@ const INITIAL_EXPLORER_ALL_FILES_STATE = {
 };
 
 const explorerAllFilesCache = new Map();
+const explorerAllFilesPendingRequests = new Map();
 
 function buildExplorerAllFilesCacheKey(activeWorkbookKey) {
   return String(activeWorkbookKey || '').trim() || '__active-workbook__';
@@ -34,7 +35,6 @@ function getFreshExplorerAllFilesCacheEntry(activeWorkbookKey) {
 }
 
 function buildExplorerAllFilesFallback(activeWorkbook, searchData) {
-  const fallbackWorkbooks = activeWorkbook ? [activeWorkbook] : [];
   const fallbackModules = sortAllFilesModules(
     Array.isArray(searchData?.modules) ? searchData.modules : [],
     activeWorkbook?.key || ''
@@ -42,14 +42,39 @@ function buildExplorerAllFilesFallback(activeWorkbook, searchData) {
 
   return {
     status: 'ready',
-    workbooks: fallbackWorkbooks,
+    workbooks: [],
     modules: fallbackModules,
     error: null
   };
 }
 
+function getExplorerAllFilesRequestKey(activeWorkbookKey) {
+  return buildExplorerAllFilesCacheKey(activeWorkbookKey);
+}
+
+function getOrCreateExplorerAllFilesRequest(activeWorkbookKey, requestFactory) {
+  const requestKey = getExplorerAllFilesRequestKey(activeWorkbookKey);
+  const pendingRequest = explorerAllFilesPendingRequests.get(requestKey);
+  if (pendingRequest) {
+    return pendingRequest;
+  }
+
+  const requestPromise = Promise.resolve()
+    .then(requestFactory)
+    .finally(() => {
+      if (explorerAllFilesPendingRequests.get(requestKey) === requestPromise) {
+        explorerAllFilesPendingRequests.delete(requestKey);
+      }
+    });
+
+  explorerAllFilesPendingRequests.set(requestKey, requestPromise);
+  return requestPromise;
+}
+
 export function useExplorerAllFilesData(searchData) {
   const requestSequence = useRef(0);
+  const activeModules = Array.isArray(searchData?.modules) ? searchData.modules : [];
+  const searchStatus = searchData?.status;
   const activeWorkbook = useMemo(
     () => toWorkbookModel(searchData?.workbook, { defaultName: 'Active Workbook' }),
     [searchData?.workbook?.name, searchData?.workbook?.path]
@@ -57,22 +82,22 @@ export function useExplorerAllFilesData(searchData) {
   const activeWorkbookKey = activeWorkbook?.key || '';
   const freshCacheEntry = getFreshExplorerAllFilesCacheEntry(activeWorkbookKey);
   const [state, setState] = useState(() => {
-    if (searchData?.status !== 'ready') {
+    if (searchStatus !== 'ready') {
       return INITIAL_EXPLORER_ALL_FILES_STATE;
     }
 
-    return freshCacheEntry?.data || buildExplorerAllFilesFallback(activeWorkbook, searchData);
+    return freshCacheEntry?.data || buildExplorerAllFilesFallback(activeWorkbook, { modules: activeModules });
   });
 
   const refreshExplorerAllFiles = useCallback(async ({ silent = false } = {}) => {
-    if (searchData?.status !== 'ready') {
+    if (searchStatus !== 'ready') {
       setState(INITIAL_EXPLORER_ALL_FILES_STATE);
       return INITIAL_EXPLORER_ALL_FILES_STATE;
     }
 
     const listContextApi = window.excel?.workbook?.listContext;
     if (typeof listContextApi !== 'function') {
-      const fallback = buildExplorerAllFilesFallback(activeWorkbook, searchData);
+      const fallback = buildExplorerAllFilesFallback(activeWorkbook, { modules: activeModules });
       setState(fallback);
       return fallback;
     }
@@ -87,54 +112,56 @@ export function useExplorerAllFilesData(searchData) {
     }
 
     try {
-      const result = await listContextApi();
+      const nextState = await getOrCreateExplorerAllFilesRequest(
+        activeWorkbookKey,
+        async () => {
+          const result = await listContextApi();
+          if (!result?.success) {
+            const fallback = buildExplorerAllFilesFallback(activeWorkbook, { modules: activeModules });
+            return {
+              ...fallback,
+              error: { message: String(result?.message || result?.error || 'Unable to load open workbooks.') }
+            };
+          }
+
+          const workbookModels = (Array.isArray(result?.workbooks) ? result.workbooks : [])
+            .map((workbook) => toWorkbookModel(workbook))
+            .filter(Boolean);
+
+          if (activeWorkbook && !workbookModels.some((workbook) => workbook.key === activeWorkbook.key)) {
+            workbookModels.unshift(activeWorkbook);
+          }
+
+          const sortedWorkbooks = sortWorkbooksForPicker(workbookModels, activeWorkbookKey);
+          const normalizedContextModules = normalizeListContextModules(result?.allFilesModules);
+          const moduleMap = new Map();
+          normalizedContextModules.forEach((moduleItem) => {
+            if (moduleItem?.id) {
+              moduleMap.set(moduleItem.id, moduleItem);
+            }
+          });
+          activeModules.forEach((moduleItem) => {
+            if (moduleItem?.id) {
+              moduleMap.set(moduleItem.id, moduleItem);
+            }
+          });
+
+          const resolvedState = {
+            status: 'ready',
+            workbooks: sortedWorkbooks,
+            modules: sortAllFilesModules(Array.from(moduleMap.values()), activeWorkbookKey),
+            error: null
+          };
+          explorerAllFilesCache.set(buildExplorerAllFilesCacheKey(activeWorkbookKey), {
+            fetchedAt: Date.now(),
+            data: resolvedState
+          });
+          return resolvedState;
+        }
+      );
       if (requestId !== requestSequence.current) {
         return INITIAL_EXPLORER_ALL_FILES_STATE;
       }
-
-      if (!result?.success) {
-        const fallback = buildExplorerAllFilesFallback(activeWorkbook, searchData);
-        const nextState = {
-          ...fallback,
-          error: { message: String(result?.message || result?.error || 'Unable to load open workbooks.') }
-        };
-        setState(nextState);
-        return nextState;
-      }
-
-      const workbookModels = (Array.isArray(result?.workbooks) ? result.workbooks : [])
-        .map((workbook) => toWorkbookModel(workbook))
-        .filter(Boolean);
-
-      if (activeWorkbook && !workbookModels.some((workbook) => workbook.key === activeWorkbook.key)) {
-        workbookModels.unshift(activeWorkbook);
-      }
-
-      const sortedWorkbooks = sortWorkbooksForPicker(workbookModels, activeWorkbookKey);
-      const normalizedContextModules = normalizeListContextModules(result?.allFilesModules);
-      const activeModules = Array.isArray(searchData?.modules) ? searchData.modules : [];
-      const moduleMap = new Map();
-      normalizedContextModules.forEach((moduleItem) => {
-        if (moduleItem?.id) {
-          moduleMap.set(moduleItem.id, moduleItem);
-        }
-      });
-      activeModules.forEach((moduleItem) => {
-        if (moduleItem?.id) {
-          moduleMap.set(moduleItem.id, moduleItem);
-        }
-      });
-
-      const nextState = {
-        status: 'ready',
-        workbooks: sortedWorkbooks,
-        modules: sortAllFilesModules(Array.from(moduleMap.values()), activeWorkbookKey),
-        error: null
-      };
-      explorerAllFilesCache.set(buildExplorerAllFilesCacheKey(activeWorkbookKey), {
-        fetchedAt: Date.now(),
-        data: nextState
-      });
       setState(nextState);
       return nextState;
     } catch (error) {
@@ -142,7 +169,7 @@ export function useExplorerAllFilesData(searchData) {
         return INITIAL_EXPLORER_ALL_FILES_STATE;
       }
 
-      const fallback = buildExplorerAllFilesFallback(activeWorkbook, searchData);
+      const fallback = buildExplorerAllFilesFallback(activeWorkbook, { modules: activeModules });
       const nextState = {
         ...fallback,
         error: { message: error?.message ? String(error.message) : 'Unable to load open workbooks.' }
@@ -150,10 +177,10 @@ export function useExplorerAllFilesData(searchData) {
       setState(nextState);
       return nextState;
     }
-  }, [activeWorkbook, activeWorkbookKey, searchData]);
+  }, [activeModules, activeWorkbook, activeWorkbookKey, searchStatus]);
 
   useEffect(() => {
-    if (searchData?.status !== 'ready') {
+    if (searchStatus !== 'ready') {
       requestSequence.current += 1;
       setState(INITIAL_EXPLORER_ALL_FILES_STATE);
       return;
@@ -166,10 +193,20 @@ export function useExplorerAllFilesData(searchData) {
     }
 
     void refreshExplorerAllFiles({ silent: true });
-  }, [activeWorkbookKey, refreshExplorerAllFiles, searchData?.status, searchData?.workbook?.name, searchData?.workbook?.path]);
+  }, [activeWorkbookKey, refreshExplorerAllFiles, searchStatus]);
+
+  const workbookListSignature = useMemo(() => {
+    const workbooks = Array.isArray(state.workbooks) ? state.workbooks : [];
+    return workbooks
+      .map((workbook) => String(workbook?.key || ''))
+      .filter(Boolean)
+      .sort()
+      .join('|');
+  }, [state.workbooks]);
 
   return {
     ...state,
+    workbookListSignature,
     refreshExplorerAllFiles
   };
 }

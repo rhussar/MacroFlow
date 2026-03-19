@@ -224,17 +224,19 @@ async function withExcelFocus(fn, options = {}) {
 function registerHandlers() {
   try {
     const auditInit = initializeAuditLog();
-    logger.info('[Audit] initialized', {
+    logger.info('Audit', 'initialized', {
       auditDirectoryPath: auditInit?.auditDirectoryPath
     });
   } catch (error) {
-    logger.warn('[Audit] initialization failed', { error: error?.message || String(error) });
+    logger.warn('Audit', 'initialization failed', { error: error?.message || String(error) });
   }
 
   let isAppQuitting = false;
   let closeRequested = false;
   let activeExcelOperations = 0;
+  let excelOperationSequence = 0;
   let selectedWorkbookScope = { name: '', path: '' };
+  let lastSelectedWorkbookLogKey = '';
 
   const getSelectedWorkbookScope = () => selectedWorkbookScope;
 
@@ -242,6 +244,10 @@ function registerHandlers() {
     const normalized = normalizeWorkbookIdentity(args?.workbookName, args?.workbookPath);
     selectedWorkbookScope = normalized;
     return normalized;
+  };
+
+  const getWorkbookScopeLogKey = (scope = {}) => {
+    return `${toLowerPath(scope?.path)}::${toLowerName(scope?.name)}`;
   };
 
   const hasSelectedWorkbookScope = () => {
@@ -254,7 +260,7 @@ function registerHandlers() {
   const writeHighRiskAudit = async (entry) => {
     try {
       const auditResult = await writeAuditEvent(entry);
-      logger.info('[Audit] high-risk action', {
+      logger.info('Audit', 'high-risk action', {
         action: entry?.action,
         channel: entry?.channel,
         outcome: entry?.outcome,
@@ -262,7 +268,7 @@ function registerHandlers() {
         filePath: auditResult?.filePath
       });
     } catch (error) {
-      logger.warn('[Audit] write failed', { error: error?.message || String(error) });
+      logger.warn('Audit', 'write failed', { error: error?.message || String(error) });
     }
   };
 
@@ -347,7 +353,7 @@ function registerHandlers() {
   let lastNoExcelAt = 0;
   const NO_EXCEL_COOLDOWN_MS = 3000;
 
-  const withComRelease = async (operation) => {
+  const withComRelease = async (operation, context = {}) => {
     if (isAppQuitting) {
       logger.warn('IPC', 'Excel operation blocked because app is shutting down');
       return buildShutdownResult();
@@ -360,9 +366,23 @@ function registerHandlers() {
       return { success: false, message: 'NO_EXCEL: Waiting for Excel to restart.' };
     }
 
+    const normalizedChannel = toSafeString(context?.channel) || 'unknown';
+    const providedOpId = Number(context?.opId);
+    const opId = Number.isFinite(providedOpId) && providedOpId > 0
+      ? providedOpId
+      : (++excelOperationSequence);
+    const operationContext = {
+      channel: normalizedChannel,
+      opId
+    };
+
     activeExcelOperations += 1;
     try {
-      const result = await Promise.resolve(operation());
+      const result = await (
+        typeof excel.runWithOperationContext === 'function'
+          ? excel.runWithOperationContext(operationContext, () => Promise.resolve(operation()))
+          : Promise.resolve(operation())
+      );
       // Successful operation clears the cooldown.
       if (result && result.success !== false) {
         lastNoExcelAt = 0;
@@ -390,15 +410,20 @@ function registerHandlers() {
     }
   };
 
-  const withHighRiskComRelease = async (operation) => {
+  const withHighRiskComRelease = async (operation, context = {}) => {
     try {
-      return await withComRelease(operation);
+      return await withComRelease(operation, context);
     } finally {
       if (typeof global.gc === 'function') {
         try { global.gc(); } catch { /* best-effort */ }
       }
     }
   };
+
+  const withChannelComRelease = (channel, operation) => withComRelease(operation, { channel });
+
+  const withChannelHighRiskComRelease = (channel, operation) =>
+    withHighRiskComRelease(operation, { channel });
 
   const POLLING_PAUSE_PROTECTED_CHANNELS = new Set([
     'workbook:info',
@@ -540,7 +565,7 @@ function registerHandlers() {
       return buildPausedResult(channel);
     }
 
-    const result = await withComRelease(operation);
+    const result = await withChannelComRelease(channel, operation);
 
     if (isProtected) {
       if (result?.success) {
@@ -677,7 +702,7 @@ function registerHandlers() {
 
   const resolveInstanceOnce = async () => {
     if (!resolveInstanceInFlight) {
-      resolveInstanceInFlight = withComRelease(runResolveInstance).finally(() => {
+      resolveInstanceInFlight = withChannelComRelease('excel:resolveInstance', runResolveInstance).finally(() => {
         resolveInstanceInFlight = null;
       });
     }
@@ -698,11 +723,15 @@ function registerHandlers() {
 
     const workbook = setSelectedWorkbookScope(args);
     const selected = Boolean(workbook.name || workbook.path);
-    logger.info('[Security] selected workbook updated', {
-      selected,
-      workbookName: workbook.name,
-      hasWorkbookPath: Boolean(workbook.path)
-    });
+    const nextLogKey = getWorkbookScopeLogKey(workbook);
+    if (nextLogKey !== lastSelectedWorkbookLogKey) {
+      lastSelectedWorkbookLogKey = nextLogKey;
+      logger.debug('Security', 'selected workbook updated', {
+        selected,
+        workbookName: workbook.name,
+        hasWorkbookPath: Boolean(workbook.path)
+      });
+    }
 
     return {
       success: true,
@@ -927,7 +956,7 @@ function registerHandlers() {
       return blocked;
     }
 
-    const result = await withHighRiskComRelease(
+    const result = await withChannelHighRiskComRelease('vba:inject:by-workbook',
       () => withExcelFocus(
         () => excel.injectModuleByWorkbookName(normalizedWorkbook.name, normalizedModuleName, normalizedCode, {
           workbookPath: normalizedWorkbook.path,
@@ -973,7 +1002,7 @@ function registerHandlers() {
       moduleName
     });
 
-    const result = await withComRelease(
+    const result = await withChannelComRelease('vba:module-code:by-workbook',
       () => excel.getModuleCodeByWorkbookName(workbookName, moduleName, { workbookPath })
     );
 
@@ -1003,7 +1032,7 @@ function registerHandlers() {
       moduleName
     });
 
-    const result = await withComRelease(
+    const result = await withChannelComRelease('vba:module-signature:by-workbook',
       () => excel.getModuleSignatureByWorkbookName(workbookName, moduleName, { workbookPath })
     );
 
@@ -1137,7 +1166,7 @@ function registerHandlers() {
       return blocked;
     }
 
-    const result = await withHighRiskComRelease(
+    const result = await withChannelHighRiskComRelease('vba:module-code:set:by-workbook',
       () => excel.setModuleCodeByWorkbookName(normalizedWorkbook.name, normalizedModuleName, normalizedCode, {
         workbookPath: normalizedWorkbook.path,
         createIfMissing: normalizedCreateIfMissing
@@ -1185,7 +1214,7 @@ function registerHandlers() {
       nextModuleName
     });
 
-    const result = await withHighRiskComRelease(
+    const result = await withChannelHighRiskComRelease('vba:module:rename:by-workbook',
       () => excel.renameModuleByWorkbookName(workbookName, moduleName, nextModuleName, { workbookPath })
     );
 
@@ -1222,7 +1251,7 @@ function registerHandlers() {
       nextMacroName
     });
 
-    const result = await withHighRiskComRelease(
+    const result = await withChannelHighRiskComRelease('vba:macro:rename:by-workbook',
       () => excel.renameMacroByWorkbookName(workbookName, moduleName, macroName, nextMacroName, { workbookPath })
     );
 
@@ -1256,7 +1285,7 @@ function registerHandlers() {
       moduleName
     });
 
-    const result = await withHighRiskComRelease(
+    const result = await withChannelHighRiskComRelease('vba:module:delete:by-workbook',
       () => excel.deleteModuleByWorkbookName(workbookName, moduleName, { workbookPath })
     );
 
@@ -1385,7 +1414,7 @@ function registerHandlers() {
     }
 
     // Use withExcelFocus - CRITICAL for MsgBox/dialog visibility
-    const result = await withHighRiskComRelease(
+    const result = await withChannelHighRiskComRelease('vba:run',
       () => withExcelFocus(() => excel.runMacro(normalizedMacroName))
     );
 
@@ -1465,7 +1494,7 @@ function registerHandlers() {
   ipcMain.handle('vba:modules:by-workbook', async (_, { workbookName, workbookPath } = {}) => {
     logIpc('vba:modules:by-workbook', 'start', { workbookName, workbookPath });
 
-    const result = await withComRelease(
+    const result = await withChannelComRelease('vba:modules:by-workbook',
       () => excel.listModulesByWorkbookName(workbookName, { workbookPath })
     );
 
@@ -1499,7 +1528,7 @@ function registerHandlers() {
   ipcMain.handle('vba:procedures:by-workbook', async (_, { workbookName, workbookPath } = {}) => {
     logIpc('vba:procedures:by-workbook', 'start', { workbookName, workbookPath });
 
-    const result = await withComRelease(
+    const result = await withChannelComRelease('vba:procedures:by-workbook',
       () => excel.listProceduresByWorkbookName(workbookName, { workbookPath })
     );
 
@@ -1519,7 +1548,7 @@ function registerHandlers() {
   ipcMain.handle('vba:shortcut:set', async (_, { macroName, shortcutKey }) => {
     logIpc('vba:shortcut:set', 'start', { macroName, shortcutKey });
 
-    const result = await withComRelease(
+    const result = await withChannelComRelease('vba:shortcut:set',
       () => withExcelFocus(() => excel.setMacroShortcut(macroName, shortcutKey))
     );
 
@@ -1536,7 +1565,7 @@ function registerHandlers() {
   ipcMain.handle('vba:shortcut:set:by-workbook', async (_, { workbookName, workbookPath, macroName, shortcutKey } = {}) => {
     logIpc('vba:shortcut:set:by-workbook', 'start', { workbookName, workbookPath, macroName, shortcutKey });
 
-    const result = await withComRelease(
+    const result = await withChannelComRelease('vba:shortcut:set:by-workbook',
       () => withExcelFocus(
         () => excel.setMacroShortcutByWorkbookName(workbookName, macroName, shortcutKey, { workbookPath })
       )
@@ -1595,7 +1624,7 @@ function registerHandlers() {
    */
   ipcMain.handle('cell:read', async (_, { address }) => {
     logIpc('cell:read', 'start', { address });
-    const result = await withComRelease(() => excel.readCell(address));
+    const result = await withChannelComRelease('cell:read', () => excel.readCell(address));
     logIpc('cell:read', 'end', { success: result.success });
     return result;
   });
@@ -1607,7 +1636,7 @@ function registerHandlers() {
    */
   ipcMain.handle('cell:write', async (_, { address, value }) => {
     logIpc('cell:write', 'start', { address });
-    const result = await withComRelease(() => excel.writeCell(address, value));
+    const result = await withChannelComRelease('cell:write', () => excel.writeCell(address, value));
     clearWorkbookContextBurstCache();
     logIpc('cell:write', 'end', { success: result.success });
     return result;
@@ -1619,7 +1648,7 @@ function registerHandlers() {
    */
   ipcMain.handle('cell:selection', async () => {
     logIpc('cell:selection', 'start');
-    const result = await withComRelease(() => excel.getSelection());
+    const result = await withChannelComRelease('cell:selection', () => excel.getSelection());
     logIpc('cell:selection', 'end', { success: result.success });
     return result;
   });
@@ -1631,7 +1660,7 @@ function registerHandlers() {
    */
   ipcMain.handle('cell:highlight', async (_, { color }) => {
     logIpc('cell:highlight', 'start', { color });
-    const result = await withComRelease(() => excel.highlightSelection(color));
+    const result = await withChannelComRelease('cell:highlight', () => excel.highlightSelection(color));
     logIpc('cell:highlight', 'end', { success: result.success });
     return result;
   });
@@ -1709,7 +1738,7 @@ function registerHandlers() {
    */
   ipcMain.handle('personal:status', async () => {
     logIpc('personal:status', 'start');
-    const result = await withComRelease(() => excel.getPersonalWorkbookStatus());
+    const result = await withChannelComRelease('personal:status', () => excel.getPersonalWorkbookStatus());
     logIpc('personal:status', 'end', {
       success: result.success,
       workbookFound: result.workbookFound,
@@ -1725,7 +1754,7 @@ function registerHandlers() {
    */
   ipcMain.handle('personal:context', async () => {
     logIpc('personal:context', 'start');
-    const result = await withComRelease(() => excel.getPersonalWorkbookContext());
+    const result = await withChannelComRelease('personal:context', () => excel.getPersonalWorkbookContext());
     logIpc('personal:context', 'end', {
       success: result.success,
       workbookFound: result.workbookFound,
@@ -1750,7 +1779,7 @@ function registerHandlers() {
     }
 
     logIpc('personal:open', 'start', { visible: payload.visible });
-    const result = await withComRelease(() => excel.openPersonalWorkbook(payload));
+    const result = await withChannelComRelease('personal:open', () => excel.openPersonalWorkbook(payload));
     if (result?.success) {
       clearPollingPaused();
       clearWorkbookContextBurstCache();
@@ -1780,7 +1809,7 @@ function registerHandlers() {
     }
 
     logIpc('personal:create', 'start', { visible: payload.visible });
-    const result = await withComRelease(() => excel.createPersonalWorkbook(payload));
+    const result = await withChannelComRelease('personal:create', () => excel.createPersonalWorkbook(payload));
     if (result?.success) {
       clearPollingPaused();
       clearWorkbookContextBurstCache();
@@ -1807,7 +1836,7 @@ function registerHandlers() {
     }
 
     logIpc('personal:visibility:set', 'start', { visible: payload.visible });
-    const result = await withComRelease(() => excel.setPersonalWorkbookVisibility(payload));
+    const result = await withChannelComRelease('personal:visibility:set', () => excel.setPersonalWorkbookVisibility(payload));
     logIpc('personal:visibility:set', 'end', {
       success: result.success,
       workbookFound: result.workbookFound,
@@ -1867,7 +1896,7 @@ function registerHandlers() {
    */
   ipcMain.handle('workbook:sheets', async () => {
     logIpc('workbook:sheets', 'start');
-    const result = await withComRelease(() => excel.listWorksheets());
+    const result = await withChannelComRelease('workbook:sheets', () => excel.listWorksheets());
     logIpc('workbook:sheets', 'end', { success: result.success, count: result.sheets?.length });
     return result;
   });
@@ -1879,7 +1908,7 @@ function registerHandlers() {
    */
   ipcMain.handle('workbook:metadata', async (_, args) => {
     logIpc('workbook:metadata', 'start', { sheetName: args?.sheetName });
-    const result = await withComRelease(() => excel.getWorksheetMetadata(args));
+    const result = await withChannelComRelease('workbook:metadata', () => excel.getWorksheetMetadata(args));
     logIpc('workbook:metadata', 'end', { success: result.success });
     return result;
   });
@@ -1891,7 +1920,7 @@ function registerHandlers() {
    */
   ipcMain.handle('workbook:metadata:closed', async (_, args) => {
     logIpc('workbook:metadata:closed', 'start', { path: args?.path });
-    const result = await withComRelease(() => excel.getClosedWorkbookMetadata(args));
+    const result = await withChannelComRelease('workbook:metadata:closed', () => excel.getClosedWorkbookMetadata(args));
     logIpc('workbook:metadata:closed', 'end', { success: result.success });
     return result;
   });
@@ -1948,7 +1977,7 @@ function registerHandlers() {
       return cooldownResult;
     }
 
-    const result = await withComRelease(() => {
+    const result = await withChannelComRelease('excel:reconnect', () => {
       excel.clearComCache();
       return excel.getWorkbookInfo();
     });

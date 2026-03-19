@@ -25,6 +25,7 @@ const INITIAL_SELECTED_WORKBOOK_DATA = {
 };
 
 const workbookPickerCache = new Map();
+const workbookPickerPendingRequests = new Map();
 
 function buildWorkbookPickerCacheKey(activeWorkbookKey) {
   return String(activeWorkbookKey || '').trim() || '__active-workbook__';
@@ -41,6 +42,41 @@ function getFreshWorkbookPickerCacheEntry(activeWorkbookKey) {
     cacheAgeMs < WORKBOOK_PICKER_REFRESH_TTL_MS;
 
   return cacheIsFresh ? cachedEntry : null;
+}
+
+function buildSortedWorkbookPickerRows(result, activeWorkbook, activeWorkbookKey) {
+  const workbookModels = (Array.isArray(result?.workbooks) ? result.workbooks : [])
+    .map((workbook) => toWorkbookModel(workbook))
+    .filter(Boolean);
+
+  if (activeWorkbook && !workbookModels.some((workbook) => workbook.key === activeWorkbook.key)) {
+    workbookModels.unshift(activeWorkbook);
+  }
+
+  return sortWorkbooksForPicker(workbookModels, activeWorkbookKey);
+}
+
+function getWorkbookPickerRequestKey(activeWorkbookKey) {
+  return buildWorkbookPickerCacheKey(activeWorkbookKey);
+}
+
+function getOrCreateWorkbookPickerRequest(activeWorkbookKey, requestFactory) {
+  const requestKey = getWorkbookPickerRequestKey(activeWorkbookKey);
+  const pendingRequest = workbookPickerPendingRequests.get(requestKey);
+  if (pendingRequest) {
+    return pendingRequest;
+  }
+
+  const requestPromise = Promise.resolve()
+    .then(requestFactory)
+    .finally(() => {
+      if (workbookPickerPendingRequests.get(requestKey) === requestPromise) {
+        workbookPickerPendingRequests.delete(requestKey);
+      }
+    });
+
+  workbookPickerPendingRequests.set(requestKey, requestPromise);
+  return requestPromise;
 }
 
 export function useWorkbookPickerData(searchData, options = {}) {
@@ -102,32 +138,23 @@ export function useWorkbookPickerData(searchData, options = {}) {
     }
 
     try {
-      const result = typeof workbookListContextApi === 'function'
-        ? await workbookListContextApi()
-        : await workbookListApi();
+      const sortedWorkbooks = await getOrCreateWorkbookPickerRequest(
+        activeWorkbookKey,
+        async () => {
+          const result = typeof workbookListApi === 'function'
+            ? await workbookListApi()
+            : await workbookListContextApi();
+
+          if (!result?.success) {
+            throw new Error(String(result?.message || result?.error || 'Unable to load open workbooks.'));
+          }
+
+          return buildSortedWorkbookPickerRows(result, activeWorkbook, activeWorkbookKey);
+        }
+      );
       if (requestId !== listRequestSequence.current) {
         return [];
       }
-
-      if (!result?.success) {
-        const message = String(result?.message || result?.error || 'Unable to load open workbooks.');
-        setPickerState({
-          status: 'error',
-          workbooks: [],
-          error: { message }
-        });
-        return [];
-      }
-
-      const workbookModels = (Array.isArray(result?.workbooks) ? result.workbooks : [])
-        .map((workbook) => toWorkbookModel(workbook))
-        .filter(Boolean);
-
-      if (activeWorkbook && !workbookModels.some((workbook) => workbook.key === activeWorkbook.key)) {
-        workbookModels.unshift(activeWorkbook);
-      }
-
-      const sortedWorkbooks = sortWorkbooksForPicker(workbookModels, activeWorkbookKey);
       setPickerState({
         status: 'ready',
         workbooks: sortedWorkbooks,
@@ -159,6 +186,33 @@ export function useWorkbookPickerData(searchData, options = {}) {
       return [];
     }
   }, [activeWorkbook, activeWorkbookKey, preferredWorkbookKey, searchData?.status]);
+
+  const ensureFreshWorkbooks = useCallback(async ({ silent = true } = {}) => {
+    if (searchData?.status !== 'ready') {
+      setPickerState(INITIAL_PICKER_STATE);
+      return [];
+    }
+
+    const cachedEntry = getFreshWorkbookPickerCacheEntry(activeWorkbookKey);
+    if (cachedEntry?.workbooks) {
+      const cachedWorkbooks = cachedEntry.workbooks;
+      setPickerState({
+        status: 'ready',
+        workbooks: cachedWorkbooks,
+        error: null
+      });
+      setSelectedWorkbookKey((previousKey) =>
+        resolveSelectedWorkbookKey({
+          requestedKey: previousKey || preferredWorkbookKey,
+          workbooks: cachedWorkbooks,
+          activeWorkbookKey
+        })
+      );
+      return cachedWorkbooks;
+    }
+
+    return refreshWorkbooks({ silent });
+  }, [activeWorkbookKey, preferredWorkbookKey, refreshWorkbooks, searchData?.status]);
 
   useEffect(() => {
     if (!preferredWorkbookKey) {
@@ -195,7 +249,7 @@ export function useWorkbookPickerData(searchData, options = {}) {
     }
 
     refreshWorkbooks({ silent: true });
-  }, [activeWorkbookKey, preferredWorkbookKey, refreshWorkbooks, searchData?.status, searchData?.workbook?.name, searchData?.workbook?.path]);
+  }, [activeWorkbookKey, preferredWorkbookKey, refreshWorkbooks, searchData?.status]);
 
   const selectedWorkbook = useMemo(() => {
     const source = Array.isArray(pickerState.workbooks) ? pickerState.workbooks : [];
@@ -284,6 +338,7 @@ export function useWorkbookPickerData(searchData, options = {}) {
     selectedWorkbookKey: selectedWorkbook?.key || '',
     setSelectedWorkbookKey: handleSelectedWorkbookChange,
     refreshWorkbooks,
+    ensureFreshWorkbooks,
     selectedWorkbookData,
     isSelectedActiveWorkbook,
     workbookListSignature

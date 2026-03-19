@@ -123,9 +123,13 @@ export function buildExplorerTree(searchDataOrOptions, personalStateArg) {
 
   registerWorkbook(activeWorkbook);
   openWorkbooks.forEach((workbook) => registerWorkbook(workbook));
+  const personalStatus = toSafeString(personalState?.status);
+  const personalWorkbookKnown =
+    personalState?.workbookFound ||
+    (Array.isArray(personalState?.macros) && personalState.macros.length > 0);
   if (
-    personalState?.status === 'ready' &&
-    (personalState?.workbookFound || (Array.isArray(personalState?.macros) && personalState.macros.length > 0))
+    (personalStatus === 'ready' || personalStatus === 'loading') &&
+    personalWorkbookKnown
   ) {
     registerWorkbook({
       name: PERSONAL_WORKBOOK_NAME,

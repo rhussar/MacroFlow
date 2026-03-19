@@ -15,6 +15,8 @@
     "package": "npm run build:window-helper && npm run build && electron-forge package",
     "make": "npm run build:window-helper && npm run build && electron-forge make",
     "publish": "npm run build:window-helper && npm run build && electron-forge publish",
+    "publish:update": "node scripts/publish-update.js",
+    "upload:update": "node scripts/publish-update.js --upload",
     "lint": "echo \"No linting configured\"",
     "build:window-helper": "dotnet publish native\\window-focus-helper\\WindowFocusHelper.csproj -c Release -r win-x64 --self-contained true /p:PublishSingleFile=true /p:EnableCompressionInSingleFile=true -o native\\window-focus-helper\\bin-helper"
   },

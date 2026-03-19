@@ -151,7 +151,11 @@ const ShortcutsPage = ({
     [displayedWorkbookData.macros, effectiveShortcutState.shortcutByMacroId]
   );
 
-  const personalMacrosState = usePersonalMacros(searchData, workbookPickerState.workbookListSignature);
+  const personalMacrosState = usePersonalMacros(searchData, workbookPickerState.workbookListSignature, {
+    includeShortcutAudit: false,
+    focusRefreshPolicy: 'always',
+    visibilityRefreshPolicy: 'always'
+  });
   const personalSectionVisible = String(selectedWorkbook?.name || '').trim().toUpperCase() !== PERSONAL_WORKBOOK_NAME;
   const personalShortcutState = useShortcutState({
     scope: 'workbook',
@@ -389,7 +393,10 @@ const ShortcutsPage = ({
     setWorkbookMenuOpen((previous) => {
       const next = !previous;
       if (next) {
-        workbookPickerState.refreshWorkbooks({ silent: true });
+        Promise.resolve(
+          workbookPickerState.ensureFreshWorkbooks?.({ silent: true })
+            || workbookPickerState.refreshWorkbooks({ silent: true })
+        );
       }
       return next;
     });

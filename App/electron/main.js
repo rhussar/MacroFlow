@@ -6,6 +6,7 @@ const { registerHandlers } = require('./ipc-handlers');
 const { installExcelAddin } = require('./excel-addin-installer');
 const excel = require('./excel-bridge');
 const logger = require('./logger');
+const { initAutoUpdater, stopAutoUpdater } = require('./auto-updater');
 
 const WINDOW_STARTUP_BG = '#00000000';
 
@@ -596,6 +597,9 @@ if (!gotLock) {
     registerHandlers();
     createWindow();
 
+    // Start auto-updater (production only, Windows only).
+    initAutoUpdater(mainWindow);
+
     // Install/update Excel add-in in the background so first paint is fast.
     installExcelAddin().catch((error) => {
       logger.error('[AddinInstaller] background install failed', { error: error.message });
@@ -630,6 +634,7 @@ if (!gotLock) {
       logger.warn('[Excel] failed to set shutdown latch', { error: error.message });
     }
     stopExcelWindowMonitor();
+    stopAutoUpdater();
 
     // Force V8 GC to release any lingering COM proxy wrappers before exit.
     if (typeof global.gc === 'function') {

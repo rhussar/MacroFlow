@@ -28,6 +28,7 @@ import {
   isValidVbaModuleName,
   shouldCommitModuleRename
 } from '../features/search/module-actions';
+import { getSearchStatusView } from '../features/search/search-selectors';
 
 const DEFAULT_MODULE_LABEL = 'New Module';
 const MODULE_PREFIX = 'MacroFlowModule';
@@ -99,7 +100,9 @@ const CreatePage = ({
   launchSource = '',
   onRefreshSearchData,
   chatOpen: chatOpenProp,
-  onChatToggle
+  onChatToggle,
+  searchData,
+  onSessionActiveChange
 }) => {
   const [prompt, setPrompt] = useState('');
   const [buildState, setBuildState] = useState(() =>
@@ -1330,6 +1333,12 @@ const CreatePage = ({
 
   const footerContent = getFooterContent();
   const showCodePanel = Boolean(sessionContext);
+
+  useEffect(() => {
+    if (typeof onSessionActiveChange === 'function') {
+      onSessionActiveChange(showCodePanel);
+    }
+  }, [showCodePanel, onSessionActiveChange]);
   const shortcutInputDisabled =
     !showCodePanel || !sessionMacroTarget || isBusy || shortcutSaving;
   const primaryActionLabel = hasPendingChanges ? 'Save changes' : 'Run macro';
@@ -1406,6 +1415,14 @@ const CreatePage = ({
         </div>
       )}
 
+      {isBusy && (
+        <div className="ai-loading-indicator">
+          <span className="ai-loading-dot" />
+          <span className="ai-loading-dot" />
+          <span className="ai-loading-dot" />
+        </div>
+      )}
+
       {errorInfo && (
         <div className="error-title">{errorInfo.title}</div>
       )}
@@ -1418,10 +1435,24 @@ const CreatePage = ({
     </div>
   );
 
+  const searchStatus = searchData?.status || 'idle';
+  const searchNotReady = searchStatus !== 'ready';
+
   return (
     <>
       <main className="main-content">
-        {!showCodePanel ? (
+        {searchNotReady ? (() => {
+          const statusView = getSearchStatusView(searchData);
+          return (
+            <div className={`search-status-panel search-status-${statusView.status}`}>
+              <div className="search-status-header">
+                {statusView.isLoading && <span className="status-spinner" />}
+                <span className="search-status-title">{statusView.title}</span>
+              </div>
+              <p className="search-status-message">{statusView.message}</p>
+            </div>
+          );
+        })() : !showCodePanel ? (
           buildState === 'idle' || (buildState === 'initializing' && !strictLaunchMode) ? (
             <div className="build-empty-state build-idle-state">
               <h1 className="build-empty-title">Create a Macro</h1>

@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { normalizeMacros } from '../../lib/search-data.js';
-import { PERSONAL_INITIAL_DEFER_MS, PERSONAL_REFRESH_TTL_MS } from './search-constants.js';
+import {
+  PERSONAL_FOREGROUND_REFRESH_COOLDOWN_MS,
+  PERSONAL_INITIAL_DEFER_MS,
+  PERSONAL_REFRESH_TTL_MS
+} from './search-constants.js';
 
 export const PERSONAL_WORKBOOK_NAME = 'PERSONAL.XLSB';
 
@@ -20,6 +24,7 @@ const INITIAL_PERSONAL_MACROS_STATE = {
 const sharedPersonalCache = {
   fetchedAt: 0,
   workbookListSignature: '',
+  includeShortcutAudit: false,
   data: null
 };
 
@@ -35,7 +40,10 @@ export function shouldUsePersonalCache({
   cachedData,
   cachedAt,
   cachedSignature,
+  cachedIncludeShortcutAudit = false,
   nextSignature,
+  nextIncludeShortcutAudit = false,
+  invalidateOnSignatureChange = true,
   now,
   ttlMs = PERSONAL_REFRESH_TTL_MS
 }) {
@@ -45,7 +53,11 @@ export function shouldUsePersonalCache({
 
   const normalizedCachedSignature = String(cachedSignature || '').trim();
   const normalizedNextSignature = resolvePersonalCacheSignature(nextSignature, normalizedCachedSignature);
-  if (normalizedCachedSignature !== normalizedNextSignature) {
+  if (invalidateOnSignatureChange && normalizedCachedSignature !== normalizedNextSignature) {
+    return false;
+  }
+
+  if (cachedIncludeShortcutAudit !== nextIncludeShortcutAudit) {
     return false;
   }
 
@@ -61,7 +73,58 @@ export function shouldDeferPersonalInitialFetch({
   return status === 'ready' && previousStatus !== 'ready' && !hasDeferredInitialFetch;
 }
 
-export function usePersonalMacros(searchData, workbookListSignature = '') {
+export function normalizePersonalForegroundRefreshPolicy(policy, fallback = 'stale') {
+  const normalizedFallback = String(fallback || '').trim().toLowerCase() || 'stale';
+  const normalizedPolicy = String(policy || '').trim().toLowerCase() || normalizedFallback;
+  if (normalizedPolicy === 'always' || normalizedPolicy === 'stale' || normalizedPolicy === 'never') {
+    return normalizedPolicy;
+  }
+  return normalizedFallback === 'always' || normalizedFallback === 'never' ? normalizedFallback : 'stale';
+}
+
+export function shouldRefreshPersonalOnForeground({
+  policy = 'stale',
+  cachedData,
+  cachedAt,
+  cachedSignature,
+  cachedIncludeShortcutAudit = false,
+  nextSignature,
+  nextIncludeShortcutAudit = false,
+  now,
+  ttlMs = PERSONAL_REFRESH_TTL_MS
+}) {
+  const normalizedPolicy = normalizePersonalForegroundRefreshPolicy(policy);
+  if (normalizedPolicy === 'never') {
+    return false;
+  }
+  if (normalizedPolicy === 'always') {
+    return true;
+  }
+  return !shouldUsePersonalCache({
+    cachedData,
+    cachedAt,
+    cachedSignature,
+    cachedIncludeShortcutAudit,
+    nextSignature,
+    nextIncludeShortcutAudit,
+    now,
+    ttlMs
+  });
+}
+
+export function usePersonalMacros(searchData, workbookListSignature = '', options = {}) {
+  const includeShortcutAudit = options?.includeShortcutAudit === true;
+  const focusRefreshPolicy = normalizePersonalForegroundRefreshPolicy(
+    options?.focusRefreshPolicy,
+    'stale'
+  );
+  const visibilityRefreshPolicy = normalizePersonalForegroundRefreshPolicy(
+    options?.visibilityRefreshPolicy,
+    focusRefreshPolicy
+  );
+  const foregroundRefreshCooldownMs = Number.isFinite(Number(options?.foregroundRefreshCooldownMs))
+    ? Math.max(0, Number(options.foregroundRefreshCooldownMs))
+    : PERSONAL_FOREGROUND_REFRESH_COOLDOWN_MS;
   const [personalState, setPersonalState] = useState(() => {
     const currentStatus = String(searchData?.status || 'idle');
     if (currentStatus !== 'ready') {
@@ -77,7 +140,10 @@ export function usePersonalMacros(searchData, workbookListSignature = '') {
       cachedData: sharedPersonalCache.data,
       cachedAt: sharedPersonalCache.fetchedAt,
       cachedSignature: sharedPersonalCache.workbookListSignature,
+      cachedIncludeShortcutAudit: sharedPersonalCache.includeShortcutAudit,
       nextSignature: normalizedWorkbookListSignature,
+      nextIncludeShortcutAudit: includeShortcutAudit,
+      invalidateOnSignatureChange: false,
       now
     });
 
@@ -85,19 +151,20 @@ export function usePersonalMacros(searchData, workbookListSignature = '') {
   });
   const [refreshTick, setRefreshTick] = useState(0);
   const requestSequence = useRef(0);
-  const cacheTtlTimerRef = useRef(null);
+  const deferredFetchTimerRef = useRef(null);
   const previousStatusRef = useRef('idle');
   const hasDeferredInitialFetchRef = useRef(false);
   const forceRefreshRef = useRef(false);
+  const lastForegroundRefreshAtRef = useRef(0);
   const refresh = useCallback(() => {
     forceRefreshRef.current = true;
     setRefreshTick((previous) => previous + 1);
   }, []);
 
   useEffect(() => {
-    if (cacheTtlTimerRef.current) {
-      clearTimeout(cacheTtlTimerRef.current);
-      cacheTtlTimerRef.current = null;
+    if (deferredFetchTimerRef.current) {
+      clearTimeout(deferredFetchTimerRef.current);
+      deferredFetchTimerRef.current = null;
     }
 
     const currentStatus = String(searchData?.status || 'idle');
@@ -106,10 +173,13 @@ export function usePersonalMacros(searchData, workbookListSignature = '') {
 
     if (currentStatus !== 'ready') {
       requestSequence.current += 1;
+      hasDeferredInitialFetchRef.current = false;
       sharedPersonalCache.fetchedAt = 0;
       sharedPersonalCache.workbookListSignature = '';
+      sharedPersonalCache.includeShortcutAudit = false;
       sharedPersonalCache.data = null;
       forceRefreshRef.current = false;
+      lastForegroundRefreshAtRef.current = 0;
       setPersonalState(INITIAL_PERSONAL_MACROS_STATE);
       return;
     }
@@ -122,35 +192,28 @@ export function usePersonalMacros(searchData, workbookListSignature = '') {
     const forceRefresh = forceRefreshRef.current;
     forceRefreshRef.current = false;
     const cached = sharedPersonalCache.data;
-    const cacheAgeMs = now - sharedPersonalCache.fetchedAt;
     const cacheIsFresh = !forceRefresh && shouldUsePersonalCache({
       cachedData: cached,
       cachedAt: sharedPersonalCache.fetchedAt,
       cachedSignature: sharedPersonalCache.workbookListSignature,
+      cachedIncludeShortcutAudit: sharedPersonalCache.includeShortcutAudit,
       nextSignature: normalizedWorkbookListSignature,
+      nextIncludeShortcutAudit: includeShortcutAudit,
+      invalidateOnSignatureChange: false,
       now
     });
 
     if (cacheIsFresh) {
       setPersonalState(cached);
-      const remainingMs = Math.max(50, PERSONAL_REFRESH_TTL_MS - cacheAgeMs);
-      cacheTtlTimerRef.current = window.setTimeout(() => {
-        setRefreshTick((previous) => previous + 1);
-      }, remainingMs);
-      return () => {
-        if (cacheTtlTimerRef.current) {
-          clearTimeout(cacheTtlTimerRef.current);
-          cacheTtlTimerRef.current = null;
-        }
-      };
+      return undefined;
     }
 
     if (
       PERSONAL_INITIAL_DEFER_MS > 0 &&
       shouldDeferPersonalInitialFetch({
-      status: currentStatus,
-      previousStatus,
-      hasDeferredInitialFetch: hasDeferredInitialFetchRef.current
+        status: currentStatus,
+        previousStatus,
+        hasDeferredInitialFetch: hasDeferredInitialFetchRef.current
       })
     ) {
       hasDeferredInitialFetchRef.current = true;
@@ -159,21 +222,22 @@ export function usePersonalMacros(searchData, workbookListSignature = '') {
         status: 'loading',
         error: null
       }));
-      cacheTtlTimerRef.current = window.setTimeout(() => {
+      deferredFetchTimerRef.current = window.setTimeout(() => {
         setRefreshTick((previous) => previous + 1);
       }, PERSONAL_INITIAL_DEFER_MS);
       return () => {
-        if (cacheTtlTimerRef.current) {
-          clearTimeout(cacheTtlTimerRef.current);
-          cacheTtlTimerRef.current = null;
+        if (deferredFetchTimerRef.current) {
+          clearTimeout(deferredFetchTimerRef.current);
+          deferredFetchTimerRef.current = null;
         }
       };
     }
 
-    const personalContextApi = window.excel?.personal?.context;
     const proceduresByWorkbookApi = window.excel?.vba?.proceduresByWorkbook;
     const personalStatusApi = window.excel?.personal?.status;
-    if (typeof personalContextApi !== 'function' && (!proceduresByWorkbookApi || !personalStatusApi)) {
+    const auditShortcutsByWorkbookApi = window.excel?.vba?.auditShortcutsByWorkbook;
+    const canLoadShortcutAudit = includeShortcutAudit && typeof auditShortcutsByWorkbookApi === 'function';
+    if (typeof proceduresByWorkbookApi !== 'function' || typeof personalStatusApi !== 'function') {
       setPersonalState({
         status: 'error',
         macros: [],
@@ -182,6 +246,8 @@ export function usePersonalMacros(searchData, workbookListSignature = '') {
         workbook: null,
         fileExists: false,
         workbookPath: '',
+        windowVisible: null,
+        windowHidden: false,
         error: { message: 'PERSONAL.XLSB APIs are unavailable.' }
       });
       return;
@@ -189,6 +255,7 @@ export function usePersonalMacros(searchData, workbookListSignature = '') {
 
     let cancelled = false;
     const requestId = ++requestSequence.current;
+    lastForegroundRefreshAtRef.current = Date.now();
 
     setPersonalState((previous) => ({
       ...previous,
@@ -206,44 +273,84 @@ export function usePersonalMacros(searchData, workbookListSignature = '') {
         let windowHidden = false;
         let macros = [];
         let shortcutAudit = null;
+        const statusResult = await personalStatusApi();
+        if (cancelled || requestId !== requestSequence.current) {
+          return;
+        }
 
-        if (typeof personalContextApi === 'function') {
-          const contextResult = await personalContextApi();
+        if (!statusResult?.success) {
+          const message = String(statusResult?.message || statusResult?.error || 'Unable to load PERSONAL.XLSB status.');
+          setPersonalState({
+            status: 'error',
+            macros: [],
+            shortcutAudit: null,
+            workbookFound: false,
+            workbook: null,
+            fileExists: false,
+            workbookPath: '',
+            windowVisible: null,
+            windowHidden: false,
+            error: { message }
+          });
+          return;
+        }
+
+        workbookFound = statusResult?.workbookFound !== false;
+        workbook = statusResult?.workbook || null;
+        workbookPath = String(statusResult?.workbookPath || workbook?.path || '').trim();
+        fileExists = statusResult?.fileExists === true || workbookFound;
+        windowVisible = typeof statusResult?.windowVisible === 'boolean'
+          ? statusResult.windowVisible
+          : null;
+        windowHidden = statusResult?.windowHidden === true;
+
+        setPersonalState({
+          status: 'loading',
+          macros: [],
+          shortcutAudit: null,
+          workbookFound,
+          workbook,
+          fileExists,
+          workbookPath,
+          windowVisible,
+          windowHidden,
+          error: null
+        });
+
+        if (workbookFound) {
+          const proceduresResult = await proceduresByWorkbookApi({
+            workbookName: PERSONAL_WORKBOOK_NAME,
+            workbookPath
+          });
           if (cancelled || requestId !== requestSequence.current) {
             return;
           }
 
-          if (!contextResult?.success) {
-            const message = String(contextResult?.message || contextResult?.error || 'Unable to load PERSONAL.XLSB context.');
+          if (!proceduresResult?.success) {
+            const message = String(proceduresResult?.message || proceduresResult?.error || 'Unable to load PERSONAL.XLSB macros.');
             setPersonalState({
               status: 'error',
               macros: [],
               shortcutAudit: null,
-              workbookFound: false,
-              workbook: null,
-              fileExists: false,
-              workbookPath: '',
-              windowVisible: null,
-              windowHidden: false,
+              workbookFound,
+              workbook,
+              fileExists,
+              workbookPath,
+              windowVisible,
+              windowHidden,
               error: { message }
             });
             return;
           }
 
-          workbookFound = contextResult?.workbookFound !== false;
-          workbook = contextResult?.workbook || null;
-          workbookPath = String(contextResult?.workbookPath || workbook?.path || '').trim();
-          fileExists = contextResult?.fileExists === true || workbookFound;
-          windowVisible = typeof contextResult?.windowVisible === 'boolean'
-            ? contextResult.windowVisible
-            : null;
-          windowHidden = contextResult?.windowHidden === true;
-          shortcutAudit = contextResult?.shortcutAudit && typeof contextResult.shortcutAudit === 'object'
-            ? contextResult.shortcutAudit
-            : null;
-
-          if (workbookFound) {
-            macros = normalizeMacros(contextResult?.procedures).map((m) => ({
+          if (proceduresResult?.workbookFound === false) {
+            workbookFound = false;
+            workbook = null;
+            macros = [];
+          } else {
+            workbook = proceduresResult?.workbook || workbook;
+            workbookPath = String(proceduresResult?.workbook?.path || workbookPath || '').trim();
+            macros = normalizeMacros(proceduresResult?.procedures).map((m) => ({
               ...m,
               workbookName: PERSONAL_WORKBOOK_NAME,
               workbookPath,
@@ -251,40 +358,11 @@ export function usePersonalMacros(searchData, workbookListSignature = '') {
               fullName: `${PERSONAL_WORKBOOK_NAME}!${m.fullName}`
             }));
           }
-        } else {
-          const statusResult = await personalStatusApi();
-          if (cancelled || requestId !== requestSequence.current) {
-            return;
-          }
+        }
 
-          if (!statusResult?.success) {
-            const message = String(statusResult?.message || statusResult?.error || 'Unable to load PERSONAL.XLSB status.');
-            setPersonalState({
-              status: 'error',
-              macros: [],
-              shortcutAudit: null,
-              workbookFound: false,
-              workbook: null,
-              fileExists: false,
-              workbookPath: '',
-              windowVisible: null,
-              windowHidden: false,
-              error: { message }
-            });
-            return;
-          }
-
-          workbookFound = statusResult?.workbookFound !== false;
-          workbook = statusResult?.workbook || null;
-          workbookPath = String(statusResult?.workbookPath || workbook?.path || '').trim();
-          fileExists = statusResult?.fileExists === true || workbookFound;
-          windowVisible = typeof statusResult?.windowVisible === 'boolean'
-            ? statusResult.windowVisible
-            : null;
-          windowHidden = statusResult?.windowHidden === true;
-
-          if (workbookFound) {
-            const proceduresResult = await proceduresByWorkbookApi({
+        if (workbookFound && canLoadShortcutAudit) {
+          try {
+            const auditResult = await auditShortcutsByWorkbookApi({
               workbookName: PERSONAL_WORKBOOK_NAME,
               workbookPath
             });
@@ -292,35 +370,16 @@ export function usePersonalMacros(searchData, workbookListSignature = '') {
               return;
             }
 
-            if (!proceduresResult?.success) {
-              const message = String(proceduresResult?.message || proceduresResult?.error || 'Unable to load PERSONAL.XLSB macros.');
-              setPersonalState({
-                status: 'error',
-                macros: [],
-                shortcutAudit: null,
-                workbookFound: false,
-                workbook: null,
-                fileExists,
-                workbookPath,
-                windowVisible,
-                windowHidden,
-                error: { message }
-              });
-              return;
-            }
-
-            if (proceduresResult?.workbookFound === false) {
-              workbookFound = false;
-              macros = [];
-            } else {
-              macros = normalizeMacros(proceduresResult?.procedures).map((m) => ({
-                ...m,
-                workbookName: PERSONAL_WORKBOOK_NAME,
-                workbookPath,
-                runTarget: `${PERSONAL_WORKBOOK_NAME}!${m.runTarget}`,
-                fullName: `${PERSONAL_WORKBOOK_NAME}!${m.fullName}`
-              }));
-            }
+            shortcutAudit = auditResult && typeof auditResult === 'object'
+              ? auditResult
+              : null;
+          } catch (error) {
+            shortcutAudit = {
+              success: false,
+              shortcuts: [],
+              unmapped: [],
+              message: String(error?.message || 'Shortcut audit failed.')
+            };
           }
         }
 
@@ -338,6 +397,7 @@ export function usePersonalMacros(searchData, workbookListSignature = '') {
         };
         sharedPersonalCache.fetchedAt = Date.now();
         sharedPersonalCache.workbookListSignature = normalizedWorkbookListSignature;
+        sharedPersonalCache.includeShortcutAudit = includeShortcutAudit;
         sharedPersonalCache.data = nextState;
         setPersonalState(nextState);
       } catch (error) {
@@ -347,17 +407,13 @@ export function usePersonalMacros(searchData, workbookListSignature = '') {
         const message = error?.message ? String(error.message) : 'Unable to load PERSONAL.XLSB macros.';
         sharedPersonalCache.fetchedAt = 0;
         sharedPersonalCache.workbookListSignature = '';
+        sharedPersonalCache.includeShortcutAudit = false;
         sharedPersonalCache.data = null;
         setPersonalState((previous) => ({
           ...previous,
           status: 'error',
+          macros: [],
           shortcutAudit: null,
-          workbookFound: false,
-          workbook: null,
-          fileExists: false,
-          workbookPath: '',
-          windowVisible: null,
-          windowHidden: false,
           error: { message }
         }));
       }
@@ -365,14 +421,77 @@ export function usePersonalMacros(searchData, workbookListSignature = '') {
 
     return () => {
       cancelled = true;
-      if (cacheTtlTimerRef.current) {
-        clearTimeout(cacheTtlTimerRef.current);
-        cacheTtlTimerRef.current = null;
+      if (deferredFetchTimerRef.current) {
+        clearTimeout(deferredFetchTimerRef.current);
+        deferredFetchTimerRef.current = null;
       }
     };
   }, [
     refreshTick,
     searchData?.status,
+    workbookListSignature,
+    includeShortcutAudit
+  ]);
+
+  useEffect(() => {
+    if (String(searchData?.status || 'idle') !== 'ready') {
+      return undefined;
+    }
+    if (focusRefreshPolicy === 'never' && visibilityRefreshPolicy === 'never') {
+      return undefined;
+    }
+
+    const maybeRefresh = (policy) => {
+      const now = Date.now();
+      if (now - lastForegroundRefreshAtRef.current < foregroundRefreshCooldownMs) {
+        return;
+      }
+
+      const normalizedWorkbookListSignature = resolvePersonalCacheSignature(
+        workbookListSignature,
+        sharedPersonalCache.workbookListSignature
+      );
+      const shouldRefresh = shouldRefreshPersonalOnForeground({
+        policy,
+        cachedData: sharedPersonalCache.data,
+        cachedAt: sharedPersonalCache.fetchedAt,
+        cachedSignature: sharedPersonalCache.workbookListSignature,
+        cachedIncludeShortcutAudit: sharedPersonalCache.includeShortcutAudit,
+        nextSignature: normalizedWorkbookListSignature,
+        nextIncludeShortcutAudit: includeShortcutAudit,
+        now
+      });
+
+      if (!shouldRefresh) {
+        return;
+      }
+
+      lastForegroundRefreshAtRef.current = now;
+      refresh();
+    };
+
+    const handleFocus = () => {
+      maybeRefresh(focusRefreshPolicy);
+    };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        maybeRefresh(visibilityRefreshPolicy);
+      }
+    };
+
+    window.addEventListener('focus', handleFocus);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      window.removeEventListener('focus', handleFocus);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [
+    focusRefreshPolicy,
+    foregroundRefreshCooldownMs,
+    refresh,
+    searchData?.status,
+    includeShortcutAudit,
+    visibilityRefreshPolicy,
     workbookListSignature
   ]);
 

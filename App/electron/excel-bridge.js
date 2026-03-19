@@ -6,10 +6,22 @@
  */
 
 const { execSync } = require('node:child_process');
+const { AsyncLocalStorage } = require('node:async_hooks');
 const fs = require('node:fs');
 const path = require('node:path');
 const winax = require('winax');
 const logger = require('./logger');
+
+const operationContextStore = new AsyncLocalStorage();
+
+function normalizeOperationContext(context = {}) {
+  const channel = String(context?.channel || '').trim() || 'unknown';
+  const opId = Number(context?.opId);
+  return {
+    channel,
+    opId: Number.isFinite(opId) && opId > 0 ? opId : null
+  };
+}
 
 function parseTasklistRows(output) {
   return String(output || '')
@@ -85,6 +97,17 @@ class ExcelBridge {
 
   isShuttingDown() {
     return this._isShuttingDown;
+  }
+
+  runWithOperationContext(context, operation) {
+    if (typeof operation !== 'function') {
+      throw new TypeError('ExcelBridge operation context requires a callback.');
+    }
+    return operationContextStore.run(normalizeOperationContext(context), operation);
+  }
+
+  _getOperationContext() {
+    return normalizeOperationContext(operationContextStore.getStore());
   }
 
   _resetWindowlessLifecycle(reason = '') {
@@ -214,29 +237,32 @@ class ExcelBridge {
   getApp(options = {}) {
     const { activate = true } = options;
     const attempt = ++this._attachAttemptSeq;
-
-    logger.debug('[ExcelBridge] COM attach requested', {
+    const startedAt = Date.now();
+    const operationContext = this._getOperationContext();
+    const baseLogMeta = {
       attempt,
       activate,
+      channel: operationContext.channel,
+      opId: operationContext.opId,
       shuttingDown: this._isShuttingDown
-    });
+    };
 
     if (this._isShuttingDown) {
-      logger.warn('[ExcelBridge] COM attach blocked by shutdown latch', { attempt, activate });
+      logger.warn('[ExcelBridge] COM attach blocked by shutdown latch', baseLogMeta);
       throw new Error('APP_SHUTTING_DOWN: MacroFlow is closing and Excel operations are paused.');
     }
 
     const processIds = this._listExcelProcessIds();
     if (processIds.length === 0) {
       this._resetWindowlessLifecycle('no_processes_preflight');
-      logger.debug('[ExcelBridge] COM attach preflight found no Excel processes', { attempt });
+      logger.debug('[ExcelBridge] COM attach preflight found no Excel processes', baseLogMeta);
       throw new Error('NO_EXCEL: Excel is not running. Please open Excel first.');
     }
     const processSignature = this._buildProcessSignature(processIds);
     const hasVisibleWindowPreflight = this._hasVisibleExcelWindow(processIds);
     if (!hasVisibleWindowPreflight) {
       logger.info('[ExcelBridge] preflight_no_visible_windows', {
-        attempt,
+        ...baseLogMeta,
         processCount: processIds.length,
         processSignature
       });
@@ -267,7 +293,7 @@ class ExcelBridge {
         if (windowCount < 1) {
           if (attachProcessSetChanged) {
             logger.warn('[ExcelBridge] attach_process_cycle_changed_while_windowless', {
-              attempt,
+              ...baseLogMeta,
               processIdsBeforeAttach: processIds,
               processIdsAfterAttach: afterAttachProcessIds
             });
@@ -287,7 +313,7 @@ class ExcelBridge {
             this._windowlessProcessSignature !== processSignature
           ) {
             logger.info('[ExcelBridge] windowless_cycle_changed', {
-              attempt,
+              ...baseLogMeta,
               previousProcessSignature: this._windowlessProcessSignature,
               processSignature
             });
@@ -300,7 +326,7 @@ class ExcelBridge {
             this._windowlessProcessSignature = processSignature;
             this._windowlessFirstDetectedAt = nowMs;
             logger.info('[ExcelBridge] windowless_detected', {
-              attempt,
+              ...baseLogMeta,
               processCount: processIds.length,
               processSignature
             });
@@ -319,7 +345,7 @@ class ExcelBridge {
           if (shouldAttemptQuit) {
             const quitAttemptNumber = this._windowlessQuitAttempts + 1;
             logger.info('[ExcelBridge] windowless_quit_attempted', {
-              attempt,
+              ...baseLogMeta,
               quitAttemptNumber,
               processCount: processIds.length,
               elapsedSinceFirstMs
@@ -351,14 +377,16 @@ class ExcelBridge {
         this._safeRelease(windowsProxy);
       }
 
-      logger.debug('[ExcelBridge] COM attach succeeded', {
-        attempt,
+      logger.debug('[ExcelBridge] COM attach', {
+        ...baseLogMeta,
+        success: true,
+        durationMs: Date.now() - startedAt,
         processCount: processIds.length,
         processCountAfterAttach: afterAttachProcessIds.length
       });
       if (afterAttachProcessIds.length > processIds.length) {
         logger.warn('[ExcelBridge] Excel process count increased after COM attach', {
-          attempt,
+          ...baseLogMeta,
           processIdsBeforeAttach: processIds,
           processIdsAfterAttach: afterAttachProcessIds
         });
@@ -371,8 +399,10 @@ class ExcelBridge {
       excel = null;
 
       const remainingProcessIds = this._listExcelProcessIds();
-      logger.warn('[ExcelBridge] COM attach failed', {
-        attempt,
+      logger.warn('[ExcelBridge] COM attach', {
+        ...baseLogMeta,
+        success: false,
+        durationMs: Date.now() - startedAt,
         processCountBefore: processIds.length,
         processCountAfter: remainingProcessIds.length,
         error: String(error?.message || error || 'Unknown COM attach error')

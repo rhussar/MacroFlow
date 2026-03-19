@@ -35,6 +35,8 @@ function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [actionState, setActionState] = useState('idle');
   const [actionMessage, setActionMessage] = useState('');
+  const [updateReady, setUpdateReady] = useState(false);
+  const [updateVersion, setUpdateVersion] = useState('');
   const [selectedWorkbookForBuild, setSelectedWorkbookForBuild] = useState(null);
   const [buildLaunchContext, setBuildLaunchContext] = useState(() => ({
     mode: 'new_module',
@@ -43,6 +45,7 @@ function App() {
     originMode: 'shortcuts'
   }));
   const [buildChatOpen, setBuildChatOpen] = useState(true);
+  const [buildSessionActive, setBuildSessionActive] = useState(false);
   const [filesSidebarOpen, setFilesSidebarOpen] = useState(true);
   const loadSearchDataRef = useRef(null);
   const shortcutSaveInFlightRef = useRef(false);
@@ -85,6 +88,18 @@ function App() {
 
     return () => window.clearTimeout(timeoutId);
   }, [actionState, actionMessage]);
+
+  // Subscribe to auto-updater status events from the main process.
+  useEffect(() => {
+    if (!window.excel?.updater?.onStatus) return undefined;
+    const unsub = window.excel.updater.onStatus((payload) => {
+      if (payload.status === 'ready') {
+        setUpdateReady(true);
+        setUpdateVersion(payload.version || '');
+      }
+    });
+    return unsub;
+  }, []);
 
   const {
     selectedMacro,
@@ -272,6 +287,7 @@ function App() {
   }, [openBuildMode]);
 
   const handleCreateBack = useCallback(() => {
+    setBuildSessionActive(false);
     if (buildLaunchContext.originMode === 'files') {
       setMode('files');
       return;
@@ -286,6 +302,7 @@ function App() {
     if (newMode === 'create') {
       openBuildMode(null, { mode: 'new_module', source: 'tab', originMode: 'shortcuts' });
     } else {
+      setBuildSessionActive(false);
       setMode(newMode);
     }
   }, [openBuildMode]);
@@ -333,6 +350,8 @@ function App() {
             onRefreshSearchData={loadSearchData}
             chatOpen={buildChatOpen}
             onChatToggle={toggleBuildChat}
+            searchData={searchData}
+            onSessionActiveChange={setBuildSessionActive}
           />
         );
 
@@ -363,7 +382,7 @@ function App() {
       <header className="header">
         <div className="drag-region" />
         <div className="header-left">
-          {(mode === 'create' || mode === 'files') && (
+          {((mode === 'create' && buildSessionActive) || mode === 'files') && (
             <button
               className="sidebar-toggle-btn"
               onClick={mode === 'create' ? toggleBuildChat : toggleFilesSidebar}
@@ -418,6 +437,28 @@ function App() {
                 : 'Action failed'}
           </span>
           <span className="app-bottom-status-message">{actionMessage}</span>
+        </div>
+      )}
+
+      {/* Update available banner */}
+      {updateReady && (
+        <div className="app-update-banner">
+          <span className="app-update-banner-text">
+            Update{updateVersion ? ` ${updateVersion}` : ''} ready
+          </span>
+          <button
+            className="app-update-banner-btn"
+            onClick={() => window.excel?.updater?.quitAndInstall()}
+          >
+            Restart
+          </button>
+          <button
+            className="app-update-banner-dismiss"
+            onClick={() => setUpdateReady(false)}
+            title="Dismiss"
+          >
+            &times;
+          </button>
         </div>
       )}
 

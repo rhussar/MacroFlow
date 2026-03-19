@@ -91,9 +91,14 @@ const FilesPage = ({
   const {
     workbooks: explorerWorkbooks,
     modules: explorerModules,
+    workbookListSignature,
     refreshExplorerAllFiles
   } = useExplorerAllFilesData(searchData);
-  const personalState = usePersonalMacros(searchData);
+  const personalState = usePersonalMacros(searchData, workbookListSignature, {
+    includeShortcutAudit: false,
+    focusRefreshPolicy: 'stale',
+    visibilityRefreshPolicy: 'stale'
+  });
 
   // Build the full tree
   const tree = useMemo(

@@ -401,6 +401,35 @@ contextBridge.exposeInMainWorld('excel', {
   },
 
   // ==========================================================================
+  // AUTO-UPDATER
+  // ==========================================================================
+  updater: {
+    /**
+     * Subscribe to update status events from the main process.
+     * Payloads: { status: 'downloading' | 'ready' | 'error', version?: string, message?: string }
+     * @param {(payload: object) => void} callback
+     * @returns {() => void} unsubscribe function
+     */
+    onStatus: (callback) => {
+      if (typeof callback !== 'function') {
+        return () => {};
+      }
+      const listener = (_event, payload) => callback(payload);
+      ipcRenderer.on('updater:status', listener);
+      return () => ipcRenderer.removeListener('updater:status', listener);
+    },
+
+    /** Quit the app and install the downloaded update. */
+    quitAndInstall: () => ipcRenderer.send('updater:quit-and-install'),
+
+    /** Manually trigger an update check. */
+    checkNow: () => ipcRenderer.invoke('updater:check-now'),
+
+    /** Get current updater state. */
+    getStatus: () => ipcRenderer.invoke('updater:status'),
+  },
+
+  // ==========================================================================
   // APP CONTROLS
   // ==========================================================================
   app: {

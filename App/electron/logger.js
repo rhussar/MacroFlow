@@ -35,13 +35,39 @@ function stringifyMeta(meta) {
   }
 }
 
+function normalizeLevel(level) {
+  const normalizedLevel = String(level || '').trim().toLowerCase();
+  return LOG_LEVELS.has(normalizedLevel) ? normalizedLevel : 'info';
+}
+
+function buildText(message, meta) {
+  return `${message}${stringifyMeta(meta)}`;
+}
+
 function log(level, message, meta) {
-  const text = `${message}${stringifyMeta(meta)}`;
-  if (typeof baseLogger[level] === 'function') {
-    baseLogger[level](text);
+  const normalizedLevel = normalizeLevel(level);
+  const text = buildText(message, meta);
+  if (typeof baseLogger[normalizedLevel] === 'function') {
+    baseLogger[normalizedLevel](text);
     return;
   }
   baseLogger.info(text);
+}
+
+function writeToFileOnly(level, message, meta) {
+  const normalizedLevel = normalizeLevel(level);
+  const text = buildText(message, meta);
+
+  if (typeof baseLogger?.transports?.file === 'function') {
+    baseLogger.transports.file({
+      data: [text],
+      date: new Date(),
+      level: normalizedLevel
+    });
+    return;
+  }
+
+  log(normalizedLevel, message, meta);
 }
 
 module.exports = {
@@ -56,5 +82,8 @@ module.exports = {
   },
   error(message, meta) {
     log('error', message, meta);
+  },
+  writeToFileOnly(level, message, meta) {
+    writeToFileOnly(level, message, meta);
   }
 };

@@ -91,6 +91,32 @@ test('buildExplorerTree includes other open workbooks from list context', () => 
   );
 });
 
+test('buildExplorerTree includes PERSONAL workbook while macros are still loading', () => {
+  const tree = buildExplorerTree({
+    searchData: {
+      status: 'ready',
+      workbook: { name: 'Active.xlsm', path: 'C:/Active.xlsm' },
+      modules: [],
+      macros: []
+    },
+    personalState: {
+      status: 'loading',
+      workbookFound: true,
+      workbook: {
+        name: 'PERSONAL.XLSB',
+        path: 'C:/Users/ronan/AppData/Roaming/Microsoft/Excel/XLSTART/PERSONAL.XLSB'
+      },
+      macros: []
+    },
+    workbooks: [],
+    allFilesModules: []
+  });
+
+  assert.equal(tree.length, 2);
+  assert.equal(tree[1].label, 'PERSONAL.XLSB (Global Macros)');
+  assert.deepEqual(tree[1].children, []);
+});
+
 test('getDefaultExpandedIds starts all workbook roots collapsed', () => {
   const ids = getDefaultExpandedIds([
     { id: 'wb::active', nodeType: 'workbook', label: 'Active.xlsm', children: [] },

@@ -945,6 +945,7 @@ test('workbook:context burst cache invalidates after reconnect and resolve succe
 test('personal channels route to bridge and return payloads', async () => {
   let statusCalls = 0;
   let contextCalls = 0;
+  let contextArgs = null;
   let openCalls = 0;
   let createCalls = 0;
 
@@ -960,8 +961,9 @@ test('personal channels route to bridge and return payloads', async () => {
           workbookPath: 'C:\\XLSTART\\PERSONAL.XLSB'
         };
       },
-      getPersonalWorkbookContext: () => {
+      getPersonalWorkbookContext: (args) => {
         contextCalls += 1;
+        contextArgs = args;
         return {
           success: true,
           workbookFound: true,
@@ -1009,6 +1011,12 @@ test('personal channels route to bridge and return payloads', async () => {
   assert.equal(contextResult.workbookFound, true);
   assert.equal(contextResult.procedures.length, 1);
   assert.equal(contextCalls, 1);
+  assert.deepEqual(contextArgs, { includeShortcutAudit: true });
+
+  const noAuditContextResult = await handlers['personal:context'](null, { includeShortcutAudit: false });
+  assert.equal(noAuditContextResult.success, true);
+  assert.equal(contextCalls, 2);
+  assert.deepEqual(contextArgs, { includeShortcutAudit: false });
 
   const openResult = await handlers['personal:open']();
   assert.equal(openResult.success, true);

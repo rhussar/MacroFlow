@@ -1995,7 +1995,7 @@ class ExcelBridge {
    * }}
    */
   getPersonalWorkbookContext(options = {}) {
-    const { activate = true } = options;
+    const { activate = true, includeShortcutAudit = true } = options;
     let workbookPath = '';
     let fileExists = false;
 
@@ -2012,7 +2012,9 @@ class ExcelBridge {
         windowVisible: null,
         windowHidden: false,
         procedures: [],
-        shortcutAudit: { success: false, shortcuts: [], unmapped: [], message: error.message },
+        shortcutAudit: includeShortcutAudit
+          ? { success: false, shortcuts: [], unmapped: [], message: error.message }
+          : null,
         message: error.message
       };
     }
@@ -2034,7 +2036,9 @@ class ExcelBridge {
             windowVisible: null,
             windowHidden: false,
             procedures: [],
-            shortcutAudit: { success: true, shortcuts: [], unmapped: [] },
+            shortcutAudit: includeShortcutAudit
+              ? { success: true, shortcuts: [], unmapped: [] }
+              : null,
             message: fileExists
               ? 'PERSONAL.XLSB is not open.'
               : 'PERSONAL.XLSB was not found in XLSTART.'
@@ -2046,21 +2050,24 @@ class ExcelBridge {
           vbProject = this._getVBProjectForWorkbook(workbook);
           const procedures = this._listProceduresForWorkbook(workbook, vbProject);
           const windowState = this._getWorkbookWindowState(workbook);
-          let shortcutAudit = {
-            success: true,
-            shortcuts: [],
-            unmapped: [],
-            note: 'Excel does not expose global shortcut listings. Only MacroFlow-tracked shortcuts are available.'
-          };
-          try {
-            shortcutAudit = this._auditShortcutsForWorkbook(workbook);
-          } catch (error) {
+          let shortcutAudit = null;
+          if (includeShortcutAudit) {
             shortcutAudit = {
-              success: false,
+              success: true,
               shortcuts: [],
               unmapped: [],
-              message: String(error?.message || 'Shortcut audit failed.')
+              note: 'Excel does not expose global shortcut listings. Only MacroFlow-tracked shortcuts are available.'
             };
+            try {
+              shortcutAudit = this._auditShortcutsForWorkbook(workbook);
+            } catch (error) {
+              shortcutAudit = {
+                success: false,
+                shortcuts: [],
+                unmapped: [],
+                message: String(error?.message || 'Shortcut audit failed.')
+              };
+            }
           }
 
           return {
@@ -2088,7 +2095,9 @@ class ExcelBridge {
         windowVisible: null,
         windowHidden: false,
         procedures: [],
-        shortcutAudit: { success: false, shortcuts: [], unmapped: [], message: error.message },
+        shortcutAudit: includeShortcutAudit
+          ? { success: false, shortcuts: [], unmapped: [], message: error.message }
+          : null,
         message: error.message
       };
     }

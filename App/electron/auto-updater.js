@@ -222,22 +222,8 @@ function scheduleStartupFallback() {
 }
 
 function initAutoUpdater(mainWindow) {
-  const availability = getUpdaterAvailability();
-  if (!availability.available) {
-    if (availability.reason === 'no feed URL configured') {
-      logger.warn(
-        '[AutoUpdater] skipped - MACROFLOW_UPDATE_URL not set. ' +
-        'Set this env var to enable auto-updates.'
-      );
-      return;
-    }
-
-    logger.info('[AutoUpdater] skipped - ' + availability.reason);
-    return;
-  }
-
-  mainWindowRef = mainWindow;
-
+  // Register IPC handlers regardless of availability so the renderer
+  // never hits "No handler registered" errors (e.g. in dev mode).
   if (!ipcRegistered) {
     ipcRegistered = true;
 
@@ -273,6 +259,22 @@ function initAutoUpdater(mainWindow) {
       markStartupSettled();
     });
   }
+
+  const availability = getUpdaterAvailability();
+  if (!availability.available) {
+    if (availability.reason === 'no feed URL configured') {
+      logger.warn(
+        '[AutoUpdater] skipped - MACROFLOW_UPDATE_URL not set. ' +
+        'Set this env var to enable auto-updates.'
+      );
+      return;
+    }
+
+    logger.info('[AutoUpdater] skipped - ' + availability.reason);
+    return;
+  }
+
+  mainWindowRef = mainWindow;
 
   logger.info('[AutoUpdater] deferring background checks until startup settled', {
     fallbackMs: STARTUP_SETTLED_FALLBACK_MS,

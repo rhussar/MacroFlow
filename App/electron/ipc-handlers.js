@@ -748,6 +748,12 @@ function registerHandlers() {
     }
   });
 
+  ipcMain.on('app:open-external', (_event, url) => {
+    if (typeof url === 'string' && (url.startsWith('https://') || url.startsWith('http://') || url.startsWith('mailto:'))) {
+      shell.openExternal(url).catch(() => {});
+    }
+  });
+
   ipcMain.on('app:close', () => {
     if (closeRequested) {
       logger.info('Lifecycle', 'app:close ignored (close already requested)');
@@ -1752,13 +1758,37 @@ function registerHandlers() {
    * Channel: 'personal:context'
    * Returns: { success, workbookFound, workbook, fileExists, workbookPath, procedures, shortcutAudit, message? }
    */
-  ipcMain.handle('personal:context', async () => {
-    logIpc('personal:context', 'start');
-    const result = await withChannelComRelease('personal:context', () => excel.getPersonalWorkbookContext());
+  ipcMain.handle('personal:context', async (_, args) => {
+    const payload = args && typeof args === 'object' ? args : {};
+    if (
+      !hasOnlyKeys(payload, ['includeShortcutAudit']) ||
+      (payload.includeShortcutAudit !== undefined && typeof payload.includeShortcutAudit !== 'boolean')
+    ) {
+      return {
+        success: false,
+        workbookFound: false,
+        workbook: null,
+        fileExists: false,
+        workbookPath: '',
+        windowVisible: null,
+        windowHidden: false,
+        procedures: [],
+        shortcutAudit: null,
+        message: 'VALIDATION_FAILED: includeShortcutAudit must be a boolean when provided.'
+      };
+    }
+
+    const includeShortcutAudit = payload.includeShortcutAudit !== false;
+    logIpc('personal:context', 'start', { includeShortcutAudit });
+    const result = await withChannelComRelease(
+      'personal:context',
+      () => excel.getPersonalWorkbookContext({ includeShortcutAudit })
+    );
     logIpc('personal:context', 'end', {
       success: result.success,
       workbookFound: result.workbookFound,
-      procedures: result.procedures?.length
+      procedures: result.procedures?.length,
+      includeShortcutAudit
     });
     return result;
   });

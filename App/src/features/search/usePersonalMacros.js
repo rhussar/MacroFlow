@@ -181,6 +181,7 @@ export function shouldSkipPersonalForegroundRefresh({
 
 export function usePersonalMacros(searchData, workbookListSignature = '', options = {}) {
   const includeShortcutAudit = options?.includeShortcutAudit === true;
+  const preferBundledContext = options?.preferBundledContext === true;
   const focusRefreshPolicy = normalizePersonalForegroundRefreshPolicy(
     options?.focusRefreshPolicy,
     'stale'
@@ -319,11 +320,16 @@ export function usePersonalMacros(searchData, workbookListSignature = '', option
       };
     }
 
-    const proceduresByWorkbookApi = window.excel?.vba?.proceduresByWorkbook;
     const personalStatusApi = window.excel?.personal?.status;
+    const personalContextApi = window.excel?.personal?.context;
+    const proceduresByWorkbookApi = window.excel?.vba?.proceduresByWorkbook;
     const auditShortcutsByWorkbookApi = window.excel?.vba?.auditShortcutsByWorkbook;
     const canLoadShortcutAudit = includeShortcutAudit && typeof auditShortcutsByWorkbookApi === 'function';
-    if (typeof proceduresByWorkbookApi !== 'function' || typeof personalStatusApi !== 'function') {
+    const canUseBundledContext = preferBundledContext && typeof personalContextApi === 'function';
+    if (
+      (!canUseBundledContext && (typeof proceduresByWorkbookApi !== 'function' || typeof personalStatusApi !== 'function'))
+      || (canUseBundledContext && typeof personalContextApi !== 'function')
+    ) {
       setPersonalState({
         status: 'error',
         macros: [],
@@ -360,6 +366,75 @@ export function usePersonalMacros(searchData, workbookListSignature = '', option
         let windowHidden = false;
         let macros = [];
         let shortcutAudit = null;
+
+        if (canUseBundledContext) {
+          const contextResult = await personalContextApi({ includeShortcutAudit });
+          if (cancelled || requestId !== requestSequence.current) {
+            return;
+          }
+
+          if (!contextResult?.success) {
+            const message = String(contextResult?.message || contextResult?.error || 'Unable to load PERSONAL.XLSB macros.');
+            setPersonalState({
+              status: 'error',
+              macros: [],
+              shortcutAudit: null,
+              workbookFound: false,
+              workbook: null,
+              fileExists: false,
+              workbookPath: '',
+              windowVisible: null,
+              windowHidden: false,
+              error: { message }
+            });
+            return;
+          }
+
+          workbookFound = contextResult?.workbookFound !== false;
+          workbook = contextResult?.workbook || null;
+          workbookPath = String(contextResult?.workbookPath || workbook?.path || '').trim();
+          fileExists = contextResult?.fileExists === true || workbookFound;
+          windowVisible = typeof contextResult?.windowVisible === 'boolean'
+            ? contextResult.windowVisible
+            : null;
+          windowHidden = contextResult?.windowHidden === true;
+          macros = workbookFound
+            ? normalizeMacros(contextResult?.procedures).map((m) => ({
+                ...m,
+                workbookName: PERSONAL_WORKBOOK_NAME,
+                workbookPath,
+                runTarget: `${PERSONAL_WORKBOOK_NAME}!${m.runTarget}`,
+                fullName: `${PERSONAL_WORKBOOK_NAME}!${m.fullName}`
+              }))
+            : [];
+          shortcutAudit = includeShortcutAudit && contextResult?.shortcutAudit && typeof contextResult.shortcutAudit === 'object'
+            ? contextResult.shortcutAudit
+            : null;
+
+          const nextState = {
+            status: 'ready',
+            macros,
+            shortcutAudit,
+            workbookFound,
+            workbook,
+            fileExists,
+            workbookPath,
+            windowVisible,
+            windowHidden,
+            error: null
+          };
+          const completedAt = Date.now();
+          setSharedPersonalCache({
+            fetchedAt: completedAt,
+            workbookListSignature: normalizedWorkbookListSignature,
+            includeShortcutAudit,
+            data: nextState
+          });
+          lastSuccessfulLoadAtRef.current = completedAt;
+          setPersonalState(nextState);
+          return;
+        }
+
         const statusResult = await personalStatusApi();
         if (cancelled || requestId !== requestSequence.current) {
           return;
@@ -524,7 +599,8 @@ export function usePersonalMacros(searchData, workbookListSignature = '', option
     refreshTick,
     searchData?.status,
     workbookListSignature,
-    includeShortcutAudit
+    includeShortcutAudit,
+    preferBundledContext
   ]);
 
   useEffect(() => {

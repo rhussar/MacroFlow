@@ -161,6 +161,7 @@ const ShortcutsPage = ({
 
   const personalMacrosState = usePersonalMacros(searchData, workbookPickerState.workbookListSignature, {
     includeShortcutAudit: false,
+    preferBundledContext: true,
     focusRefreshPolicy: 'always',
     visibilityRefreshPolicy: 'always',
     foregroundQuietWindowMs: PERSONAL_FOREGROUND_QUIET_MS

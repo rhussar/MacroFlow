@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
+import { CloseIcon, MacroFlowLogo } from './icons';
 
 /* global __APP_VERSION__ */
 
@@ -8,10 +9,8 @@ import React, { useState, useEffect } from 'react';
  * Fallback: manual license key entry (for offline / enterprise users).
  */
 export default function LicenseGate({ onLicensed }) {
-  const [key, setKey] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const [showManualKey, setShowManualKey] = useState(false);
 
   // On mount, check if the main process already validated a cached license.
   useEffect(() => {
@@ -51,113 +50,53 @@ export default function LicenseGate({ onLicensed }) {
     }
   };
 
-  const handleManualActivate = async () => {
-    const trimmed = key.trim();
-    if (!trimmed) {
-      setError('Please enter a license key.');
-      return;
-    }
-
-    setLoading(true);
-    setError('');
-
-    try {
-      const result = await window.excel.license.activate(trimmed);
-      if (result.success) {
-        onLicensed(result.licenseData);
-      } else {
-        setError(result.message || 'Activation failed.');
-      }
-    } catch {
-      setError('Something went wrong. Please try again.');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleKeyDown = (e) => {
-    if (e.key === 'Enter' && !loading) {
-      handleManualActivate();
-    }
-  };
 
   return (
     <div className="app-container">
       <div className="license-gate">
-        <div className="license-gate-header">
-          <div className="license-gate-title">MacroFlow</div>
-          <div className="license-gate-version">v{__APP_VERSION__}</div>
-        </div>
-
-        <div className="license-gate-body">
-          {!showManualKey ? (
-            <>
-              <button
-                className="license-gate-btn"
-                onClick={handleSignIn}
-                disabled={loading}
-              >
-                {loading ? 'Signing in...' : 'Sign In'}
-              </button>
-
-              {error && <div className="license-gate-error">{error}</div>}
-
-              <button
-                type="button"
-                className="license-gate-link license-gate-toggle"
-                onClick={() => { setShowManualKey(true); setError(''); }}
-              >
-                Use a license key instead
-              </button>
-            </>
-          ) : (
-            <>
-              <div className="license-gate-label">Enter your license key</div>
-              <input
-                className={`license-gate-input ${error ? 'has-error' : ''}`}
-                type="text"
-                value={key}
-                onChange={(e) => { setKey(e.target.value); setError(''); }}
-                onKeyDown={handleKeyDown}
-                placeholder="XXXX-XXXX-XXXX-XXXX"
-                disabled={loading}
-                autoFocus
-                spellCheck={false}
-              />
-              {error && <div className="license-gate-error">{error}</div>}
-              <button
-                className="license-gate-btn"
-                onClick={handleManualActivate}
-                disabled={loading}
-              >
-                {loading ? 'Activating...' : 'Activate'}
-              </button>
-
-              <button
-                type="button"
-                className="license-gate-link license-gate-toggle"
-                onClick={() => { setShowManualKey(false); setError(''); }}
-              >
-                Sign in with your account instead
-              </button>
-            </>
-          )}
-        </div>
-
-        <div className="license-gate-footer">
-          <span className="license-gate-footer-text">
-            New to MacroFlow? Sign in to get started.
-          </span>
-        </div>
-
-        {/* Window controls */}
+        {/* Close button */}
         <div className="license-gate-controls">
           <button
             className="window-control-btn close"
             onClick={() => window.excel?.app?.close?.()}
             title="Close"
           >
-            &times;
+            <CloseIcon size={18} />
+          </button>
+        </div>
+
+        {/* Branding */}
+        <div className="license-gate-branding">
+          <MacroFlowLogo size={96} />
+          <div className="license-gate-title">MacroFlow</div>
+          <div className="license-gate-subtitle">Turn Hours into Seconds</div>
+        </div>
+
+        {/* Body */}
+        <div className="license-gate-body">
+          <button
+            className="license-gate-btn"
+            onClick={handleSignIn}
+            disabled={loading}
+          >
+            {loading ? 'Signing in...' : 'Get Started'}
+          </button>
+
+          {error && <div className="license-gate-error">{error}</div>}
+
+          <div className="license-gate-beta">
+            Beta access. Free for early users.
+          </div>
+        </div>
+
+        {/* Footer */}
+        <div className="license-gate-footer">
+          <span className="license-gate-version">v{__APP_VERSION__}</span>
+          <button
+            className="license-gate-footer-text license-gate-link"
+            onClick={() => window.excel?.app?.openExternal?.('mailto:ronan@macroflow.ai?subject=MacroFlow%20Support%20Ticket')}
+          >
+            Need help? ronan@macroflow.ai
           </button>
         </div>
       </div>

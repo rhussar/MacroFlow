@@ -349,6 +349,46 @@ async function activateLicense(licenseKey) {
 }
 
 /**
+ * Activate a license via Auth0 login.
+ * After Auth0 authentication, the Auth0 Action stores the Keygen license key
+ * in the user's ID token claims (app_metadata.license_key). This function
+ * reads that key and activates it on this machine.
+ */
+async function activateFromAuth(authResult) {
+  if (!authResult?.success) {
+    return { success: false, message: authResult?.message || 'Authentication failed.' };
+  }
+
+  const profile = authResult.profile || {};
+  // The Auth0 Action stores the license key in a custom claim namespace.
+  const licenseKey =
+    profile['https://macroflow.com/license_key'] ||
+    profile.license_key ||
+    null;
+
+  if (!licenseKey) {
+    logger.warn('[License] Auth0 profile has no license key', { sub: profile.sub });
+    return {
+      success: false,
+      message: 'No license found for this account. Please contact support.',
+    };
+  }
+
+  logger.info('[License] activating from Auth0', { sub: profile.sub });
+  const result = await activateLicense(licenseKey);
+
+  // Store the Auth0 user info alongside the license data.
+  if (result.success && licenseData) {
+    licenseData.auth0Sub = profile.sub || '';
+    licenseData.email = profile.email || licenseData.email || '';
+    licenseData.name = profile.name || licenseData.name || '';
+    writeStore({ ...licenseData });
+  }
+
+  return result;
+}
+
+/**
  * Deactivate / remove the license from this machine.
  */
 async function deactivateLicense() {
@@ -375,6 +415,10 @@ function registerLicenseHandlers() {
 
   ipcMain.handle('license:activate', async (_event, licenseKey) => {
     return activateLicense(licenseKey);
+  });
+
+  ipcMain.handle('license:activate-from-auth', async (_event, authResult) => {
+    return activateFromAuth(authResult);
   });
 
   ipcMain.handle('license:deactivate', async () => {

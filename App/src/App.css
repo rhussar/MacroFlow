@@ -264,6 +264,13 @@ body {
   color: var(--text-primary);
 }
 
+.license-gate-toggle {
+  display: block;
+  margin-top: 4px;
+  text-align: center;
+  width: 100%;
+}
+
 .license-gate-controls {
   position: absolute;
   top: 10px;
@@ -1012,6 +1019,8 @@ body {
   padding: 8px 12px;
   border-radius: var(--border-radius-sm);
   transition: background 0.15s;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .shortcut-item:hover {
@@ -1068,11 +1077,12 @@ body {
 
 .shortcut-run-target {
   flex: 1;
-  min-width: 0;
+  min-width: 40px;
   display: flex;
   align-items: center;
   gap: 8px;
   padding: 0;
+  overflow: hidden;
 }
 
 .shortcut-binding {

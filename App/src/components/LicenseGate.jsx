@@ -4,12 +4,14 @@ import React, { useState, useEffect } from 'react';
 
 /**
  * LicenseGate — shown instead of the main app when no valid license is found.
- * Once the user enters a valid key, calls onLicensed() to reveal the app.
+ * Primary flow: Sign In via Auth0 (creates/activates license automatically).
+ * Fallback: manual license key entry (for offline / enterprise users).
  */
 export default function LicenseGate({ onLicensed }) {
   const [key, setKey] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [showManualKey, setShowManualKey] = useState(false);
 
   // On mount, check if the main process already validated a cached license.
   useEffect(() => {
@@ -20,7 +22,36 @@ export default function LicenseGate({ onLicensed }) {
     }).catch(() => {});
   }, [onLicensed]);
 
-  const handleActivate = async () => {
+  const handleSignIn = async () => {
+    setLoading(true);
+    setError('');
+
+    try {
+      // Open system browser for Auth0 login.
+      const authResult = await window.excel.auth.login();
+
+      if (!authResult?.success) {
+        setError(authResult?.message || 'Sign in failed.');
+        setLoading(false);
+        return;
+      }
+
+      // Auth0 succeeded — activate the Keygen license tied to this user.
+      const licenseResult = await window.excel.license.activateFromAuth(authResult);
+
+      if (licenseResult?.success) {
+        onLicensed(licenseResult.licenseData);
+      } else {
+        setError(licenseResult?.message || 'License activation failed.');
+      }
+    } catch {
+      setError('Something went wrong. Please try again.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleManualActivate = async () => {
     const trimmed = key.trim();
     if (!trimmed) {
       setError('Please enter a license key.');
@@ -46,7 +77,7 @@ export default function LicenseGate({ onLicensed }) {
 
   const handleKeyDown = (e) => {
     if (e.key === 'Enter' && !loading) {
-      handleActivate();
+      handleManualActivate();
     }
   };
 
@@ -59,37 +90,63 @@ export default function LicenseGate({ onLicensed }) {
         </div>
 
         <div className="license-gate-body">
-          <div className="license-gate-label">Enter your license key</div>
-          <input
-            className={`license-gate-input ${error ? 'has-error' : ''}`}
-            type="text"
-            value={key}
-            onChange={(e) => { setKey(e.target.value); setError(''); }}
-            onKeyDown={handleKeyDown}
-            placeholder="XXXX-XXXX-XXXX-XXXX"
-            disabled={loading}
-            autoFocus
-            spellCheck={false}
-          />
-          {error && <div className="license-gate-error">{error}</div>}
-          <button
-            className="license-gate-btn"
-            onClick={handleActivate}
-            disabled={loading}
-          >
-            {loading ? 'Activating...' : 'Activate'}
-          </button>
+          {!showManualKey ? (
+            <>
+              <button
+                className="license-gate-btn"
+                onClick={handleSignIn}
+                disabled={loading}
+              >
+                {loading ? 'Signing in...' : 'Sign In'}
+              </button>
+
+              {error && <div className="license-gate-error">{error}</div>}
+
+              <button
+                type="button"
+                className="license-gate-link license-gate-toggle"
+                onClick={() => { setShowManualKey(true); setError(''); }}
+              >
+                Use a license key instead
+              </button>
+            </>
+          ) : (
+            <>
+              <div className="license-gate-label">Enter your license key</div>
+              <input
+                className={`license-gate-input ${error ? 'has-error' : ''}`}
+                type="text"
+                value={key}
+                onChange={(e) => { setKey(e.target.value); setError(''); }}
+                onKeyDown={handleKeyDown}
+                placeholder="XXXX-XXXX-XXXX-XXXX"
+                disabled={loading}
+                autoFocus
+                spellCheck={false}
+              />
+              {error && <div className="license-gate-error">{error}</div>}
+              <button
+                className="license-gate-btn"
+                onClick={handleManualActivate}
+                disabled={loading}
+              >
+                {loading ? 'Activating...' : 'Activate'}
+              </button>
+
+              <button
+                type="button"
+                className="license-gate-link license-gate-toggle"
+                onClick={() => { setShowManualKey(false); setError(''); }}
+              >
+                Sign in with your account instead
+              </button>
+            </>
+          )}
         </div>
 
         <div className="license-gate-footer">
           <span className="license-gate-footer-text">
-            Need a license? Visit <button
-              type="button"
-              className="license-gate-link"
-              onClick={() => {
-                try { require('electron')?.shell?.openExternal?.('https://macroflow.com'); } catch { /* renderer */ }
-              }}
-            >macroflow.com</button>
+            New to MacroFlow? Sign in to get started.
           </span>
         </div>
 

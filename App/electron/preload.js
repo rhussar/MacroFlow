@@ -430,6 +430,17 @@ contextBridge.exposeInMainWorld('excel', {
   },
 
   // ==========================================================================
+  // AUTH (Auth0 SSO)
+  // ==========================================================================
+  auth: {
+    /** Start Auth0 login flow (opens system browser). Returns auth result. */
+    login: () => ipcRenderer.invoke('auth:login'),
+
+    /** Start Auth0 logout flow. */
+    logout: () => ipcRenderer.invoke('auth:logout'),
+  },
+
+  // ==========================================================================
   // LICENSE
   // ==========================================================================
   license: {
@@ -438,6 +449,9 @@ contextBridge.exposeInMainWorld('excel', {
 
     /** Activate a license key. Returns { success, message?, licenseData? }. */
     activate: (key) => ipcRenderer.invoke('license:activate', key),
+
+    /** Activate license from Auth0 login result. */
+    activateFromAuth: (authResult) => ipcRenderer.invoke('license:activate-from-auth', authResult),
 
     /** Deactivate / remove the license from this machine. */
     deactivate: () => ipcRenderer.invoke('license:deactivate'),

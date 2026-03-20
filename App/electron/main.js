@@ -8,6 +8,7 @@ const excel = require('./excel-bridge');
 const logger = require('./logger');
 const { initAutoUpdater, stopAutoUpdater } = require('./auto-updater');
 const { checkCachedLicense, registerLicenseHandlers } = require('./license');
+const { handleCallback, registerAuthHandlers } = require('./auth');
 
 const WINDOW_STARTUP_BG = '#00000000';
 
@@ -35,6 +36,14 @@ if (require('electron-squirrel-startup')) {
 // Ensure Windows uses our app identity for taskbar grouping (helps avoid a stale pinned/shortcut icon).
 if (process.platform === 'win32') {
   app.setAppUserModelId('com.macroflow.desktop');
+}
+
+// Register macroflow:// as a custom protocol for Auth0 OAuth callback.
+if (process.defaultApp) {
+  // In dev, register with the path to the electron binary + script
+  app.setAsDefaultProtocolClient('macroflow', process.execPath, [path.resolve(process.argv[1])]);
+} else {
+  app.setAsDefaultProtocolClient('macroflow');
 }
 
 // Expose V8 garbage collection in the main process so we can force COM proxy
@@ -519,8 +528,9 @@ if (!gotLock) {
 } else {
   // We have the lock - set up the single instance behavior
 
-  // Handle second-instance attempts by focusing the existing window
-  app.on('second-instance', () => {
+  // Handle second-instance attempts by focusing the existing window.
+  // On Windows, deep links (macroflow://...) arrive here as argv.
+  app.on('second-instance', (_event, argv) => {
     const windows = BrowserWindow.getAllWindows();
     if (windows.length > 0) {
       const win = windows[0];
@@ -528,6 +538,13 @@ if (!gotLock) {
         win.restore();
       }
       win.focus();
+    }
+
+    // Check argv for a macroflow:// deep link (Auth0 callback).
+    const deepLink = argv.find((arg) => arg.startsWith('macroflow://'));
+    if (deepLink) {
+      logger.info('[Auth] deep link received', { url: deepLink });
+      handleCallback(deepLink);
     }
   });
 
@@ -595,6 +612,7 @@ if (!gotLock) {
     // Register window control handlers BEFORE creating window
     registerWindowHandlers();
     registerLicenseHandlers();
+    registerAuthHandlers();
 
     // Check cached license (non-blocking — renderer will gate UI).
     checkCachedLicense().catch((err) => {

@@ -22,11 +22,22 @@ function setTheme(theme) {
 function SettingsPanel({ onClose }) {
   const [theme, setThemeState] = useState(getTheme);
   const [licenseInfo, setLicenseInfo] = useState(null);
+  const [updateStatus, setUpdateStatus] = useState('Up to date');
 
   useEffect(() => {
     window.excel?.license?.getStatus?.().then((status) => {
       if (status?.licenseData) {
         setLicenseInfo(status.licenseData);
+      }
+    }).catch(() => {});
+
+    window.excel?.updater?.checkNow?.().then((result) => {
+      if (result?.success) {
+        setUpdateStatus('Checking...');
+      } else if (result?.reason === 'development mode') {
+        setUpdateStatus('Dev mode');
+      } else {
+        setUpdateStatus('Up to date');
       }
     }).catch(() => {});
   }, []);
@@ -62,26 +73,30 @@ function SettingsPanel({ onClose }) {
             </div>
             <div className="settings-row">
               <span className="settings-row-label">License</span>
-              <span className="settings-row-value settings-row-badge">
-                {licenseInfo?.status === 'ACTIVE' ? 'Active' : licenseInfo?.status || '—'}
+              <span className="settings-row-value">
+                <span className="settings-row-badge">
+                  {licenseInfo?.status === 'ACTIVE' ? 'Active' : licenseInfo?.status || '—'}
+                </span>
+                <button className="settings-sign-out-btn" onClick={handleSignOut}>
+                  Sign Out
+                </button>
               </span>
             </div>
-            <button className="settings-text-btn danger" onClick={handleSignOut}>
-              Sign Out
-            </button>
           </div>
 
           {/* Appearance Section */}
           <div className="settings-section">
             <div className="settings-section-label">Appearance</div>
-            <div className="settings-row clickable" onClick={toggleTheme}>
+            <div className="settings-row">
               <span className="settings-row-label">Theme</span>
-              <span className="settings-row-value settings-row-toggle">
-                {theme === 'dark' ? (
-                  <><SunIcon size={14} /> Light</>
-                ) : (
-                  <><MoonIcon size={14} /> Dark</>
-                )}
+              <span className="settings-row-value">
+                <button className="settings-theme-btn" onClick={toggleTheme}>
+                  {theme === 'dark' ? (
+                    <><SunIcon size={14} /> Light</>
+                  ) : (
+                    <><MoonIcon size={14} /> Dark</>
+                  )}
+                </button>
               </span>
             </div>
           </div>
@@ -95,14 +110,7 @@ function SettingsPanel({ onClose }) {
             </div>
             <div className="settings-row">
               <span className="settings-row-label">Updates</span>
-              <span className="settings-row-value">
-                <button
-                  className="settings-text-btn-inline"
-                  onClick={() => window.excel?.updater?.checkNow?.()}
-                >
-                  Check now
-                </button>
-              </span>
+              <span className="settings-row-value">{updateStatus}</span>
             </div>
           </div>
         </div>
@@ -133,7 +141,7 @@ const SettingsMenu = ({ isOpen, onClose, onQuit }) => {
 
   const menuItems = [
     {
-      icon: <MailIcon />,
+      icon: <MailIcon size={16} />,
       label: 'Send Feedback',
       action: () => {
         window.excel?.app?.openExternal?.('mailto:ronan@macroflow.ai?subject=MacroFlow%20Feedback');
@@ -146,7 +154,7 @@ const SettingsMenu = ({ isOpen, onClose, onQuit }) => {
       keepOpen: true,
     },
     {
-      icon: <ExitIcon />,
+      icon: <ExitIcon size={16} />,
       label: 'Quit MacroFlow',
       action: onQuit,
       danger: true,

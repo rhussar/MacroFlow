@@ -1517,42 +1517,45 @@ body {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  animation: settingsMenuSlideIn 0.15s ease-out;
+  animation: settingsPanelFadeIn 0.15s ease-out;
   -webkit-app-region: no-drag;
 }
 
 .settings-panel-header {
   display: flex;
-  align-items: center;
+  align-items: stretch;
   justify-content: space-between;
-  padding: 14px 16px;
+  padding: 0;
+  padding-left: 16px;
   border-bottom: 1px solid var(--border-subtle);
+  min-height: 42px;
 }
 
 .settings-panel-title {
   font-size: 14px;
   font-weight: 600;
   color: var(--text-primary);
+  display: flex;
+  align-items: center;
 }
 
 .settings-panel-close {
-  width: 24px;
-  height: 24px;
+  width: 42px;
   display: flex;
   align-items: center;
   justify-content: center;
   background: none;
   border: none;
   color: var(--text-tertiary);
-  font-size: 18px;
+  font-size: 20px;
   cursor: pointer;
-  border-radius: var(--border-radius-xs);
+  border-radius: 0 var(--border-radius) 0 0;
   transition: background 0.12s, color 0.12s;
 }
 
 .settings-panel-close:hover {
-  background: var(--bg-hover);
-  color: var(--text-primary);
+  background: var(--accent-red);
+  color: #fff;
 }
 
 .settings-panel-content {
@@ -1570,10 +1573,10 @@ body {
 
 .settings-section-label {
   font-size: 10px;
-  font-weight: 600;
+  font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.5px;
-  color: var(--text-tertiary);
+  color: var(--text-primary);
   margin-bottom: 8px;
 }
 
@@ -1585,16 +1588,22 @@ body {
   min-height: 28px;
 }
 
-.settings-row.clickable {
+.settings-row .settings-theme-btn {
+  font-size: 12px;
+  font-family: inherit;
+  background: none;
+  border: none;
+  padding: 3px 0;
   cursor: pointer;
-  border-radius: var(--border-radius-xs);
-  padding: 6px 4px;
-  margin: 0 -4px;
-  transition: background 0.12s;
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  transition: none;
 }
 
-.settings-row.clickable:hover {
-  background: var(--bg-hover);
+.settings-row .settings-theme-btn:hover {
+  color: var(--text-primary);
 }
 
 .settings-row-label {
@@ -1610,6 +1619,10 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  justify-content: flex-end;
 }
 
 .settings-row-badge {
@@ -1667,6 +1680,22 @@ body {
   color: var(--text-primary);
 }
 
+.settings-sign-out-btn {
+  font-size: 11px;
+  font-family: inherit;
+  background: none;
+  border: none;
+  padding: 0;
+  margin-left: 8px;
+  cursor: pointer;
+  color: var(--text-tertiary);
+  transition: color 0.12s;
+}
+
+.settings-sign-out-btn:hover {
+  color: var(--accent-red);
+}
+
 /* ============================================
    Tree Explorer
    ============================================ */
@@ -1707,8 +1736,8 @@ body {
   border-radius: var(--border-radius-xs);
 }
 
-.tree-node__chevron:hover {
-  background: var(--bg-hover);
+.tree-node__chevron:hover .tree-chevron-icon {
+  color: var(--text-primary);
 }
 
 .tree-node__chevron--hidden {
@@ -2572,6 +2601,17 @@ body {
 /* ============================================
    Animations
    ============================================ */
+
+@keyframes settingsPanelFadeIn {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+}
 
 @keyframes settingsMenuSlideIn {
   from {

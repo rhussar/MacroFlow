@@ -1,6 +1,9 @@
 # MacroFlow
 
-OpenAI API Key: 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
+# Navigate to App directory and run the full build + upload pipeline
+cd C:\Users\ronan\Desktop\MacroFlow\App
+npm run publish:update
+
 
 ## Install (Windows)
 

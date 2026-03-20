@@ -8,6 +8,14 @@ import {
 import { usePersonalMacros, PERSONAL_WORKBOOK_NAME } from '../features/search/usePersonalMacros';
 import { useWorkbookPickerData } from '../features/search/useWorkbookPickerData';
 import { useShortcutState } from '../features/shortcuts/useShortcutState';
+import {
+  PERSONAL_FOREGROUND_QUIET_MS,
+  PERSONAL_SHORTCUT_AUDIT_INITIAL_DELAY_MS
+} from '../features/search/search-constants';
+import {
+  buildWorkbookInvalidationDescriptors,
+  invalidateSearchBuckets
+} from '../features/search/search-invalidation';
 import PersonalMacrosSection from './shortcuts/PersonalMacrosSection';
 import ShortcutGrid from './shortcuts/ShortcutGrid';
 import WorkbookPicker from './shortcuts/WorkbookPicker';
@@ -154,7 +162,8 @@ const ShortcutsPage = ({
   const personalMacrosState = usePersonalMacros(searchData, workbookPickerState.workbookListSignature, {
     includeShortcutAudit: false,
     focusRefreshPolicy: 'always',
-    visibilityRefreshPolicy: 'always'
+    visibilityRefreshPolicy: 'always',
+    foregroundQuietWindowMs: PERSONAL_FOREGROUND_QUIET_MS
   });
   const personalSectionVisible = String(selectedWorkbook?.name || '').trim().toUpperCase() !== PERSONAL_WORKBOOK_NAME;
   const personalShortcutState = useShortcutState({
@@ -169,6 +178,7 @@ const ShortcutsPage = ({
     },
     macros: personalMacrosState.macros,
     seededAudit: personalMacrosState.shortcutAudit,
+    initialLoadDelayMs: PERSONAL_SHORTCUT_AUDIT_INITIAL_DELAY_MS,
     setActionStatus: onActionStatus,
     shortcutSaveInFlightRef
   });
@@ -213,6 +223,18 @@ const ShortcutsPage = ({
       personalMacrosState.workbookFound
     ]
   );
+  const invalidatePersonalMutation = useCallback((options = {}) => {
+    invalidateSearchBuckets(buildWorkbookInvalidationDescriptors({
+      workbook: {
+        name: PERSONAL_WORKBOOK_NAME,
+        path: String(personalMacrosState.workbook?.path || personalMacrosState.workbookPath || '').trim()
+      },
+      includeWorkbookList: options.includeWorkbookList === true,
+      includeExplorerAllFiles: options.includeExplorerAllFiles === true,
+      includePersonalMacros: true,
+      includeWorkbookScopedData: true
+    }));
+  }, [personalMacrosState.workbook?.path, personalMacrosState.workbookPath]);
 
   const handlePersonalAction = useCallback(async (action) => {
     if (!action || personalActionInFlight) {
@@ -259,14 +281,14 @@ const ShortcutsPage = ({
             ? 'Unable to create PERSONAL.xlsb.'
             : 'Unable to open PERSONAL.xlsb.')
         );
-        onActionStatus?.('error', message);
-        return;
-      }
+      onActionStatus?.('error', message);
+      return;
+    }
 
-      await Promise.allSettled([
-        Promise.resolve(personalMacrosState.refresh?.()),
-        Promise.resolve(workbookPickerState.refreshWorkbooks?.({ silent: true }))
-      ]);
+      invalidatePersonalMutation({
+        includeWorkbookList: true,
+        includeExplorerAllFiles: true
+      });
 
       onActionStatus?.('success', action === 'create_file' ? 'File created.' : 'File opened.');
     } catch (error) {
@@ -277,11 +299,10 @@ const ShortcutsPage = ({
   }, [
     onActionStatus,
     onBuildModeClick,
+    invalidatePersonalMutation,
     personalActionInFlight,
-    personalMacrosState.refresh,
     personalMacrosState.workbook?.path,
     personalMacrosState.workbookPath,
-    workbookPickerState.refreshWorkbooks
   ]);
 
   const handlePersonalVisibilityToggle = useCallback(async () => {
@@ -333,10 +354,10 @@ const ShortcutsPage = ({
         return;
       }
 
-      await Promise.allSettled([
-        Promise.resolve(personalMacrosState.refresh?.()),
-        Promise.resolve(workbookPickerState.refreshWorkbooks?.({ silent: true }))
-      ]);
+      invalidatePersonalMutation({
+        includeWorkbookList: personalMacrosState.workbookFound !== true,
+        includeExplorerAllFiles: personalMacrosState.workbookFound !== true
+      });
 
       onActionStatus?.('success', successMessage);
     } catch (error) {
@@ -345,14 +366,13 @@ const ShortcutsPage = ({
       setPersonalActionInFlight(false);
     }
   }, [
+    invalidatePersonalMutation,
     onActionStatus,
     personalActionInFlight,
     personalMacrosState.fileExists,
-    personalMacrosState.refresh,
     personalMacrosState.windowHidden,
     personalMacrosState.windowVisible,
     personalMacrosState.workbookFound,
-    workbookPickerState.refreshWorkbooks
   ]);
 
   const handleOpenPersonalFolder = useCallback(async () => {
@@ -541,6 +561,7 @@ const ShortcutsPage = ({
               onRunMacro={onRunMacro}
               emptyMessage={macrosEmptyMessage}
               showEmptyState={workbookDataHasError || activeMacroRows.length === 0}
+              isLoading={workbookDataIsLoading && activeMacroRows.length === 0}
             />
           </section>
 

@@ -89,11 +89,13 @@ if (setupExe) {
 // 5. Upload using AWS CLI (s3-compatible)
 const s3Flags = `--endpoint-url ${endpoint}`;
 
-run(`aws s3 cp "${path.join(squirrelOut, 'RELEASES')}" s3://${bucket}/updates/RELEASES ${s3Flags}`);
-run(`aws s3 cp "${path.join(squirrelOut, nupkgFile)}" s3://${bucket}/updates/${nupkgFile} ${s3Flags}`);
+run(`aws s3 cp "${path.join(squirrelOut, 'RELEASES')}" "s3://${bucket}/updates/RELEASES" ${s3Flags}`);
+run(`aws s3 cp "${path.join(squirrelOut, nupkgFile)}" "s3://${bucket}/updates/${nupkgFile}" ${s3Flags}`);
 
 if (setupExe) {
-  run(`aws s3 cp "${path.join(squirrelOut, setupExe)}" s3://${bucket}/installer/${setupExe} ${s3Flags}`);
+  // Rename to remove spaces — avoids URL encoding headaches for download links.
+  const safeSetupName = setupExe.replace(/\s+/g, '-');
+  run(`aws s3 cp "${path.join(squirrelOut, setupExe)}" "s3://${bucket}/installer/${safeSetupName}" ${s3Flags}`);
 }
 
 // 6. Read version from package.json for summary

@@ -6,6 +6,12 @@ import {
   toExcelShortcutKeyFromLetter
 } from '../../lib/shortcut-keybind.js';
 import { SHORTCUT_REFRESH_TTL_MS } from '../search/search-constants.js';
+import {
+  SEARCH_INVALIDATION_BUCKETS,
+  getShortcutAuditInvalidationScope,
+  invalidateSearchBuckets,
+  useSearchInvalidationRevision
+} from '../search/search-invalidation.js';
 
 const sharedShortcutCacheBySnapshot = new Map();
 
@@ -65,6 +71,18 @@ export function buildWorkbookShortcutSnapshotKey(workbook, macros = []) {
   });
 }
 
+export function shouldDelayInitialShortcutLoad({
+  delayMs = 0,
+  hasLoadedShortcuts = false,
+  hasSeededAudit = false,
+  hasFreshCachedSnapshot = false
+}) {
+  return Number(delayMs) > 0
+    && !hasLoadedShortcuts
+    && !hasSeededAudit
+    && !hasFreshCachedSnapshot;
+}
+
 export function useShortcutState({
   scope = 'active',
   enabled = false,
@@ -72,6 +90,7 @@ export function useShortcutState({
   workbook = null,
   macros = [],
   seededAudit = null,
+  initialLoadDelayMs = 0,
   setActionStatus,
   shortcutSaveInFlightRef
 }) {
@@ -82,16 +101,26 @@ export function useShortcutState({
 
   const shortcutAuditRequestSequence = useRef(0);
   const shortcutAuditInFlight = useRef(false);
+  const lastHandledShortcutInvalidationRef = useRef(0);
   const shortcutSnapshotRef = useRef('');
   const shortcutSnapshotTimestampRef = useRef(0);
   const shortcutByMacroIdRef = useRef({});
   const shortcutDraftByMacroIdRef = useRef({});
   const shortcutSavingMacroIdRef = useRef(null);
   const shortcutLoadErrorRef = useRef('');
+  const initialLoadTimerRef = useRef(null);
 
   const normalizedScope = scope === 'workbook' ? 'workbook' : 'active';
   const workbookName = String(workbook?.name || '').trim();
   const workbookPath = String(workbook?.path || '').trim();
+  const shortcutInvalidationScope = getShortcutAuditInvalidationScope({
+    scope: normalizedScope,
+    workbook: { name: workbookName, path: workbookPath }
+  });
+  const shortcutInvalidationRevision = useSearchInvalidationRevision(
+    SEARCH_INVALIDATION_BUCKETS.SHORTCUT_AUDIT,
+    shortcutInvalidationScope
+  );
   const macrosList = useMemo(
     () => (Array.isArray(macros) ? macros : []),
     [macros]
@@ -268,18 +297,80 @@ export function useShortcutState({
       if (clearOnDisabled) {
         resetShortcutState();
       }
+      if (initialLoadTimerRef.current) {
+        clearTimeout(initialLoadTimerRef.current);
+        initialLoadTimerRef.current = null;
+      }
       return;
     }
 
-    loadMacroShortcuts();
+    const snapshotKey = buildShortcutSnapshotKey({
+      scope: normalizedScope,
+      workbook: { name: workbookName, path: workbookPath },
+      macros: macrosList
+    });
+    const invalidationChanged =
+      shortcutInvalidationRevision > 0
+      && shortcutInvalidationRevision !== lastHandledShortcutInvalidationRef.current;
+    if (invalidationChanged) {
+      lastHandledShortcutInvalidationRef.current = shortcutInvalidationRevision;
+      sharedShortcutCacheBySnapshot.delete(snapshotKey);
+      shortcutSnapshotRef.current = '';
+      shortcutSnapshotTimestampRef.current = 0;
+    }
+    const cachedSnapshot = sharedShortcutCacheBySnapshot.get(snapshotKey);
+    const hasFreshCachedSnapshot = cachedSnapshot
+      && (Date.now() - Number(cachedSnapshot.timestamp || 0)) < SHORTCUT_REFRESH_TTL_MS;
+    const hasLoadedShortcuts = shortcutSnapshotRef.current === snapshotKey
+      && Object.keys(shortcutByMacroIdRef.current).length > 0;
+    const hasSeededAudit = Boolean(
+      seededAudit &&
+      typeof seededAudit === 'object' &&
+      seededAudit.success !== false &&
+      Array.isArray(seededAudit.shortcuts)
+    );
+
+    if (!invalidationChanged && shouldDelayInitialShortcutLoad({
+      delayMs: initialLoadDelayMs,
+      hasLoadedShortcuts,
+      hasSeededAudit,
+      hasFreshCachedSnapshot
+    })) {
+      if (initialLoadTimerRef.current) {
+        clearTimeout(initialLoadTimerRef.current);
+      }
+      initialLoadTimerRef.current = window.setTimeout(() => {
+        initialLoadTimerRef.current = null;
+        void loadMacroShortcuts();
+      }, Number(initialLoadDelayMs));
+      return () => {
+        if (initialLoadTimerRef.current) {
+          clearTimeout(initialLoadTimerRef.current);
+          initialLoadTimerRef.current = null;
+        }
+      };
+    }
+
+    loadMacroShortcuts({ force: invalidationChanged });
+    return () => {
+      if (initialLoadTimerRef.current) {
+        clearTimeout(initialLoadTimerRef.current);
+        initialLoadTimerRef.current = null;
+      }
+    };
   }, [
     clearOnDisabled,
     enabled,
+    initialLoadDelayMs,
     loadMacroShortcuts,
     macroIdSignature,
+    macrosList,
     normalizedScope,
     resetShortcutState,
-    workbookName
+    seededAudit,
+    shortcutInvalidationRevision,
+    workbookName,
+    workbookPath
   ]);
 
   useEffect(() => {
@@ -422,7 +513,15 @@ export function useShortcutState({
           return next;
         });
         setActionStatus?.('success', 'Shortcut assigned.');
-        await loadMacroShortcuts({ force: true });
+        invalidateSearchBuckets([
+          {
+            bucket: SEARCH_INVALIDATION_BUCKETS.SHORTCUT_AUDIT,
+            scope: shortcutInvalidationScope
+          },
+          ...(normalizedScope === 'active'
+            ? [{ bucket: SEARCH_INVALIDATION_BUCKETS.ACTIVE_WORKBOOK }]
+            : [])
+        ]);
       } else {
         const backendMessage = result?.message || 'Unknown error.';
         setActionStatus?.('error', 'Shortcut failed.');
@@ -439,9 +538,9 @@ export function useShortcutState({
     }
   }, [
     enabled,
-    loadMacroShortcuts,
     normalizedScope,
     setActionStatus,
+    shortcutInvalidationScope,
     shortcutSaveInFlightRef,
     workbookName,
     workbookPath

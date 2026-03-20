@@ -158,6 +158,7 @@ export function selectPersonalGlobalSectionModel({
     hidden: false,
     count,
     isEmpty,
+    isLoading: isEmpty && status === 'loading',
     emptyMessage,
     action
   };

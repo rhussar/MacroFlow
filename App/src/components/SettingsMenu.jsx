@@ -8,6 +8,7 @@ import {
   SunIcon,
   MoonIcon
 } from './icons';
+/* global __APP_VERSION__ */
 
 function getTheme() {
   return document.documentElement.getAttribute('data-theme') || 'dark';
@@ -53,7 +54,7 @@ const SettingsMenu = ({ isOpen, onClose, onQuit }) => {
 
       {/* Menu */}
       <div className="settings-menu">
-        <div className="settings-menu-header">MacroFlow v0.01.2.0</div>
+        <div className="settings-menu-header">MacroFlow v{__APP_VERSION__}</div>
         {menuItems.map((item, index) => (
           <button
             type="button"

@@ -8,6 +8,11 @@ import {
   INITIAL_WORKBOOK_SCOPED_DATA,
   useWorkbookScopedData
 } from '../workbooks/useWorkbookScopedData.js';
+import { createAsyncResourceStore } from './async-resource-store.js';
+import {
+  SEARCH_INVALIDATION_BUCKETS,
+  useSearchInvalidationRevision
+} from './search-invalidation.js';
 import { WORKBOOK_PICKER_REFRESH_TTL_MS } from './search-constants.js';
 
 const INITIAL_PICKER_STATE = {
@@ -24,24 +29,20 @@ const INITIAL_SELECTED_WORKBOOK_DATA = {
   error: null
 };
 
-const workbookPickerCache = new Map();
-const workbookPickerPendingRequests = new Map();
+const workbookPickerStore = createAsyncResourceStore({
+  defaultKey: '__active-workbook__'
+});
 
 function buildWorkbookPickerCacheKey(activeWorkbookKey) {
   return String(activeWorkbookKey || '').trim() || '__active-workbook__';
 }
 
 function getFreshWorkbookPickerCacheEntry(activeWorkbookKey) {
-  const cacheKey = buildWorkbookPickerCacheKey(activeWorkbookKey);
-  const cachedEntry = workbookPickerCache.get(cacheKey);
-  const cacheAgeMs = Date.now() - Number(cachedEntry?.fetchedAt || 0);
-  const cacheIsFresh =
-    Array.isArray(cachedEntry?.workbooks) &&
-    Number.isFinite(cacheAgeMs) &&
-    cacheAgeMs >= 0 &&
-    cacheAgeMs < WORKBOOK_PICKER_REFRESH_TTL_MS;
-
-  return cacheIsFresh ? cachedEntry : null;
+  return workbookPickerStore.getFreshEntry({
+    key: buildWorkbookPickerCacheKey(activeWorkbookKey),
+    ttlMs: WORKBOOK_PICKER_REFRESH_TTL_MS,
+    isValid: (value) => Array.isArray(value)
+  });
 }
 
 function buildSortedWorkbookPickerRows(result, activeWorkbook, activeWorkbookKey) {
@@ -61,22 +62,10 @@ function getWorkbookPickerRequestKey(activeWorkbookKey) {
 }
 
 function getOrCreateWorkbookPickerRequest(activeWorkbookKey, requestFactory) {
-  const requestKey = getWorkbookPickerRequestKey(activeWorkbookKey);
-  const pendingRequest = workbookPickerPendingRequests.get(requestKey);
-  if (pendingRequest) {
-    return pendingRequest;
-  }
-
-  const requestPromise = Promise.resolve()
-    .then(requestFactory)
-    .finally(() => {
-      if (workbookPickerPendingRequests.get(requestKey) === requestPromise) {
-        workbookPickerPendingRequests.delete(requestKey);
-      }
-    });
-
-  workbookPickerPendingRequests.set(requestKey, requestPromise);
-  return requestPromise;
+  return workbookPickerStore.run(
+    getWorkbookPickerRequestKey(activeWorkbookKey),
+    requestFactory
+  );
 }
 
 export function useWorkbookPickerData(searchData, options = {}) {
@@ -94,7 +83,7 @@ export function useWorkbookPickerData(searchData, options = {}) {
 
     return {
       status: 'ready',
-      workbooks: freshPickerCacheEntry.workbooks,
+      workbooks: freshPickerCacheEntry.value,
       error: null
     };
   });
@@ -105,11 +94,15 @@ export function useWorkbookPickerData(searchData, options = {}) {
 
     return resolveSelectedWorkbookKey({
       requestedKey: preferredWorkbookKey,
-      workbooks: freshPickerCacheEntry.workbooks,
+      workbooks: freshPickerCacheEntry.value,
       activeWorkbookKey
     });
   });
   const listRequestSequence = useRef(0);
+  const lastHandledWorkbookListInvalidationRef = useRef(0);
+  const workbookListInvalidationRevision = useSearchInvalidationRevision(
+    SEARCH_INVALIDATION_BUCKETS.WORKBOOK_LIST
+  );
 
   const refreshWorkbooks = useCallback(async ({ silent = false } = {}) => {
     if (searchData?.status !== 'ready') {
@@ -160,10 +153,10 @@ export function useWorkbookPickerData(searchData, options = {}) {
         workbooks: sortedWorkbooks,
         error: null
       });
-      workbookPickerCache.set(buildWorkbookPickerCacheKey(activeWorkbookKey), {
-        fetchedAt: Date.now(),
-        workbooks: sortedWorkbooks
-      });
+      workbookPickerStore.setValue(
+        buildWorkbookPickerCacheKey(activeWorkbookKey),
+        sortedWorkbooks
+      );
 
       setSelectedWorkbookKey((previousKey) =>
         resolveSelectedWorkbookKey({
@@ -194,8 +187,8 @@ export function useWorkbookPickerData(searchData, options = {}) {
     }
 
     const cachedEntry = getFreshWorkbookPickerCacheEntry(activeWorkbookKey);
-    if (cachedEntry?.workbooks) {
-      const cachedWorkbooks = cachedEntry.workbooks;
+    if (cachedEntry?.value) {
+      const cachedWorkbooks = cachedEntry.value;
       setPickerState({
         status: 'ready',
         workbooks: cachedWorkbooks,
@@ -232,7 +225,7 @@ export function useWorkbookPickerData(searchData, options = {}) {
 
     const cachedEntry = getFreshWorkbookPickerCacheEntry(activeWorkbookKey);
     if (cachedEntry) {
-      const cachedWorkbooks = cachedEntry.workbooks;
+      const cachedWorkbooks = cachedEntry.value;
       setPickerState({
         status: 'ready',
         workbooks: cachedWorkbooks,
@@ -250,6 +243,22 @@ export function useWorkbookPickerData(searchData, options = {}) {
 
     refreshWorkbooks({ silent: true });
   }, [activeWorkbookKey, preferredWorkbookKey, refreshWorkbooks, searchData?.status]);
+
+  useEffect(() => {
+    if (workbookListInvalidationRevision === 0) {
+      return;
+    }
+    if (workbookListInvalidationRevision === lastHandledWorkbookListInvalidationRef.current) {
+      return;
+    }
+
+    lastHandledWorkbookListInvalidationRef.current = workbookListInvalidationRevision;
+    workbookPickerStore.clear(buildWorkbookPickerCacheKey(activeWorkbookKey));
+
+    if (searchData?.status === 'ready') {
+      void refreshWorkbooks({ silent: true });
+    }
+  }, [activeWorkbookKey, refreshWorkbooks, searchData?.status, workbookListInvalidationRevision]);
 
   const selectedWorkbook = useMemo(() => {
     const source = Array.isArray(pickerState.workbooks) ? pickerState.workbooks : [];

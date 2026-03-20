@@ -19,6 +19,10 @@ import {
   SEARCH_PAUSED_RECONNECT_MULTIPLIER,
   SEARCH_PAUSED_RECONNECT_MAX_DELAY_MS
 } from './search-constants.js';
+import {
+  SEARCH_INVALIDATION_BUCKETS,
+  useSearchInvalidationRevision
+} from './search-invalidation.js';
 
 export function isTerminalConnectionStatus(status) {
   return status === 'no_excel' || status === 'no_workbook' || status === 'excel_background';
@@ -148,10 +152,24 @@ export function shouldRefreshOnModeEntry({
   return now - Number(lastFullRefreshAt || 0) > staleThresholdMs;
 }
 
+export function queueSearchLoadRequestState({
+  hasQueuedLoad = false,
+  queuedSilent = true,
+  nextSilent = true
+}) {
+  return {
+    hasQueuedLoad: true,
+    queuedSilent: hasQueuedLoad ? Boolean(queuedSilent) && Boolean(nextSilent) : Boolean(nextSilent)
+  };
+}
+
 export function useSearchData({ mode, runState, macroRunInFlightRef, shortcutSaveInFlightRef }) {
   const [searchData, setSearchData] = useState(INITIAL_SEARCH_DATA);
   const searchRequestSequence = useRef(0);
   const searchLoadInFlight = useRef(false);
+  const searchLoadPromiseRef = useRef(null);
+  const queuedSearchLoadRef = useRef(false);
+  const queuedSearchLoadSilentRef = useRef(true);
   const workbookPingInFlight = useRef(false);
   const pollingPausedRef = useRef(false);
   const pollingPausedReasonRef = useRef('');
@@ -170,6 +188,10 @@ export function useSearchData({ mode, runState, macroRunInFlightRef, shortcutSav
   const previousModeRef = useRef(null);
   const searchStatusRef = useRef(INITIAL_SEARCH_DATA.status);
   const refreshSearchOnForegroundRef = useRef(null);
+  const lastHandledActiveWorkbookInvalidationRef = useRef(0);
+  const activeWorkbookInvalidationRevision = useSearchInvalidationRevision(
+    SEARCH_INVALIDATION_BUCKETS.ACTIVE_WORKBOOK
+  );
 
   searchStatusRef.current = searchData.status;
 
@@ -229,11 +251,7 @@ export function useSearchData({ mode, runState, macroRunInFlightRef, shortcutSav
     });
   };
 
-  const loadSearchData = useCallback(async ({ silent = false } = {}) => {
-    if (searchLoadInFlight.current) {
-      return;
-    }
-
+  const runSearchLoadOnce = useCallback(async ({ silent = false } = {}) => {
     searchLoadInFlight.current = true;
     const requestId = ++searchRequestSequence.current;
 
@@ -455,6 +473,43 @@ export function useSearchData({ mode, runState, macroRunInFlightRef, shortcutSav
     }
   }, []);
 
+  const loadSearchData = useCallback(({ silent = false } = {}) => {
+    if (searchLoadPromiseRef.current) {
+      const nextQueuedState = queueSearchLoadRequestState({
+        hasQueuedLoad: queuedSearchLoadRef.current,
+        queuedSilent: queuedSearchLoadSilentRef.current,
+        nextSilent: silent
+      });
+      queuedSearchLoadRef.current = nextQueuedState.hasQueuedLoad;
+      queuedSearchLoadSilentRef.current = nextQueuedState.queuedSilent;
+      return searchLoadPromiseRef.current;
+    }
+
+    let activeLoadPromise = null;
+    activeLoadPromise = (async () => {
+      let nextSilent = Boolean(silent);
+
+      while (true) {
+        queuedSearchLoadRef.current = false;
+        queuedSearchLoadSilentRef.current = true;
+        await runSearchLoadOnce({ silent: nextSilent });
+        if (!queuedSearchLoadRef.current) {
+          break;
+        }
+        nextSilent = queuedSearchLoadSilentRef.current;
+      }
+    })().finally(() => {
+      if (searchLoadPromiseRef.current === activeLoadPromise) {
+        searchLoadPromiseRef.current = null;
+      }
+      queuedSearchLoadRef.current = false;
+      queuedSearchLoadSilentRef.current = true;
+    });
+
+    searchLoadPromiseRef.current = activeLoadPromise;
+    return activeLoadPromise;
+  }, [runSearchLoadOnce]);
+
   const refreshSearchOnForeground = useCallback(async ({ trigger = 'interval' } = {}) => {
     if (!isSearchDataMode(mode) || runState === 'running' || Boolean(macroRunInFlightRef?.current) || Boolean(shortcutSaveInFlightRef?.current)) {
       return;
@@ -657,9 +712,24 @@ export function useSearchData({ mode, runState, macroRunInFlightRef, shortcutSav
     };
   }, [loadSearchData, mode, runState]);
 
+  useEffect(() => {
+    if (activeWorkbookInvalidationRevision === 0) {
+      return;
+    }
+    if (activeWorkbookInvalidationRevision === lastHandledActiveWorkbookInvalidationRef.current) {
+      return;
+    }
+
+    lastHandledActiveWorkbookInvalidationRef.current = activeWorkbookInvalidationRevision;
+    if (!isSearchDataMode(mode) || runState === 'running') {
+      return;
+    }
+
+    void loadSearchData({ silent: true });
+  }, [activeWorkbookInvalidationRevision, loadSearchData, mode, runState]);
+
   return {
     searchData,
     loadSearchData
   };
 }
-

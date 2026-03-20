@@ -430,6 +430,23 @@ contextBridge.exposeInMainWorld('excel', {
   },
 
   // ==========================================================================
+  // LICENSE
+  // ==========================================================================
+  license: {
+    /** Get current license status. */
+    getStatus: () => ipcRenderer.invoke('license:status'),
+
+    /** Activate a license key. Returns { success, message?, licenseData? }. */
+    activate: (key) => ipcRenderer.invoke('license:activate', key),
+
+    /** Deactivate / remove the license from this machine. */
+    deactivate: () => ipcRenderer.invoke('license:deactivate'),
+
+    /** Re-check the cached license against Keygen. */
+    check: () => ipcRenderer.invoke('license:check'),
+  },
+
+  // ==========================================================================
   // APP CONTROLS
   // ==========================================================================
   app: {
@@ -437,6 +454,10 @@ contextBridge.exposeInMainWorld('excel', {
      * Minimize the application window
      */
     minimize: () => ipcRenderer.send('app:minimize'),
+    /**
+     * Notify the main process that the initial UI is usable.
+     */
+    markStartupSettled: () => ipcRenderer.send('app:startup-settled'),
     /**
      * Close the application
      */

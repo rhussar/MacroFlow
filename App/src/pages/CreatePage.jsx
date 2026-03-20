@@ -1,5 +1,4 @@
 ﻿import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { FolderIcon } from '../components/icons';
 import CodePreview from '../components/CodePreview';
 import SplitDivider from '../components/SplitDivider';
 import {
@@ -29,6 +28,12 @@ import {
   shouldCommitModuleRename
 } from '../features/search/module-actions';
 import { getSearchStatusView } from '../features/search/search-selectors';
+import {
+  buildWorkbookInvalidationDescriptors,
+  invalidateSearchBuckets
+} from '../features/search/search-invalidation';
+import { PERSONAL_WORKBOOK_NAME } from '../features/search/usePersonalMacros';
+import { useSessionHistory } from '../features/build/useSessionHistory';
 
 const DEFAULT_MODULE_LABEL = 'New Module';
 const MODULE_PREFIX = 'MacroFlowModule';
@@ -98,11 +103,9 @@ const CreatePage = ({
   launchMode = 'new_module',
   launchModuleName = '',
   launchSource = '',
-  onRefreshSearchData,
   chatOpen: chatOpenProp,
   onChatToggle,
-  searchData,
-  onSessionActiveChange
+  searchData
 }) => {
   const [prompt, setPrompt] = useState('');
   const [buildState, setBuildState] = useState(() =>
@@ -125,9 +128,9 @@ const CreatePage = ({
   const [sessionContext, setSessionContext] = useState(null);
   const [runOutcome, setRunOutcome] = useState('idle');
   const [savedMacroName, setSavedMacroName] = useState('');
-  const [lastPrompt, setLastPrompt] = useState('');
+  const [messages, setMessages] = useState([]);
   const [includeCurrentCode, setIncludeCurrentCode] = useState(true);
-  const [splitPct, setSplitPct] = useState(40);
+  const [splitPct, setSplitPct] = useState(30);
   const [exitDialog, setExitDialog] = useState(null);
   const [savedShortcutLetter, setSavedShortcutLetter] = useState('');
   const [draftShortcutLetter, setDraftShortcutLetter] = useState('');
@@ -136,6 +139,8 @@ const CreatePage = ({
   const [hasPendingChanges, setHasPendingChanges] = useState(false);
   const [moduleRenameDraft, setModuleRenameDraft] = useState('');
   const [moduleRenameActive, setModuleRenameActive] = useState(false);
+
+  const { sessions, saveSession, restoreSession, removeSession } = useSessionHistory();
 
   const normalizedWorkbook = useMemo(
     () => normalizeBuildWorkbook(targetWorkbook),
@@ -168,6 +173,7 @@ const CreatePage = ({
   const exitInFlightRef = useRef(false);
   const moduleRenameInputRef = useRef(null);
   const moduleRenameCommitInFlightRef = useRef(false);
+  const messagesRef = useRef(messages);
   const moduleRenameRestoreValueRef = useRef('');
 
   buildStateRef.current = buildState;
@@ -179,6 +185,7 @@ const CreatePage = ({
   savedShortcutLetterRef.current = savedShortcutLetter;
   draftShortcutLetterRef.current = draftShortcutLetter;
   shortcutSavingRef.current = shortcutSaving;
+  messagesRef.current = messages;
 
   const setDirtyState = useCallback((value) => {
     const nextValue = Boolean(value);
@@ -251,14 +258,47 @@ const CreatePage = ({
     };
   }, []);
 
+  const invalidateWorkbookMutation = useCallback((workbook, options = {}) => {
+    const normalizedTargetWorkbook = normalizeBuildWorkbook(workbook);
+    if (!normalizedTargetWorkbook) {
+      return;
+    }
+
+    const activeWorkbook = normalizeBuildWorkbook(searchData?.workbook);
+    const affectsActiveWorkbook = Boolean(
+      normalizedTargetWorkbook?.key
+      && activeWorkbook?.key
+      && normalizedTargetWorkbook.key === activeWorkbook.key
+    );
+    const affectsPersonalWorkbook =
+      String(normalizedTargetWorkbook?.name || '').trim().toUpperCase() === PERSONAL_WORKBOOK_NAME;
+
+    invalidateSearchBuckets(buildWorkbookInvalidationDescriptors({
+      workbook: normalizedTargetWorkbook,
+      includeActiveWorkbook: options.includeActiveWorkbook === true && affectsActiveWorkbook,
+      includeWorkbookList: options.includeWorkbookList === true,
+      includeExplorerAllFiles: options.includeExplorerAllFiles === true,
+      includePersonalMacros: options.includePersonalMacros === true && affectsPersonalWorkbook,
+      includeShortcutAudit: options.includeShortcutAudit === true,
+      includeWorkbookScopedData: options.includeWorkbookScopedData === true
+    }));
+  }, [searchData?.workbook]);
+
   const finalizeExit = useCallback((intent) => {
+    if (sessionContextRef.current && messagesRef.current.length > 0) {
+      saveSession({
+        sessionContext: sessionContextRef.current,
+        messages: messagesRef.current,
+        editedCode: editedCodeRef.current
+      });
+    }
     const normalizedIntent = normalizeExitIntent(intent);
     if (normalizedIntent === 'close') {
       onClose?.();
       return;
     }
     onBack?.();
-  }, [onBack, onClose]);
+  }, [onBack, onClose, saveSession]);
 
   const persistUnsyncedChanges = useCallback(async () => {
     const setModuleCodeByWorkbookApi = window.excel?.vba?.setModuleCodeByWorkbook;
@@ -299,11 +339,14 @@ const CreatePage = ({
     setLocation(buildLocation(savedWorkbook.name, savedModuleName));
 
     setDirtyState(false);
-
-    if (typeof onRefreshSearchData === 'function') {
-      await onRefreshSearchData({ silent: true });
-    }
-  }, [onRefreshSearchData, setDirtyState]);
+    invalidateWorkbookMutation(savedWorkbook, {
+      includeActiveWorkbook: true,
+      includeExplorerAllFiles: true,
+      includePersonalMacros: true,
+      includeShortcutAudit: true,
+      includeWorkbookScopedData: true
+    });
+  }, [invalidateWorkbookMutation, setDirtyState]);
 
   const attemptExit = useCallback(async (intent = 'back') => {
     if (exitInFlightRef.current) {
@@ -370,7 +413,7 @@ const CreatePage = ({
     setIncludeCurrentCode(false);
     setSessionContext(null);
     setRunOutcome('idle');
-    setLastPrompt('');
+    setMessages([]);
     setPrompt('');
     setEditedCode(BUILD_MODE_SEED_CODE);
     setSavedMacroName('');
@@ -553,6 +596,12 @@ const CreatePage = ({
         const createdModuleName = String(injectResult?.moduleName || nextModuleName).trim() || nextModuleName;
         setStepStatus('create', 'complete', `Created: ${createdModuleName}`);
         setLocation(buildLocation(createdWorkbook.name, createdModuleName));
+        invalidateWorkbookMutation(createdWorkbook, {
+          includeActiveWorkbook: true,
+          includeExplorerAllFiles: true,
+          includePersonalMacros: true,
+          includeWorkbookScopedData: true
+        });
 
         const codeResult = await moduleCodeByWorkbookApi({
           workbookName: createdWorkbook.name,
@@ -586,10 +635,6 @@ const CreatePage = ({
       setLocation(buildLocation(sessionWorkbook.name, sessionModuleName));
       setBuildState('ready');
       setIsBusy(false);
-
-      if (typeof onRefreshSearchData === 'function') {
-        await onRefreshSearchData({ silent: true });
-      }
     } catch (error) {
       if (activeBootstrapIdRef.current !== bootstrapId) {
         return;
@@ -603,9 +648,9 @@ const CreatePage = ({
     }
   }, [
     ensureBuildApis,
+    invalidateWorkbookMutation,
     normalizedLaunchMode,
     normalizedWorkbook,
-    onRefreshSearchData,
     requestedLaunchModuleName,
     setStepStatus,
     stopWithError,
@@ -759,13 +804,20 @@ const CreatePage = ({
       setSavedShortcutLetter(draftLetter);
       setDraftShortcutLetter(draftLetter);
       setShortcutInputError(false);
+      invalidateWorkbookMutation(session.workbook, {
+        includeActiveWorkbook: true,
+        includeExplorerAllFiles: true,
+        includePersonalMacros: true,
+        includeShortcutAudit: true,
+        includeWorkbookScopedData: true
+      });
     } catch (_error) {
       setShortcutInputError(true);
     } finally {
       shortcutSavingRef.current = false;
       setShortcutSaving(false);
     }
-  }, []);
+  }, [invalidateWorkbookMutation]);
 
   const toggleChat = useCallback(() => {
     if (onChatToggle) {
@@ -790,7 +842,7 @@ const CreatePage = ({
       return;
     }
 
-    setLastPrompt(submittedPrompt);
+    setMessages((prev) => [...prev, { role: 'user', content: submittedPrompt, timestamp: Date.now() }]);
     setPrompt('');
     setRunOutcome('idle');
     setErrorInfo(null);
@@ -822,9 +874,11 @@ const CreatePage = ({
 
       setEditedCode(generatedCode);
       setSavedMacroName(extractPrimaryMacroName(generatedCode));
+      setMessages((prev) => [...prev, { role: 'assistant', content: 'Code updated.', timestamp: Date.now() }]);
       markLocalDirty();
     } catch (error) {
       const message = mapAiGenerationMessage(null, String(error?.message || 'Unable to generate VBA.'));
+      setMessages((prev) => [...prev, { role: 'assistant', content: `Error: ${message}`, timestamp: Date.now() }]);
       setErrorInfo({
         title: `Generation failed: ${message}`,
         line: null
@@ -845,7 +899,7 @@ const CreatePage = ({
       return;
     }
 
-    setLastPrompt(submittedPrompt);
+    setMessages([{ role: 'user', content: submittedPrompt, timestamp: Date.now() }]);
     setPrompt('');
     setBuildState('initializing');
     setIsBusy(true);
@@ -937,6 +991,12 @@ const CreatePage = ({
       const createdWorkbook = normalizeBuildWorkbook(injectResult?.workbook || resolvedWorkbook) || resolvedWorkbook;
       const createdModuleName = String(injectResult?.moduleName || nextModuleName).trim() || nextModuleName;
       setLocation(buildLocation(createdWorkbook.name, createdModuleName));
+      invalidateWorkbookMutation(createdWorkbook, {
+        includeActiveWorkbook: true,
+        includeExplorerAllFiles: true,
+        includePersonalMacros: true,
+        includeWorkbookScopedData: true
+      });
 
       // Phase 3: Set session context
       const nextSession = {
@@ -965,21 +1025,19 @@ const CreatePage = ({
 
       setEditedCode(generatedCode);
       setSavedMacroName(extractPrimaryMacroName(generatedCode));
+      setMessages((prev) => [...prev, { role: 'assistant', content: 'Macro generated.', timestamp: Date.now() }]);
       setBuildState('ready');
       markLocalDirty();
-
-      if (typeof onRefreshSearchData === 'function') {
-        await onRefreshSearchData({ silent: true });
-      }
     } catch (error) {
       const message = String(error?.message || 'Unable to generate VBA.');
+      setMessages((prev) => [...prev, { role: 'assistant', content: `Error: ${message}`, timestamp: Date.now() }]);
       setBuildState('idle');
       setErrorInfo({ title: `Generation failed: ${message}`, line: null });
     } finally {
       setIsBusy(false);
       isBusyRef.current = false;
     }
-  }, [ensureBuildApis, normalizedWorkbook, markLocalDirty, onRefreshSearchData, stopWithError]);
+  }, [ensureBuildApis, invalidateWorkbookMutation, normalizedWorkbook, markLocalDirty, stopWithError]);
 
   const dispatchSubmit = useCallback(() => {
     if (sessionContextRef.current) {
@@ -988,6 +1046,58 @@ const CreatePage = ({
       void handleFirstSubmit();
     }
   }, [handleSubmit, handleFirstSubmit]);
+
+  const handleRestoreSession = useCallback((id) => {
+    const saved = restoreSession(id);
+    if (!saved) return;
+
+    setSessionContext(saved.sessionContext);
+    sessionContextRef.current = saved.sessionContext;
+    setMessages(saved.messages);
+    messagesRef.current = saved.messages;
+    setEditedCode(saved.editedCode);
+    editedCodeRef.current = saved.editedCode;
+    setSavedMacroName(extractPrimaryMacroName(saved.editedCode));
+    setLocation(buildLocation(saved.sessionContext.workbook.name, saved.sessionContext.moduleName));
+    setBuildState('ready');
+    setErrorInfo(null);
+    setRunOutcome('idle');
+    setDirtyState(false);
+    setIncludeCurrentCode(true);
+    setPrompt('');
+    setSavedShortcutLetter('');
+    setDraftShortcutLetter('');
+    setShortcutInputError(false);
+    setShortcutSaving(false);
+    removeSession(id);
+  }, [restoreSession, removeSession, setDirtyState]);
+
+  const handleBackToHistory = useCallback(() => {
+    if (sessionContextRef.current && messagesRef.current.length > 0) {
+      saveSession({
+        sessionContext: sessionContextRef.current,
+        messages: messagesRef.current,
+        editedCode: editedCodeRef.current
+      });
+    }
+    setSessionContext(null);
+    sessionContextRef.current = null;
+    setMessages([]);
+    messagesRef.current = [];
+    setEditedCode(BUILD_MODE_SEED_CODE);
+    editedCodeRef.current = BUILD_MODE_SEED_CODE;
+    setBuildState('idle');
+    setErrorInfo(null);
+    setRunOutcome('idle');
+    setDirtyState(false);
+    setPrompt('');
+    setSavedMacroName('');
+    setSavedShortcutLetter('');
+    setDraftShortcutLetter('');
+    setShortcutInputError(false);
+    setShortcutSaving(false);
+    setLocation(buildLocation(normalizedWorkbook?.name, DEFAULT_MODULE_LABEL));
+  }, [saveSession, setDirtyState, normalizedWorkbook?.name]);
 
   const cancelModuleRename = useCallback(() => {
     const restoreName = String(
@@ -1069,10 +1179,13 @@ const CreatePage = ({
       setModuleRenameDraft(updatedModuleName);
       setModuleRenameActive(false);
       setErrorInfo(null);
-
-      if (typeof onRefreshSearchData === 'function') {
-        await onRefreshSearchData({ silent: true });
-      }
+      invalidateWorkbookMutation(updatedWorkbook, {
+        includeActiveWorkbook: true,
+        includeExplorerAllFiles: true,
+        includePersonalMacros: true,
+        includeShortcutAudit: true,
+        includeWorkbookScopedData: true
+      });
     } catch (error) {
       const message = String(error?.message || 'Unable to rename module.');
       setErrorInfo({
@@ -1083,7 +1196,7 @@ const CreatePage = ({
       moduleRenameCommitInFlightRef.current = false;
       setIsBusy(false);
     }
-  }, [moduleRenameDraft, onRefreshSearchData]);
+  }, [invalidateWorkbookMutation, moduleRenameDraft]);
 
   const handleRunMacro = useCallback(async () => {
     if (isBusyRef.current) {
@@ -1333,12 +1446,6 @@ const CreatePage = ({
 
   const footerContent = getFooterContent();
   const showCodePanel = Boolean(sessionContext);
-
-  useEffect(() => {
-    if (typeof onSessionActiveChange === 'function') {
-      onSessionActiveChange(showCodePanel);
-    }
-  }, [showCodePanel, onSessionActiveChange]);
   const shortcutInputDisabled =
     !showCodePanel || !sessionMacroTarget || isBusy || shortcutSaving;
   const primaryActionLabel = hasPendingChanges ? 'Save changes' : 'Run macro';
@@ -1407,13 +1514,22 @@ const CreatePage = ({
     );
   };
 
+  const conversationEndRef = useRef(null);
+
+  useEffect(() => {
+    conversationEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages.length, isBusy]);
+
   const conversationPanel = (
     <div className="conversation-panel">
-      {lastPrompt && (
-        <div className="user-prompt">
-          {lastPrompt}
+      {messages.map((msg, i) => (
+        <div
+          key={i}
+          className={msg.role === 'user' ? 'user-prompt' : 'assistant-message'}
+        >
+          {msg.content}
         </div>
-      )}
+      ))}
 
       {isBusy && (
         <div className="ai-loading-indicator">
@@ -1423,196 +1539,213 @@ const CreatePage = ({
         </div>
       )}
 
-      {errorInfo && (
-        <div className="error-title">{errorInfo.title}</div>
-      )}
-
       {errorInfo?.restartRequired && (
         <div className="completion-message">
           Close MacroFlow and reopen it to load the workbook-scoped sync APIs.
         </div>
       )}
+      <div ref={conversationEndRef} />
     </div>
   );
 
   const searchStatus = searchData?.status || 'idle';
   const searchNotReady = searchStatus !== 'ready';
 
+  const sidebarContent = showCodePanel ? (
+    <>
+      <div className="build-chat-header">
+        <div className="build-chat-header-left">
+          <button
+            type="button"
+            className="build-chat-back-btn"
+            onClick={handleBackToHistory}
+            disabled={isBusy}
+            title="Back to sessions"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="15,18 9,12 15,6" />
+            </svg>
+          </button>
+          <span className="build-chat-module-name">{location.module}</span>
+        </div>
+      </div>
+      {conversationPanel}
+      <div className="build-prompt-input-wrap">
+        <div className="build-prompt-input-box">
+          <textarea
+            className="build-prompt-input"
+            placeholder="Ask for follow-up changes"
+            rows={2}
+            value={prompt}
+            onChange={(event) => setPrompt(event.target.value)}
+            disabled={isBusy || buildState === 'initializing' || Boolean(errorInfo?.restartRequired)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' && !event.shiftKey && prompt.trim()) {
+                event.preventDefault();
+                void dispatchSubmit();
+              }
+            }}
+          />
+          <button
+            type="button"
+            className="build-prompt-send-btn"
+            onClick={() => { if (prompt.trim()) void dispatchSubmit(); }}
+            disabled={isBusy || !prompt.trim() || buildState === 'initializing'}
+            title="Send"
+          >
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="12" y1="19" x2="12" y2="5" />
+              <polyline points="5,12 12,5 19,12" />
+            </svg>
+          </button>
+        </div>
+      </div>
+    </>
+  ) : (
+    <div className="build-sidebar-history">
+      <div className="build-chat-header">
+        <div className="build-chat-header-left">
+          <span className="build-chat-module-name">Sessions</span>
+        </div>
+      </div>
+      <div className="build-session-history-list">
+        {sessions.length > 0 ? (
+          sessions.slice().reverse().map((s) => (
+            <button
+              key={s.id}
+              className="build-session-history-item"
+              onClick={() => handleRestoreSession(s.id)}
+            >
+              <span className="build-session-history-module">{s.sessionContext.moduleName}</span>
+              <span className="build-session-history-preview">
+                {(s.messages.find((m) => m.role === 'user')?.content || 'No prompt').slice(0, 60)}
+              </span>
+              <span className="build-session-history-time">
+                {new Date(s.savedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+              </span>
+            </button>
+          ))
+        ) : (
+          <div className="build-session-history-empty">No previous sessions</div>
+        )}
+      </div>
+    </div>
+  );
+
+  const mainContent = searchNotReady ? (() => {
+    const statusView = getSearchStatusView(searchData);
+    return (
+      <div className={`search-status-panel search-status-${statusView.status}`}>
+        <div className="search-status-header">
+          {statusView.isLoading && <span className="status-spinner" />}
+          <span className="search-status-title">{statusView.title}</span>
+        </div>
+        <p className="search-status-message">{statusView.message}</p>
+      </div>
+    );
+  })() : !showCodePanel ? (
+    buildState === 'idle' || (buildState === 'initializing' && !strictLaunchMode) ? (
+      <div className="build-empty-state build-idle-state">
+        <h1 className="build-empty-title">Create a Macro</h1>
+        <p className="build-empty-subtitle">
+          Describe what you want your macro to do and AI will generate the VBA code.
+        </p>
+        {errorInfo && <div className="error-title">{errorInfo.title}</div>}
+        <div className="build-prompt-input-wrap">
+          <div className="build-prompt-input-box">
+            <textarea
+              className="build-prompt-input"
+              placeholder="Describe the macro you want"
+              rows={2}
+              value={prompt}
+              onChange={(event) => setPrompt(event.target.value)}
+              disabled={isBusy}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' && !event.shiftKey && prompt.trim()) {
+                  event.preventDefault();
+                  void dispatchSubmit();
+                }
+              }}
+            />
+            <button
+              type="button"
+              className="build-prompt-send-btn"
+              onClick={() => { if (prompt.trim()) void dispatchSubmit(); }}
+              disabled={isBusy || !prompt.trim()}
+              title="Send"
+            >
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="12" y1="19" x2="12" y2="5" />
+                <polyline points="5,12 12,5 19,12" />
+              </svg>
+            </button>
+          </div>
+        </div>
+        {isBusy && (
+          <div className="build-generating-indicator">
+            <span className="status-spinner" />
+            <span>Generating macro...</span>
+          </div>
+        )}
+      </div>
+    ) : (
+      <div className="build-empty-state">
+        {buildState === 'initializing' ? (
+          <span className="status-spinner" />
+        ) : (
+          <>
+            <h1 className="build-empty-title">Build Session Unavailable</h1>
+            {errorInfo && <div className="error-title">{errorInfo.title}</div>}
+          </>
+        )}
+      </div>
+    )
+  ) : (
+    <div className="build-code-fullwidth">
+      <div className="build-code-bar">
+        <button
+          type="button"
+          className="build-run-action"
+          onClick={() => {
+            if (!isBusy) {
+              if (hasPendingChanges) {
+                void handleSave();
+                return;
+              }
+              void handleRunMacro();
+            }
+          }}
+          disabled={isBusy}
+        >
+          {primaryActionLabel}
+        </button>
+      </div>
+      <CodePreview
+        code={currentCode}
+        showHeader={false}
+        editable={true}
+        onChange={handleCodeChange}
+        status={codeStatus}
+        errorLine={errorInfo?.line}
+      />
+    </div>
+  );
+
   return (
     <>
       <main className="main-content">
-        {searchNotReady ? (() => {
-          const statusView = getSearchStatusView(searchData);
-          return (
-            <div className={`search-status-panel search-status-${statusView.status}`}>
-              <div className="search-status-header">
-                {statusView.isLoading && <span className="status-spinner" />}
-                <span className="search-status-title">{statusView.title}</span>
-              </div>
-              <p className="search-status-message">{statusView.message}</p>
-            </div>
-          );
-        })() : !showCodePanel ? (
-          buildState === 'idle' || (buildState === 'initializing' && !strictLaunchMode) ? (
-            <div className="build-empty-state build-idle-state">
-              <h1 className="build-empty-title">Create a Macro</h1>
-              <p className="build-empty-subtitle">
-                Describe what you want your macro to do and AI will generate the VBA code.
-              </p>
-              {errorInfo && <div className="error-title">{errorInfo.title}</div>}
-              <div className="build-prompt-input-wrap">
-                <div className="build-prompt-input-box">
-                  <textarea
-                    className="build-prompt-input"
-                    placeholder="Describe the macro you want"
-                    rows={2}
-                    value={prompt}
-                    onChange={(event) => setPrompt(event.target.value)}
-                    disabled={isBusy}
-                    onKeyDown={(event) => {
-                      if (event.key === 'Enter' && !event.shiftKey && prompt.trim()) {
-                        event.preventDefault();
-                        void dispatchSubmit();
-                      }
-                    }}
-                  />
-                  <button
-                    type="button"
-                    className="build-prompt-send-btn"
-                    onClick={() => { if (prompt.trim()) void dispatchSubmit(); }}
-                    disabled={isBusy || !prompt.trim()}
-                    title="Send"
-                  >
-                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                      <line x1="12" y1="19" x2="12" y2="5" />
-                      <polyline points="5,12 12,5 19,12" />
-                    </svg>
-                  </button>
-                </div>
-              </div>
-              {isBusy && (
-                <div className="build-generating-indicator">
-                  <span className="status-spinner" />
-                  <span>Generating macro...</span>
-                </div>
-              )}
-            </div>
-          ) : (
-            <div className="build-empty-state">
-              {buildState === 'initializing' ? (
-                <span className="status-spinner" />
-              ) : (
-                <>
-                  <h1 className="build-empty-title">Build Session Unavailable</h1>
-                  {errorInfo && <div className="error-title">{errorInfo.title}</div>}
-                </>
-              )}
-            </div>
-          )
-        ) : chatOpen ? (
+        {chatOpen ? (
           <div className="split-view">
             <div className="split-left build-chat-panel" style={{ width: `${splitPct}%` }}>
-              <div className="build-chat-header">
-                <div className="build-chat-header-left">
-                  <FolderIcon size={16} />
-                  <span className="build-chat-module-name">{location.module}</span>
-                </div>
-              </div>
-              {conversationPanel}
-              <div className="build-prompt-input-wrap">
-                <div className="build-prompt-input-box">
-                  <textarea
-                    className="build-prompt-input"
-                    placeholder="Ask for follow-up changes"
-                    rows={2}
-                    value={prompt}
-                    onChange={(event) => setPrompt(event.target.value)}
-                    disabled={isBusy || buildState === 'initializing' || Boolean(errorInfo?.restartRequired)}
-                    onKeyDown={(event) => {
-                      if (event.key === 'Enter' && !event.shiftKey && prompt.trim()) {
-                        event.preventDefault();
-                        void dispatchSubmit();
-                      }
-                    }}
-                  />
-                  <button
-                    type="button"
-                    className="build-prompt-send-btn"
-                    onClick={() => { if (prompt.trim()) void dispatchSubmit(); }}
-                    disabled={isBusy || !prompt.trim() || buildState === 'initializing'}
-                    title="Send"
-                  >
-                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                      <line x1="12" y1="19" x2="12" y2="5" />
-                      <polyline points="5,12 12,5 19,12" />
-                    </svg>
-                  </button>
-                </div>
-              </div>
+              {sidebarContent}
             </div>
             <SplitDivider onResize={setSplitPct} />
             <div className="split-right">
-              <div className="build-code-bar">
-                <button
-                  type="button"
-                  className="build-run-action"
-                  onClick={() => {
-                    if (!isBusy) {
-                      if (hasPendingChanges) {
-                        void handleSave();
-                        return;
-                      }
-                      void handleRunMacro();
-                    }
-                  }}
-                  disabled={isBusy}
-                >
-                  {primaryActionLabel}
-                </button>
-              </div>
-              <CodePreview
-                code={currentCode}
-                showHeader={false}
-                editable={true}
-                onChange={handleCodeChange}
-                status={codeStatus}
-                errorLine={errorInfo?.line}
-              />
+              {mainContent}
             </div>
           </div>
         ) : (
-          <div className="build-code-fullwidth">
-            <div className="build-code-bar">
-              <div className="build-chat-header-left">
-                <FolderIcon size={16} />
-                <span className="build-chat-module-name">{location.module}</span>
-              </div>
-              <button
-                type="button"
-                className="build-run-action"
-                onClick={() => {
-                  if (!isBusy) {
-                    if (hasPendingChanges) {
-                      void handleSave();
-                      return;
-                    }
-                    void handleRunMacro();
-                  }
-                }}
-                disabled={isBusy}
-              >
-                {primaryActionLabel}
-              </button>
-            </div>
-            <CodePreview
-              code={currentCode}
-              showHeader={false}
-              editable={true}
-              onChange={handleCodeChange}
-              status={codeStatus}
-              errorLine={errorInfo?.line}
-            />
-          </div>
+          mainContent
         )}
       </main>
 

@@ -112,7 +112,13 @@ function PersonalMacrosSection({
 
       {sectionModel.isEmpty ? (
         <div className="search-empty-state global-macros-empty">
-          {sectionModel.action ? (
+          {sectionModel.isLoading ? (
+            <div className="ai-loading-indicator">
+              <span className="ai-loading-dot" />
+              <span className="ai-loading-dot" />
+              <span className="ai-loading-dot" />
+            </div>
+          ) : sectionModel.action ? (
             <button
               type="button"
               className="global-macros-empty-action"

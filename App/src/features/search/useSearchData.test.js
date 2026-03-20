@@ -6,6 +6,7 @@ import {
   inferPauseReasonCodeFromResult,
   mapPauseReasonCodeToSearchStatus,
   getNextPausedReconnectDelayMs,
+  queueSearchLoadRequestState,
   shouldRefreshOnModeEntry,
   shouldSkipForegroundRefresh,
   shouldAttemptPausedReconnect
@@ -136,6 +137,32 @@ test('shouldAttemptPausedReconnect ignores cooldown arg and relies on nextAttemp
     cooldownMs: SEARCH_FOCUS_REFRESH_COOLDOWN_MS + 1000
   });
   assert.equal(allowed, true);
+});
+
+test('queueSearchLoadRequestState queues a first search-load request with its silent mode', () => {
+  const queued = queueSearchLoadRequestState({
+    hasQueuedLoad: false,
+    queuedSilent: true,
+    nextSilent: false
+  });
+
+  assert.deepEqual(queued, {
+    hasQueuedLoad: true,
+    queuedSilent: false
+  });
+});
+
+test('queueSearchLoadRequestState preserves non-silent priority across overlapping requests', () => {
+  const queued = queueSearchLoadRequestState({
+    hasQueuedLoad: true,
+    queuedSilent: false,
+    nextSilent: true
+  });
+
+  assert.deepEqual(queued, {
+    hasQueuedLoad: true,
+    queuedSilent: false
+  });
 });
 
 test('shouldRefreshOnModeEntry refreshes the first active entry and build-to-search transitions', () => {

@@ -1,12 +1,19 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { normalizeMacros } from '../../lib/search-data.js';
+import { createAsyncResourceStore } from './async-resource-store.js';
+import {
+  SEARCH_INVALIDATION_BUCKETS,
+  useSearchInvalidationRevision
+} from './search-invalidation.js';
 import {
   PERSONAL_FOREGROUND_REFRESH_COOLDOWN_MS,
+  PERSONAL_FOREGROUND_QUIET_MS,
   PERSONAL_INITIAL_DEFER_MS,
   PERSONAL_REFRESH_TTL_MS
 } from './search-constants.js';
 
 export const PERSONAL_WORKBOOK_NAME = 'PERSONAL.XLSB';
+const PERSONAL_CACHE_KEY = PERSONAL_WORKBOOK_NAME;
 
 const INITIAL_PERSONAL_MACROS_STATE = {
   status: 'idle',
@@ -21,12 +28,45 @@ const INITIAL_PERSONAL_MACROS_STATE = {
   error: null
 };
 
-const sharedPersonalCache = {
-  fetchedAt: 0,
-  workbookListSignature: '',
-  includeShortcutAudit: false,
-  data: null
-};
+const sharedPersonalCacheStore = createAsyncResourceStore({
+  defaultKey: PERSONAL_CACHE_KEY
+});
+
+function getSharedPersonalCacheSnapshot() {
+  const entry = sharedPersonalCacheStore.getEntry(PERSONAL_CACHE_KEY);
+  return {
+    fetchedAt: Number(entry?.fetchedAt || 0),
+    workbookListSignature: String(entry?.value?.workbookListSignature || '').trim(),
+    includeShortcutAudit: entry?.value?.includeShortcutAudit === true,
+    data: entry?.value?.data || null
+  };
+}
+
+function setSharedPersonalCache({
+  fetchedAt = Date.now(),
+  workbookListSignature = '',
+  includeShortcutAudit = false,
+  data = null
+} = {}) {
+  if (!data) {
+    sharedPersonalCacheStore.clear(PERSONAL_CACHE_KEY);
+    return;
+  }
+
+  sharedPersonalCacheStore.setValue(
+    PERSONAL_CACHE_KEY,
+    {
+      workbookListSignature: String(workbookListSignature || '').trim(),
+      includeShortcutAudit: includeShortcutAudit === true,
+      data
+    },
+    { fetchedAt }
+  );
+}
+
+function clearSharedPersonalCache() {
+  sharedPersonalCacheStore.clear(PERSONAL_CACHE_KEY);
+}
 
 export function resolvePersonalCacheSignature(nextSignature, cachedSignature = '') {
   const normalizedNextSignature = String(nextSignature || '').trim();
@@ -112,6 +152,33 @@ export function shouldRefreshPersonalOnForeground({
   });
 }
 
+export function shouldSkipPersonalForegroundRefresh({
+  now,
+  requestInFlight = false,
+  lastForegroundRefreshAt = 0,
+  lastSuccessfulLoadAt = 0,
+  cooldownMs = PERSONAL_FOREGROUND_REFRESH_COOLDOWN_MS,
+  quietWindowMs = PERSONAL_FOREGROUND_QUIET_MS
+}) {
+  if (requestInFlight) {
+    return true;
+  }
+
+  if (
+    Number.isFinite(Number(lastSuccessfulLoadAt)) &&
+    Number(lastSuccessfulLoadAt) > 0 &&
+    now - Number(lastSuccessfulLoadAt) < quietWindowMs
+  ) {
+    return true;
+  }
+
+  if (now - Number(lastForegroundRefreshAt || 0) < cooldownMs) {
+    return true;
+  }
+
+  return false;
+}
+
 export function usePersonalMacros(searchData, workbookListSignature = '', options = {}) {
   const includeShortcutAudit = options?.includeShortcutAudit === true;
   const focusRefreshPolicy = normalizePersonalForegroundRefreshPolicy(
@@ -125,6 +192,9 @@ export function usePersonalMacros(searchData, workbookListSignature = '', option
   const foregroundRefreshCooldownMs = Number.isFinite(Number(options?.foregroundRefreshCooldownMs))
     ? Math.max(0, Number(options.foregroundRefreshCooldownMs))
     : PERSONAL_FOREGROUND_REFRESH_COOLDOWN_MS;
+  const foregroundQuietWindowMs = Number.isFinite(Number(options?.foregroundQuietWindowMs))
+    ? Math.max(0, Number(options.foregroundQuietWindowMs))
+    : PERSONAL_FOREGROUND_QUIET_MS;
   const [personalState, setPersonalState] = useState(() => {
     const currentStatus = String(searchData?.status || 'idle');
     if (currentStatus !== 'ready') {
@@ -132,6 +202,7 @@ export function usePersonalMacros(searchData, workbookListSignature = '', option
     }
 
     const now = Date.now();
+    const sharedPersonalCache = getSharedPersonalCacheSnapshot();
     const normalizedWorkbookListSignature = resolvePersonalCacheSignature(
       workbookListSignature,
       sharedPersonalCache.workbookListSignature
@@ -151,15 +222,22 @@ export function usePersonalMacros(searchData, workbookListSignature = '', option
   });
   const [refreshTick, setRefreshTick] = useState(0);
   const requestSequence = useRef(0);
+  const lastHandledPersonalInvalidationRef = useRef(0);
   const deferredFetchTimerRef = useRef(null);
   const previousStatusRef = useRef('idle');
   const hasDeferredInitialFetchRef = useRef(false);
   const forceRefreshRef = useRef(false);
+  const pendingRefreshAfterInFlightRef = useRef(false);
   const lastForegroundRefreshAtRef = useRef(0);
+  const lastSuccessfulLoadAtRef = useRef(0);
+  const requestInFlightRef = useRef(false);
   const refresh = useCallback(() => {
     forceRefreshRef.current = true;
     setRefreshTick((previous) => previous + 1);
   }, []);
+  const personalInvalidationRevision = useSearchInvalidationRevision(
+    SEARCH_INVALIDATION_BUCKETS.PERSONAL_MACROS
+  );
 
   useEffect(() => {
     if (deferredFetchTimerRef.current) {
@@ -174,23 +252,24 @@ export function usePersonalMacros(searchData, workbookListSignature = '', option
     if (currentStatus !== 'ready') {
       requestSequence.current += 1;
       hasDeferredInitialFetchRef.current = false;
-      sharedPersonalCache.fetchedAt = 0;
-      sharedPersonalCache.workbookListSignature = '';
-      sharedPersonalCache.includeShortcutAudit = false;
-      sharedPersonalCache.data = null;
+      clearSharedPersonalCache();
       forceRefreshRef.current = false;
+      pendingRefreshAfterInFlightRef.current = false;
       lastForegroundRefreshAtRef.current = 0;
+      lastSuccessfulLoadAtRef.current = 0;
+      requestInFlightRef.current = false;
       setPersonalState(INITIAL_PERSONAL_MACROS_STATE);
       return;
     }
 
     const normalizedWorkbookListSignature = resolvePersonalCacheSignature(
       workbookListSignature,
-      sharedPersonalCache.workbookListSignature
+      getSharedPersonalCacheSnapshot().workbookListSignature
     );
     const now = Date.now();
     const forceRefresh = forceRefreshRef.current;
     forceRefreshRef.current = false;
+    const sharedPersonalCache = getSharedPersonalCacheSnapshot();
     const cached = sharedPersonalCache.data;
     const cacheIsFresh = !forceRefresh && shouldUsePersonalCache({
       cachedData: cached,
@@ -205,6 +284,13 @@ export function usePersonalMacros(searchData, workbookListSignature = '', option
 
     if (cacheIsFresh) {
       setPersonalState(cached);
+      return undefined;
+    }
+
+    if (requestInFlightRef.current) {
+      if (forceRefresh) {
+        pendingRefreshAfterInFlightRef.current = true;
+      }
       return undefined;
     }
 
@@ -255,6 +341,7 @@ export function usePersonalMacros(searchData, workbookListSignature = '', option
 
     let cancelled = false;
     const requestId = ++requestSequence.current;
+    requestInFlightRef.current = true;
     lastForegroundRefreshAtRef.current = Date.now();
 
     setPersonalState((previous) => ({
@@ -395,20 +482,21 @@ export function usePersonalMacros(searchData, workbookListSignature = '', option
           windowHidden,
           error: null
         };
-        sharedPersonalCache.fetchedAt = Date.now();
-        sharedPersonalCache.workbookListSignature = normalizedWorkbookListSignature;
-        sharedPersonalCache.includeShortcutAudit = includeShortcutAudit;
-        sharedPersonalCache.data = nextState;
+        const completedAt = Date.now();
+        setSharedPersonalCache({
+          fetchedAt: completedAt,
+          workbookListSignature: normalizedWorkbookListSignature,
+          includeShortcutAudit,
+          data: nextState
+        });
+        lastSuccessfulLoadAtRef.current = completedAt;
         setPersonalState(nextState);
       } catch (error) {
         if (cancelled || requestId !== requestSequence.current) {
           return;
         }
         const message = error?.message ? String(error.message) : 'Unable to load PERSONAL.XLSB macros.';
-        sharedPersonalCache.fetchedAt = 0;
-        sharedPersonalCache.workbookListSignature = '';
-        sharedPersonalCache.includeShortcutAudit = false;
-        sharedPersonalCache.data = null;
+        clearSharedPersonalCache();
         setPersonalState((previous) => ({
           ...previous,
           status: 'error',
@@ -416,6 +504,12 @@ export function usePersonalMacros(searchData, workbookListSignature = '', option
           shortcutAudit: null,
           error: { message }
         }));
+      } finally {
+        requestInFlightRef.current = false;
+        if (!cancelled && pendingRefreshAfterInFlightRef.current) {
+          pendingRefreshAfterInFlightRef.current = false;
+          setRefreshTick((previous) => previous + 1);
+        }
       }
     })();
 
@@ -443,7 +537,15 @@ export function usePersonalMacros(searchData, workbookListSignature = '', option
 
     const maybeRefresh = (policy) => {
       const now = Date.now();
-      if (now - lastForegroundRefreshAtRef.current < foregroundRefreshCooldownMs) {
+      const sharedPersonalCache = getSharedPersonalCacheSnapshot();
+      if (shouldSkipPersonalForegroundRefresh({
+        now,
+        requestInFlight: requestInFlightRef.current,
+        lastForegroundRefreshAt: lastForegroundRefreshAtRef.current,
+        lastSuccessfulLoadAt: lastSuccessfulLoadAtRef.current,
+        cooldownMs: foregroundRefreshCooldownMs,
+        quietWindowMs: foregroundQuietWindowMs
+      })) {
         return;
       }
 
@@ -488,12 +590,29 @@ export function usePersonalMacros(searchData, workbookListSignature = '', option
   }, [
     focusRefreshPolicy,
     foregroundRefreshCooldownMs,
+    foregroundQuietWindowMs,
     refresh,
     searchData?.status,
     includeShortcutAudit,
     visibilityRefreshPolicy,
     workbookListSignature
   ]);
+
+  useEffect(() => {
+    if (personalInvalidationRevision === 0) {
+      return;
+    }
+    if (personalInvalidationRevision === lastHandledPersonalInvalidationRef.current) {
+      return;
+    }
+
+    lastHandledPersonalInvalidationRef.current = personalInvalidationRevision;
+    clearSharedPersonalCache();
+
+    if (String(searchData?.status || 'idle') === 'ready') {
+      refresh();
+    }
+  }, [personalInvalidationRevision, refresh, searchData?.status]);
 
   return {
     ...personalState,

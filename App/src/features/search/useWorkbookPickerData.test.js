@@ -1,6 +1,19 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  createAsyncResourceStore,
+  normalizeAsyncResourceKey
+} from './async-resource-store.js';
+import {
+  SEARCH_INVALIDATION_BUCKETS,
+  buildSearchInvalidationKey,
+  buildWorkbookInvalidationDescriptors,
+  getShortcutAuditInvalidationScope,
+  getWorkbookInvalidationScope,
+  getWorkbookScopedDataInvalidationScope,
+  normalizeSearchInvalidationScope
+} from './search-invalidation.js';
+import {
   getWorkbookKey,
   normalizeListContextModules,
   sortAllFilesModules,
@@ -9,6 +22,95 @@ import {
   qualifyMacroFullName,
   namespaceMacrosForWorkbook
 } from '../workbooks/workbook-model.js';
+
+test('normalizeAsyncResourceKey trims keys and falls back safely', () => {
+  assert.equal(normalizeAsyncResourceKey(' active '), 'active');
+  assert.equal(normalizeAsyncResourceKey('', 'fallback'), 'fallback');
+  assert.equal(normalizeAsyncResourceKey('', ''), '__default__');
+});
+
+test('createAsyncResourceStore returns only fresh cache entries within TTL', () => {
+  const store = createAsyncResourceStore();
+  store.setValue('picker', ['Book1'], { fetchedAt: 1_000 });
+
+  const freshEntry = store.getFreshEntry({
+    key: 'picker',
+    now: 5_000,
+    ttlMs: 10_000,
+    isValid: (value) => Array.isArray(value)
+  });
+  assert.deepEqual(freshEntry?.value, ['Book1']);
+
+  const staleEntry = store.getFreshEntry({
+    key: 'picker',
+    now: 20_000,
+    ttlMs: 10_000,
+    isValid: (value) => Array.isArray(value)
+  });
+  assert.equal(staleEntry, null);
+});
+
+test('createAsyncResourceStore coalesces concurrent requests by key', async () => {
+  const store = createAsyncResourceStore();
+  let callCount = 0;
+
+  const requestFactory = async () => {
+    callCount += 1;
+    return 'ready';
+  };
+
+  const [first, second] = await Promise.all([
+    store.run('workbooks', requestFactory),
+    store.run('workbooks', requestFactory)
+  ]);
+
+  assert.equal(first, 'ready');
+  assert.equal(second, 'ready');
+  assert.equal(callCount, 1);
+});
+
+test('normalizeSearchInvalidationScope and workbook scope helpers resolve stable keys', () => {
+  assert.equal(normalizeSearchInvalidationScope(' focus '), 'focus');
+  assert.equal(normalizeSearchInvalidationScope('', 'fallback'), 'fallback');
+  assert.equal(getWorkbookInvalidationScope({ path: 'C:/Book1.xlsm', name: 'Book1.xlsm' }), 'C:/Book1.xlsm');
+  assert.equal(getWorkbookInvalidationScope({ path: '', name: 'Book1.xlsm' }), 'Book1.xlsm');
+  assert.equal(getShortcutAuditInvalidationScope({ scope: 'active' }), 'active-workbook');
+  assert.equal(
+    getWorkbookScopedDataInvalidationScope({ path: 'C:/Book1.xlsm' }, true),
+    'C:/Book1.xlsm::namespaced'
+  );
+  assert.equal(
+    buildSearchInvalidationKey(SEARCH_INVALIDATION_BUCKETS.WORKBOOK_LIST, 'global'),
+    'workbook-list::global'
+  );
+});
+
+test('buildWorkbookInvalidationDescriptors includes only requested buckets and scoped workbook data', () => {
+  const descriptors = buildWorkbookInvalidationDescriptors({
+    workbook: { name: 'Book1.xlsm', path: 'C:/Book1.xlsm' },
+    includeActiveWorkbook: true,
+    includeExplorerAllFiles: true,
+    includeShortcutAudit: true,
+    includeWorkbookScopedData: true
+  });
+
+  assert.deepEqual(descriptors, [
+    { bucket: SEARCH_INVALIDATION_BUCKETS.ACTIVE_WORKBOOK },
+    { bucket: SEARCH_INVALIDATION_BUCKETS.EXPLORER_ALL_FILES },
+    {
+      bucket: SEARCH_INVALIDATION_BUCKETS.SHORTCUT_AUDIT,
+      scope: 'C:/Book1.xlsm'
+    },
+    {
+      bucket: SEARCH_INVALIDATION_BUCKETS.WORKBOOK_SCOPED_DATA,
+      scope: 'C:/Book1.xlsm::plain'
+    },
+    {
+      bucket: SEARCH_INVALIDATION_BUCKETS.WORKBOOK_SCOPED_DATA,
+      scope: 'C:/Book1.xlsm::namespaced'
+    }
+  ]);
+});
 
 test('getWorkbookKey prefers workbook path and falls back to workbook name', () => {
   assert.equal(getWorkbookKey({ name: 'Book1.xlsm', path: 'C:/Book1.xlsm' }), 'C:/Book1.xlsm');

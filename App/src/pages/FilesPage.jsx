@@ -14,7 +14,11 @@ import {
   getDefaultExpandedIds,
 } from '../features/search/explorer-selectors';
 import { getSearchStatusView } from '../features/search/search-selectors';
-import { usePersonalMacros } from '../features/search/usePersonalMacros';
+import {
+  buildWorkbookInvalidationDescriptors,
+  invalidateSearchBuckets
+} from '../features/search/search-invalidation';
+import { PERSONAL_WORKBOOK_NAME, usePersonalMacros } from '../features/search/usePersonalMacros';
 import { useExplorerAllFilesData } from '../features/search/useExplorerAllFilesData';
 import { resolveInitialModuleNode } from '../features/search/explorer-selection';
 import {
@@ -69,7 +73,6 @@ const FilesPage = ({
   explorerContext = null,
   onExplorerContextConsumed,
   onActionStatus,
-  onRefreshSearchData,
   sidebarOpen = true,
   onEditModule
 }) => {
@@ -91,8 +94,7 @@ const FilesPage = ({
   const {
     workbooks: explorerWorkbooks,
     modules: explorerModules,
-    workbookListSignature,
-    refreshExplorerAllFiles
+    workbookListSignature
   } = useExplorerAllFilesData(searchData);
   const personalState = usePersonalMacros(searchData, workbookListSignature, {
     includeShortcutAudit: false,
@@ -252,15 +254,25 @@ const FilesPage = ({
     setModuleContextMenu(null);
   }, []);
 
-  const refreshExplorerData = useCallback(async (targetWorkbook = null) => {
-    const shouldRefreshActiveWorkbook = isSameWorkbookTarget(targetWorkbook, searchData?.workbook);
-    await Promise.all([
-      shouldRefreshActiveWorkbook && typeof onRefreshSearchData === 'function'
-        ? Promise.resolve(onRefreshSearchData({ silent: true }))
-        : Promise.resolve(),
-      Promise.resolve(refreshExplorerAllFiles({ silent: true }))
-    ]);
-  }, [onRefreshSearchData, refreshExplorerAllFiles, searchData?.workbook]);
+  const invalidateWorkbookMutation = useCallback((targetWorkbook = null, options = {}) => {
+    const workbookTarget = {
+      name: String(targetWorkbook?.workbookName || targetWorkbook?.name || '').trim(),
+      path: String(targetWorkbook?.workbookPath || targetWorkbook?.path || '').trim()
+    };
+    const affectsActiveWorkbook = isSameWorkbookTarget(workbookTarget, searchData?.workbook);
+    const affectsPersonalWorkbook =
+      String(workbookTarget.name || '').trim().toUpperCase() === PERSONAL_WORKBOOK_NAME;
+
+    invalidateSearchBuckets(buildWorkbookInvalidationDescriptors({
+      workbook: workbookTarget,
+      includeActiveWorkbook: options.includeActiveWorkbook === true && affectsActiveWorkbook,
+      includeWorkbookList: options.includeWorkbookList === true,
+      includeExplorerAllFiles: options.includeExplorerAllFiles === true,
+      includePersonalMacros: options.includePersonalMacros === true && affectsPersonalWorkbook,
+      includeShortcutAudit: options.includeShortcutAudit === true,
+      includeWorkbookScopedData: options.includeWorkbookScopedData === true
+    }));
+  }, [searchData?.workbook]);
 
   const handleOpenContextMenu = useCallback((event, node) => {
     event.preventDefault();
@@ -400,10 +412,13 @@ const FilesPage = ({
       }
 
       setModuleRenameState(null);
-      await refreshExplorerData(request);
-      if (String(request.workbookName || '').trim().toUpperCase() === 'PERSONAL.XLSB') {
-        personalState.refresh();
-      }
+      invalidateWorkbookMutation(request, {
+        includeActiveWorkbook: true,
+        includeExplorerAllFiles: true,
+        includePersonalMacros: true,
+        includeShortcutAudit: true,
+        includeWorkbookScopedData: true
+      });
       onActionStatus?.('success', `Renamed to "${nextName}".`);
     } catch (error) {
       const message = error?.message ? String(error.message) : 'Unable to rename module.';
@@ -412,7 +427,7 @@ const FilesPage = ({
       setModuleActionInFlight(false);
       renameCommitInFlightRef.current = false;
     }
-  }, [moduleRenameState, onActionStatus, personalState, refreshExplorerData, searchData?.workbook]);
+  }, [invalidateWorkbookMutation, moduleRenameState, onActionStatus, searchData?.workbook]);
 
   const handleCommitRenameMacro = useCallback(async () => {
     if (renameCommitInFlightRef.current) {
@@ -463,10 +478,13 @@ const FilesPage = ({
       }
 
       setModuleRenameState(null);
-      await refreshExplorerData(request);
-      if (String(request.workbookName || '').trim().toUpperCase() === 'PERSONAL.XLSB') {
-        personalState.refresh();
-      }
+      invalidateWorkbookMutation(request, {
+        includeActiveWorkbook: true,
+        includeExplorerAllFiles: true,
+        includePersonalMacros: true,
+        includeShortcutAudit: true,
+        includeWorkbookScopedData: true
+      });
       onActionStatus?.('success', `Renamed to "${nextName}".`);
     } catch (error) {
       const message = error?.message ? String(error.message) : 'Unable to rename macro.';
@@ -475,7 +493,7 @@ const FilesPage = ({
       setModuleActionInFlight(false);
       renameCommitInFlightRef.current = false;
     }
-  }, [moduleRenameState, onActionStatus, personalState, refreshExplorerData, searchData?.workbook]);
+  }, [invalidateWorkbookMutation, moduleRenameState, onActionStatus, searchData?.workbook]);
 
   const commitMetadataRename = useCallback(async () => {
     const draft = (metadataRename || '').trim();
@@ -508,10 +526,13 @@ const FilesPage = ({
           onActionStatus?.('error', String(result?.message || 'Unable to rename module.'));
           return;
         }
-        await refreshExplorerData(request);
-        if (String(request.workbookName || '').trim().toUpperCase() === 'PERSONAL.XLSB') {
-          personalState.refresh();
-        }
+        invalidateWorkbookMutation(request, {
+          includeActiveWorkbook: true,
+          includeExplorerAllFiles: true,
+          includePersonalMacros: true,
+          includeShortcutAudit: true,
+          includeWorkbookScopedData: true
+        });
         onActionStatus?.('success', `Renamed to "${draft}".`);
       } catch (error) {
         onActionStatus?.('error', error?.message ? String(error.message) : 'Unable to rename module.');
@@ -537,10 +558,13 @@ const FilesPage = ({
           onActionStatus?.('error', String(result?.message || 'Unable to rename macro.'));
           return;
         }
-        await refreshExplorerData(request);
-        if (String(request.workbookName || '').trim().toUpperCase() === 'PERSONAL.XLSB') {
-          personalState.refresh();
-        }
+        invalidateWorkbookMutation(request, {
+          includeActiveWorkbook: true,
+          includeExplorerAllFiles: true,
+          includePersonalMacros: true,
+          includeShortcutAudit: true,
+          includeWorkbookScopedData: true
+        });
         onActionStatus?.('success', `Renamed to "${draft}".`);
       } catch (error) {
         onActionStatus?.('error', error?.message ? String(error.message) : 'Unable to rename macro.');
@@ -548,7 +572,7 @@ const FilesPage = ({
         setModuleActionInFlight(false);
       }
     }
-  }, [metadataRename, selectedNode, onActionStatus, searchData?.workbook, personalState, refreshExplorerData]);
+  }, [invalidateWorkbookMutation, metadataRename, onActionStatus, searchData?.workbook, selectedNode]);
 
   const handleRequestDeleteModule = useCallback((target) => {
     setModuleDeleteTarget(target?.module || null);
@@ -591,10 +615,13 @@ const FilesPage = ({
       setModuleRenameState((previous) => (
         previous?.module?.name === moduleName ? null : previous
       ));
-      await refreshExplorerData(request);
-      if (String(request.workbookName || '').trim().toUpperCase() === 'PERSONAL.XLSB') {
-        personalState.refresh();
-      }
+      invalidateWorkbookMutation(request, {
+        includeActiveWorkbook: true,
+        includeExplorerAllFiles: true,
+        includePersonalMacros: true,
+        includeShortcutAudit: true,
+        includeWorkbookScopedData: true
+      });
       onActionStatus?.('success', 'Module deleted.');
     } catch (error) {
       const message = error?.message ? String(error.message) : 'Unable to delete module.';
@@ -602,7 +629,7 @@ const FilesPage = ({
     } finally {
       setModuleActionInFlight(false);
     }
-  }, [moduleActionInFlight, moduleDeleteTarget, onActionStatus, personalState, refreshExplorerData, searchData?.workbook]);
+  }, [invalidateWorkbookMutation, moduleActionInFlight, moduleDeleteTarget, onActionStatus, searchData?.workbook]);
 
   useEffect(() => {
     if (!moduleContextMenu) {
@@ -840,7 +867,18 @@ const FilesPage = ({
                             const result = await personalApi.open({ visible: true });
                             onActionStatus?.(result?.success ? 'success' : 'error', String(result?.message || 'Updated.'));
                           }
-                          personalState.refresh();
+                          invalidateWorkbookMutation(
+                            {
+                              name: PERSONAL_WORKBOOK_NAME,
+                              path: personalState.workbookPath || personalState.workbook?.path || ''
+                            },
+                            {
+                              includeWorkbookList: personalState.workbookFound !== true,
+                              includeExplorerAllFiles: personalState.workbookFound !== true,
+                              includePersonalMacros: true,
+                              includeWorkbookScopedData: true
+                            }
+                          );
                         } catch (error) {
                           onActionStatus?.('error', error?.message ? String(error.message) : 'Unable to update visibility.');
                         }

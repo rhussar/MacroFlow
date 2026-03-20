@@ -5,6 +5,11 @@ import {
   sortWorkbooksForPicker,
   toWorkbookModel
 } from '../workbooks/workbook-model.js';
+import { createAsyncResourceStore } from './async-resource-store.js';
+import {
+  SEARCH_INVALIDATION_BUCKETS,
+  useSearchInvalidationRevision
+} from './search-invalidation.js';
 import { WORKBOOK_PICKER_REFRESH_TTL_MS } from './search-constants.js';
 
 const INITIAL_EXPLORER_ALL_FILES_STATE = {
@@ -14,24 +19,19 @@ const INITIAL_EXPLORER_ALL_FILES_STATE = {
   error: null
 };
 
-const explorerAllFilesCache = new Map();
-const explorerAllFilesPendingRequests = new Map();
+const explorerAllFilesStore = createAsyncResourceStore({
+  defaultKey: '__active-workbook__'
+});
 
 function buildExplorerAllFilesCacheKey(activeWorkbookKey) {
   return String(activeWorkbookKey || '').trim() || '__active-workbook__';
 }
 
 function getFreshExplorerAllFilesCacheEntry(activeWorkbookKey) {
-  const cacheKey = buildExplorerAllFilesCacheKey(activeWorkbookKey);
-  const cachedEntry = explorerAllFilesCache.get(cacheKey);
-  const cacheAgeMs = Date.now() - Number(cachedEntry?.fetchedAt || 0);
-  const cacheIsFresh =
-    Boolean(cachedEntry?.data) &&
-    Number.isFinite(cacheAgeMs) &&
-    cacheAgeMs >= 0 &&
-    cacheAgeMs < WORKBOOK_PICKER_REFRESH_TTL_MS;
-
-  return cacheIsFresh ? cachedEntry : null;
+  return explorerAllFilesStore.getFreshEntry({
+    key: buildExplorerAllFilesCacheKey(activeWorkbookKey),
+    ttlMs: WORKBOOK_PICKER_REFRESH_TTL_MS
+  });
 }
 
 function buildExplorerAllFilesFallback(activeWorkbook, searchData) {
@@ -53,28 +53,20 @@ function getExplorerAllFilesRequestKey(activeWorkbookKey) {
 }
 
 function getOrCreateExplorerAllFilesRequest(activeWorkbookKey, requestFactory) {
-  const requestKey = getExplorerAllFilesRequestKey(activeWorkbookKey);
-  const pendingRequest = explorerAllFilesPendingRequests.get(requestKey);
-  if (pendingRequest) {
-    return pendingRequest;
-  }
-
-  const requestPromise = Promise.resolve()
-    .then(requestFactory)
-    .finally(() => {
-      if (explorerAllFilesPendingRequests.get(requestKey) === requestPromise) {
-        explorerAllFilesPendingRequests.delete(requestKey);
-      }
-    });
-
-  explorerAllFilesPendingRequests.set(requestKey, requestPromise);
-  return requestPromise;
+  return explorerAllFilesStore.run(
+    getExplorerAllFilesRequestKey(activeWorkbookKey),
+    requestFactory
+  );
 }
 
 export function useExplorerAllFilesData(searchData) {
   const requestSequence = useRef(0);
+  const lastHandledExplorerInvalidationRef = useRef(0);
   const activeModules = Array.isArray(searchData?.modules) ? searchData.modules : [];
   const searchStatus = searchData?.status;
+  const explorerInvalidationRevision = useSearchInvalidationRevision(
+    SEARCH_INVALIDATION_BUCKETS.EXPLORER_ALL_FILES
+  );
   const activeWorkbook = useMemo(
     () => toWorkbookModel(searchData?.workbook, { defaultName: 'Active Workbook' }),
     [searchData?.workbook?.name, searchData?.workbook?.path]
@@ -86,7 +78,7 @@ export function useExplorerAllFilesData(searchData) {
       return INITIAL_EXPLORER_ALL_FILES_STATE;
     }
 
-    return freshCacheEntry?.data || buildExplorerAllFilesFallback(activeWorkbook, { modules: activeModules });
+    return freshCacheEntry?.value || buildExplorerAllFilesFallback(activeWorkbook, { modules: activeModules });
   });
 
   const refreshExplorerAllFiles = useCallback(async ({ silent = false } = {}) => {
@@ -152,10 +144,10 @@ export function useExplorerAllFilesData(searchData) {
             modules: sortAllFilesModules(Array.from(moduleMap.values()), activeWorkbookKey),
             error: null
           };
-          explorerAllFilesCache.set(buildExplorerAllFilesCacheKey(activeWorkbookKey), {
-            fetchedAt: Date.now(),
-            data: resolvedState
-          });
+          explorerAllFilesStore.setValue(
+            buildExplorerAllFilesCacheKey(activeWorkbookKey),
+            resolvedState
+          );
           return resolvedState;
         }
       );
@@ -187,13 +179,29 @@ export function useExplorerAllFilesData(searchData) {
     }
 
     const cachedEntry = getFreshExplorerAllFilesCacheEntry(activeWorkbookKey);
-    if (cachedEntry?.data) {
-      setState(cachedEntry.data);
+    if (cachedEntry?.value) {
+      setState(cachedEntry.value);
       return;
     }
 
     void refreshExplorerAllFiles({ silent: true });
   }, [activeWorkbookKey, refreshExplorerAllFiles, searchStatus]);
+
+  useEffect(() => {
+    if (explorerInvalidationRevision === 0) {
+      return;
+    }
+    if (explorerInvalidationRevision === lastHandledExplorerInvalidationRef.current) {
+      return;
+    }
+
+    lastHandledExplorerInvalidationRef.current = explorerInvalidationRevision;
+    explorerAllFilesStore.clear(buildExplorerAllFilesCacheKey(activeWorkbookKey));
+
+    if (searchStatus === 'ready') {
+      void refreshExplorerAllFiles({ silent: true });
+    }
+  }, [activeWorkbookKey, explorerInvalidationRevision, refreshExplorerAllFiles, searchStatus]);
 
   const workbookListSignature = useMemo(() => {
     const workbooks = Array.isArray(state.workbooks) ? state.workbooks : [];

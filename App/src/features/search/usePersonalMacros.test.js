@@ -5,6 +5,7 @@ import {
   resolvePersonalCacheSignature,
   shouldRefreshPersonalOnForeground,
   shouldDeferPersonalInitialFetch,
+  shouldSkipPersonalForegroundRefresh,
   shouldUsePersonalCache
 } from './usePersonalMacros.js';
 
@@ -194,6 +195,42 @@ test('shouldRefreshPersonalOnForeground never refreshes when policy is never', (
     cachedSignature: '',
     nextSignature: '',
     now: 10_000
+  });
+
+  assert.equal(result, false);
+});
+
+test('shouldSkipPersonalForegroundRefresh blocks while a personal request is already in flight', () => {
+  const result = shouldSkipPersonalForegroundRefresh({
+    now: 10_000,
+    requestInFlight: true,
+    lastForegroundRefreshAt: 0,
+    lastSuccessfulLoadAt: 0
+  });
+
+  assert.equal(result, true);
+});
+
+test('shouldSkipPersonalForegroundRefresh honors the post-load quiet window', () => {
+  const result = shouldSkipPersonalForegroundRefresh({
+    now: 10_000,
+    requestInFlight: false,
+    lastForegroundRefreshAt: 0,
+    lastSuccessfulLoadAt: 7_000,
+    quietWindowMs: 5_000
+  });
+
+  assert.equal(result, true);
+});
+
+test('shouldSkipPersonalForegroundRefresh allows refresh after quiet window and cooldown expire', () => {
+  const result = shouldSkipPersonalForegroundRefresh({
+    now: 10_000,
+    requestInFlight: false,
+    lastForegroundRefreshAt: 7_000,
+    lastSuccessfulLoadAt: 4_000,
+    cooldownMs: 1_000,
+    quietWindowMs: 5_000
   });
 
   assert.equal(result, false);

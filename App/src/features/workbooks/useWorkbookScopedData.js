@@ -2,6 +2,11 @@ import { useEffect, useRef, useState } from 'react';
 import { normalizeMacros, normalizeModules, mapSearchError } from '../../lib/search-data.js';
 import { WORKBOOK_SCOPED_DATA_REFRESH_TTL_MS } from '../search/search-constants.js';
 import {
+  SEARCH_INVALIDATION_BUCKETS,
+  getWorkbookScopedDataInvalidationScope,
+  useSearchInvalidationRevision
+} from '../search/search-invalidation.js';
+import {
   namespaceMacrosForWorkbook,
   toWorkbookModel,
   toWorkbookRequest
@@ -148,6 +153,11 @@ export function useWorkbookScopedData(options = {}) {
     onWorkbookMissing = null
   } = options;
   const normalizedWorkbook = toWorkbookModel(workbook, { defaultName: defaultWorkbookName });
+  const invalidationScope = getWorkbookScopedDataInvalidationScope(normalizedWorkbook, namespaceMacros);
+  const workbookScopedInvalidationRevision = useSearchInvalidationRevision(
+    SEARCH_INVALIDATION_BUCKETS.WORKBOOK_SCOPED_DATA,
+    invalidationScope
+  );
   const freshCacheEntry = enabled
     ? getFreshWorkbookScopedCacheEntry(normalizedWorkbook, namespaceMacros)
     : null;
@@ -159,6 +169,7 @@ export function useWorkbookScopedData(options = {}) {
     return freshCacheEntry.data;
   });
   const requestSequence = useRef(0);
+  const lastHandledInvalidationRef = useRef(0);
   const onWorkbookMissingRef = useRef(onWorkbookMissing);
   onWorkbookMissingRef.current = onWorkbookMissing;
 
@@ -175,7 +186,19 @@ export function useWorkbookScopedData(options = {}) {
     }
 
     const cacheKey = buildWorkbookScopedCacheKey(normalizedWorkbook, namespaceMacros);
-    const cachedEntry = getFreshWorkbookScopedCacheEntry(normalizedWorkbook, namespaceMacros);
+    const invalidationChanged =
+      workbookScopedInvalidationRevision > 0
+      && workbookScopedInvalidationRevision !== lastHandledInvalidationRef.current;
+    if (invalidationChanged) {
+      lastHandledInvalidationRef.current = workbookScopedInvalidationRevision;
+      if (cacheKey) {
+        workbookScopedDataCache.delete(cacheKey);
+      }
+    }
+
+    const cachedEntry = invalidationChanged
+      ? null
+      : getFreshWorkbookScopedCacheEntry(normalizedWorkbook, namespaceMacros);
     if (cachedEntry?.data) {
       setData(cachedEntry.data);
       return;
@@ -286,6 +309,7 @@ export function useWorkbookScopedData(options = {}) {
     missingWorkbookMessage,
     missingWorkbookStatus,
     namespaceMacros,
+    workbookScopedInvalidationRevision,
     workbook?.key,
     workbook?.name,
     workbook?.path

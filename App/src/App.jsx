@@ -7,6 +7,7 @@ import ShortcutsPage from './pages/ShortcutsPage';
 import CreatePage from './pages/CreatePage';
 import FilesPage from './pages/FilesPage';
 import SettingsMenu from './components/SettingsMenu';
+import LicenseGate from './components/LicenseGate';
 import { SettingsIcon, SidebarIcon, MinimizeIcon, CloseIcon } from './components/icons';
 import { useSearchData } from './features/search/useSearchData';
 import { useMacroRun } from './features/run/useMacroRun';
@@ -27,7 +28,7 @@ const TAB_ITEMS = [
  * - 'create': AI Build mode for generating macros (includes inline code editor)
  * - 'files': File explorer with details panel
  */
-function App() {
+function AppInner() {
   // Current view mode
   const [mode, setMode] = useState('shortcuts');
 
@@ -44,11 +45,11 @@ function App() {
     source: 'toolbar',
     originMode: 'shortcuts'
   }));
-  const [buildChatOpen, setBuildChatOpen] = useState(true);
-  const [buildSessionActive, setBuildSessionActive] = useState(false);
+  const [buildChatOpen, setBuildChatOpen] = useState(false);
   const [filesSidebarOpen, setFilesSidebarOpen] = useState(true);
   const loadSearchDataRef = useRef(null);
   const shortcutSaveInFlightRef = useRef(false);
+  const startupSettledNotifiedRef = useRef(false);
 
   useEffect(() => {
     const preloadKey = 'lightning-icon';
@@ -98,6 +99,13 @@ function App() {
         setUpdateVersion(payload.version || '');
       }
     });
+    // Check if an update was already downloaded (e.g. user dismissed banner then reopened).
+    window.excel.updater.getStatus?.().then((status) => {
+      if (status?.updateDownloaded) {
+        setUpdateReady(true);
+        setUpdateVersion(status.pendingVersion || '');
+      }
+    }).catch(() => {});
     return unsub;
   }, []);
 
@@ -122,6 +130,32 @@ function App() {
   useEffect(() => {
     loadSearchDataRef.current = loadSearchData;
   }, [loadSearchData]);
+
+  useEffect(() => {
+    if (startupSettledNotifiedRef.current) {
+      return undefined;
+    }
+
+    const status = String(searchData?.status || 'idle');
+    if (status === 'idle' || status === 'loading') {
+      return undefined;
+    }
+
+    const markStartupSettled = window.excel?.app?.markStartupSettled;
+    startupSettledNotifiedRef.current = true;
+
+    if (typeof markStartupSettled !== 'function') {
+      return undefined;
+    }
+
+    const timerId = window.setTimeout(() => {
+      markStartupSettled();
+    }, 250);
+
+    return () => {
+      window.clearTimeout(timerId);
+    };
+  }, [searchData?.status]);
 
   useEffect(() => {
     if (searchData.status !== 'ready') {
@@ -287,7 +321,6 @@ function App() {
   }, [openBuildMode]);
 
   const handleCreateBack = useCallback(() => {
-    setBuildSessionActive(false);
     if (buildLaunchContext.originMode === 'files') {
       setMode('files');
       return;
@@ -302,7 +335,6 @@ function App() {
     if (newMode === 'create') {
       openBuildMode(null, { mode: 'new_module', source: 'tab', originMode: 'shortcuts' });
     } else {
-      setBuildSessionActive(false);
       setMode(newMode);
     }
   }, [openBuildMode]);
@@ -347,11 +379,9 @@ function App() {
             launchMode={buildLaunchContext.mode}
             launchModuleName={buildLaunchContext.moduleName}
             launchSource={buildLaunchContext.source}
-            onRefreshSearchData={loadSearchData}
             chatOpen={buildChatOpen}
             onChatToggle={toggleBuildChat}
             searchData={searchData}
-            onSessionActiveChange={setBuildSessionActive}
           />
         );
 
@@ -360,7 +390,6 @@ function App() {
           <FilesPage
             searchData={searchData}
             onActionStatus={setActionStatus}
-            onRefreshSearchData={loadSearchData}
             sidebarOpen={filesSidebarOpen}
             onEditModule={openBuildMode}
           />
@@ -382,7 +411,7 @@ function App() {
       <header className="header">
         <div className="drag-region" />
         <div className="header-left">
-          {((mode === 'create' && buildSessionActive) || mode === 'files') && (
+          {(mode === 'create' || mode === 'files') && (
             <button
               className="sidebar-toggle-btn"
               onClick={mode === 'create' ? toggleBuildChat : toggleFilesSidebar}
@@ -477,6 +506,32 @@ function App() {
       />
     </div>
   );
+}
+
+function App() {
+  const [licensed, setLicensed] = useState(null);
+
+  useEffect(() => {
+    window.excel?.license?.getStatus?.().then((status) => {
+      setLicensed(status?.valid ? true : false);
+    }).catch(() => setLicensed(false));
+  }, []);
+
+  const handleLicensed = useCallback(() => {
+    setLicensed(true);
+  }, []);
+
+  // Show nothing while checking (avoids flash).
+  if (licensed === null) {
+    return <div className="app-container" />;
+  }
+
+  // Show activation screen if not licensed.
+  if (!licensed) {
+    return <LicenseGate onLicensed={handleLicensed} />;
+  }
+
+  return <AppInner />;
 }
 
 export default App;

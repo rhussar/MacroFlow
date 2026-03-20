@@ -8,7 +8,8 @@ function ShortcutGrid({
   selectedMacroId = null,
   onRunMacro,
   emptyMessage = '',
-  showEmptyState = false
+  showEmptyState = false,
+  isLoading = false
 }) {
   const shortcutByMacroId = shortcutState?.shortcutByMacroId || {};
   const shortcutDraftByMacroId = shortcutState?.shortcutDraftByMacroId || {};
@@ -23,7 +24,15 @@ function ShortcutGrid({
   return (
     <div className="shortcuts-grid">
       {showEmptyState && (
-        <div className="search-empty-state search-empty-state-grid">{emptyMessage}</div>
+        <div className="search-empty-state search-empty-state-grid">
+          {isLoading ? (
+            <div className="ai-loading-indicator">
+              <span className="ai-loading-dot" />
+              <span className="ai-loading-dot" />
+              <span className="ai-loading-dot" />
+            </div>
+          ) : emptyMessage}
+        </div>
       )}
 
       {rows.map((row) => {

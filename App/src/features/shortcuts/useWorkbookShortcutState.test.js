@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { buildWorkbookShortcutSnapshotKey } from './useShortcutState.js';
+import {
+  buildWorkbookShortcutSnapshotKey,
+  shouldDelayInitialShortcutLoad
+} from './useShortcutState.js';
 
 test('buildWorkbookShortcutSnapshotKey includes workbook identity and stable sorted macro IDs', () => {
   const snapshotKey = buildWorkbookShortcutSnapshotKey(
@@ -18,5 +21,37 @@ test('buildWorkbookShortcutSnapshotKey falls back to workbook name', () => {
   );
 
   assert.equal(snapshotKey, 'PERSONAL.XLSB::');
+});
+
+test('shouldDelayInitialShortcutLoad only delays the first uncached audit', () => {
+  assert.equal(
+    shouldDelayInitialShortcutLoad({
+      delayMs: 1200,
+      hasLoadedShortcuts: false,
+      hasSeededAudit: false,
+      hasFreshCachedSnapshot: false
+    }),
+    true
+  );
+
+  assert.equal(
+    shouldDelayInitialShortcutLoad({
+      delayMs: 1200,
+      hasLoadedShortcuts: true,
+      hasSeededAudit: false,
+      hasFreshCachedSnapshot: false
+    }),
+    false
+  );
+
+  assert.equal(
+    shouldDelayInitialShortcutLoad({
+      delayMs: 1200,
+      hasLoadedShortcuts: false,
+      hasSeededAudit: true,
+      hasFreshCachedSnapshot: false
+    }),
+    false
+  );
 });
 

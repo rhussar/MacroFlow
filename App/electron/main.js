@@ -7,6 +7,7 @@ const { installExcelAddin } = require('./excel-addin-installer');
 const excel = require('./excel-bridge');
 const logger = require('./logger');
 const { initAutoUpdater, stopAutoUpdater } = require('./auto-updater');
+const { checkCachedLicense, registerLicenseHandlers } = require('./license');
 
 const WINDOW_STARTUP_BG = '#00000000';
 
@@ -593,6 +594,12 @@ if (!gotLock) {
 
     // Register window control handlers BEFORE creating window
     registerWindowHandlers();
+    registerLicenseHandlers();
+
+    // Check cached license (non-blocking — renderer will gate UI).
+    checkCachedLicense().catch((err) => {
+      logger.warn('[License] startup check failed', { error: err.message });
+    });
 
     registerHandlers();
     createWindow();

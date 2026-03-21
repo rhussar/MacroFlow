@@ -1,9 +1,6 @@
 # MacroFlow
 
-# Navigate to App directory and run the full build + upload pipeline
-cd C:\Users\ronan\Desktop\MacroFlow\App
-npm run publish:update
-
+MacroFlow generates VBA with a local on-device model. On first use of Create, the app will prompt the user to install the local AI runtime and download the configured model. App updates and licensing remain separate network-backed features.
 
 ## Install (Windows)
 
@@ -20,6 +17,12 @@ npm run make
 - Open `App/out/make/squirrel.windows/x64/`
 - Double-click `MacroFlow-x.x.x Setup.exe`
 
+3) First use of Create:
+
+- Open Create inside MacroFlow
+- If local AI is not installed yet, click `Install Local AI`
+- MacroFlow will download the local AI runtime and the configured local code model
+
 ## Development Mode
 
 ```bash
@@ -29,6 +32,14 @@ npm run dev
 ```
 
 This starts Vite on `http://localhost:5173` and launches the Electron app.
+
+## Local AI
+
+- Provider: `Ollama`
+- Default model: `qwen2.5-coder:3b`
+- Runtime status and setup are available in MacroFlow Settings
+- VBA generation stays on the local machine and talks only to a loopback Ollama API
+- Ollama cloud features are disabled for MacroFlow's managed runtime
 
 ## Files 
 

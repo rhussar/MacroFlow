@@ -2597,6 +2597,85 @@ class ExcelBridge {
   }
 
   /**
+   * Build workbook + sheet metadata for a specific open workbook.
+   * @param {string} workbookName
+   * @param {{ workbookPath?: string, sheetName?: string, activate?: boolean }} options
+   * @returns {{ success: boolean, workbookFound: boolean, workbook?: object | null, sheet?: object, structuralContext?: object, dataContext?: object, selectionContext?: object, llmContext?: object, message?: string }}
+   */
+  getWorksheetMetadataByWorkbookName(workbookName, options = {}) {
+    const {
+      workbookPath = '',
+      sheetName = '',
+      activate = true
+    } = options;
+    const normalizedName = String(workbookName || '').trim();
+    const normalizedPath = String(workbookPath || '').trim();
+    const normalizedSheetName = String(sheetName || '').trim();
+
+    if (!normalizedName && !normalizedPath) {
+      return {
+        success: false,
+        workbookFound: false,
+        workbook: null,
+        message: 'Workbook name or workbook path is required.'
+      };
+    }
+
+    try {
+      return this._withExcelApp((excel) => {
+        const workbook = this._findOpenWorkbook(excel, {
+          workbookName: normalizedName,
+          workbookPath: normalizedPath
+        });
+        if (!workbook) {
+          const workbookLabel = normalizedPath || normalizedName;
+          return {
+            success: true,
+            workbookFound: false,
+            workbook: null,
+            message: `Workbook "${workbookLabel}" is not open.`
+          };
+        }
+
+        let sheetsProxy = null;
+        let sheet = null;
+        try {
+          if (normalizedSheetName) {
+            sheetsProxy = workbook.Sheets;
+            sheet = sheetsProxy.Item(normalizedSheetName);
+          } else {
+            sheet = workbook.ActiveSheet;
+          }
+
+          const metadata = this._collectWorksheetMetadata({
+            excel,
+            workbook,
+            sheet,
+            includeSelection: true
+          });
+
+          return {
+            success: true,
+            workbookFound: true,
+            workbook: this._describeWorkbook(workbook),
+            message: `Metadata read for "${sheet.Name}"`,
+            ...metadata
+          };
+        } finally {
+          this._safeRelease(sheet, sheetsProxy, workbook);
+        }
+      }, { activate });
+    } catch (error) {
+      return {
+        success: false,
+        workbookFound: false,
+        workbook: null,
+        message: error.message
+      };
+    }
+  }
+
+  /**
    * Build metadata for a closed workbook path (opened read-only in the background).
    * @param {{ path: string, sheetName?: string }} options
    * @returns {{ success: boolean, sheet?: object, structuralContext?: object, dataContext?: object, llmContext?: object }}

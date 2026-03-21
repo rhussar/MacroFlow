@@ -46,6 +46,7 @@ function AppInner() {
     originMode: 'shortcuts'
   }));
   const [buildChatOpen, setBuildChatOpen] = useState(false);
+  const [aiModelReady, setAiModelReady] = useState(false);
   const [filesSidebarOpen, setFilesSidebarOpen] = useState(true);
   const loadSearchDataRef = useRef(null);
   const shortcutSaveInFlightRef = useRef(false);
@@ -382,6 +383,8 @@ function AppInner() {
             chatOpen={buildChatOpen}
             onChatToggle={toggleBuildChat}
             searchData={searchData}
+            onAiReady={setAiModelReady}
+            aiModelReady={aiModelReady}
           />
         );
 
@@ -411,7 +414,7 @@ function AppInner() {
       <header className="header">
         <div className="drag-region" />
         <div className="header-left">
-          {(mode === 'create' || mode === 'files') && (
+          {(mode === 'create' || mode === 'files') && !(mode === 'create' && !aiModelReady) && (
             <button
               className="sidebar-toggle-btn"
               onClick={mode === 'create' ? toggleBuildChat : toggleFilesSidebar}

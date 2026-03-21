@@ -71,18 +71,23 @@ export function sortWorkbooksForPicker(workbooks, activeWorkbookKey) {
   const rows = Array.from(uniqueByKey.values());
   rows.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
 
+  // Pin active workbook near the top
   const normalizedActiveWorkbookKey = toSafeString(activeWorkbookKey);
-  if (!normalizedActiveWorkbookKey) {
-    return rows;
+  if (normalizedActiveWorkbookKey) {
+    const activeIndex = rows.findIndex((row) => row.key === normalizedActiveWorkbookKey);
+    if (activeIndex > 0) {
+      const [activeWorkbook] = rows.splice(activeIndex, 1);
+      rows.unshift(activeWorkbook);
+    }
   }
 
-  const activeIndex = rows.findIndex((row) => row.key === normalizedActiveWorkbookKey);
-  if (activeIndex <= 0) {
-    return rows;
+  // Pin PERSONAL.XLSB to the very top (always first)
+  const personalIndex = rows.findIndex((row) => row.name.toUpperCase() === 'PERSONAL.XLSB');
+  if (personalIndex > 0) {
+    const [personal] = rows.splice(personalIndex, 1);
+    rows.unshift(personal);
   }
 
-  const [activeWorkbook] = rows.splice(activeIndex, 1);
-  rows.unshift(activeWorkbook);
   return rows;
 }
 

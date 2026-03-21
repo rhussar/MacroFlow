@@ -9,6 +9,7 @@ function loadHandlers({
   excelOverrides = {},
   appOverrides = {},
   openAiOverrides = {},
+  localAiOverrides = {},
   securityPolicyOverrides = {},
   auditOverrides = {}
 } = {}) {
@@ -187,9 +188,46 @@ function loadHandlers({
     generateVba: async () => ({
       success: true,
       code: 'Option Explicit\nSub RunA()\nEnd Sub',
-      model: 'gpt-4.1-mini'
+      model: 'qwen2.5-coder:3b'
     }),
     ...openAiOverrides
+  };
+
+  const localAiStub = {
+    getStatus: async () => ({
+      success: true,
+      provider: 'ollama',
+      model: 'qwen2.5-coder:3b',
+      ready: true,
+      needsSetup: false,
+      setupInProgress: false,
+      runtimeInstalled: true,
+      runtimeCommand: 'C:\\Users\\Test\\AppData\\Local\\Programs\\Ollama\\ollama.exe',
+      serverReachable: true,
+      modelInstalled: true,
+      stage: 'ready',
+      statusText: 'Local AI is ready.',
+      progress: null
+    }),
+    setup: async () => ({
+      success: true,
+      started: true,
+      status: {
+        success: true,
+        provider: 'ollama',
+        model: 'qwen2.5-coder:3b',
+        ready: false,
+        needsSetup: true,
+        setupInProgress: true,
+        runtimeInstalled: false,
+        serverReachable: false,
+        modelInstalled: false,
+        stage: 'checking',
+        statusText: 'Checking local AI runtime...'
+      }
+    }),
+    subscribe: () => () => {},
+    ...localAiOverrides
   };
 
   const securityPolicyStub = {
@@ -232,8 +270,11 @@ function loadHandlers({
     if (request === './diagnostics') {
       return diagnosticsStub;
     }
-    if (request === './openai-client') {
+    if (request === './llm-client' || request === './openai-client') {
       return openAiStub;
+    }
+    if (request === './local-ai-manager') {
+      return localAiStub;
     }
     if (request === './security-policy') {
       return securityPolicyStub;
@@ -253,6 +294,7 @@ function loadHandlers({
     handlers,
     excelStub,
     openAiStub,
+    localAiStub,
     securityPolicyStub,
     auditStub,
     getQuitCalls: () => quitCalls,
@@ -1265,7 +1307,7 @@ test('workbook:context burst cache invalidates after module rename/delete succes
   assert.equal(contextCalls, 3);
 });
 
-test('ai:generate-vba forwards payload to OpenAI client and returns success shape', async () => {
+test('ai:generate-vba forwards payload to the local AI client and returns success shape', async () => {
   const calls = [];
   const { handlers } = loadHandlers({
     openAiOverrides: {
@@ -1274,7 +1316,7 @@ test('ai:generate-vba forwards payload to OpenAI client and returns success shap
         return {
           success: true,
           code: 'Option Explicit\nPublic Sub RunA()\nEnd Sub',
-          model: 'gpt-4.1-mini',
+          model: 'qwen2.5-coder:3b',
           usage: { promptTokens: 10, completionTokens: 12, totalTokens: 22 }
         };
       }
@@ -1294,7 +1336,7 @@ test('ai:generate-vba forwards payload to OpenAI client and returns success shap
   assert.equal(calls[0].moduleName, 'Module1');
   assert.equal(result.success, true);
   assert.match(result.code, /Sub RunA/i);
-  assert.equal(result.model, 'gpt-4.1-mini');
+  assert.equal(result.model, 'qwen2.5-coder:3b');
   assert.equal(result.usage.totalTokens, 22);
 });
 
@@ -1303,8 +1345,8 @@ test('ai:generate-vba propagates failure reason and message', async () => {
     openAiOverrides: {
       generateVba: async () => ({
         success: false,
-        reason: 'AI_RATE_LIMITED',
-        message: 'OpenAI rate limit reached. Please wait and try again.'
+        reason: 'AI_NOT_READY',
+        message: 'Local AI is not running yet. Finish setup and retry.'
       })
     }
   });
@@ -1317,8 +1359,86 @@ test('ai:generate-vba propagates failure reason and message', async () => {
   });
 
   assert.equal(result.success, false);
-  assert.equal(result.reason, 'AI_RATE_LIMITED');
-  assert.match(result.message, /rate limit/i);
+  assert.equal(result.reason, 'AI_NOT_READY');
+  assert.match(result.message, /local ai/i);
+});
+
+test('ai:status returns local AI readiness snapshot', async () => {
+  const { handlers } = loadHandlers({
+    localAiOverrides: {
+      getStatus: async () => ({
+        success: true,
+        provider: 'ollama',
+        model: 'qwen2.5-coder:3b',
+        ready: false,
+        needsSetup: true,
+        setupInProgress: false,
+        runtimeInstalled: true,
+        serverReachable: true,
+        modelInstalled: false,
+        stage: 'model_missing',
+        statusText: 'The local AI model qwen2.5-coder:3b is not installed yet.'
+      })
+    }
+  });
+
+  const result = await handlers['ai:status']();
+  assert.equal(result.success, true);
+  assert.equal(result.provider, 'ollama');
+  assert.equal(result.ready, false);
+  assert.equal(result.stage, 'model_missing');
+});
+
+test('ai:setup forwards to local AI manager', async () => {
+  const { handlers } = loadHandlers({
+    localAiOverrides: {
+      setup: async () => ({
+        success: true,
+        started: true,
+        status: {
+          success: true,
+          provider: 'ollama',
+          model: 'qwen2.5-coder:3b',
+          ready: false,
+          needsSetup: true,
+          setupInProgress: true,
+          stage: 'checking',
+          statusText: 'Checking local AI runtime...'
+        }
+      })
+    }
+  });
+
+  const result = await handlers['ai:setup']();
+  assert.equal(result.success, true);
+  assert.equal(result.started, true);
+  assert.equal(result.status.stage, 'checking');
+});
+
+test('ai:remove-model forwards to local AI manager', async () => {
+  const { handlers } = loadHandlers({
+    localAiOverrides: {
+      removeModel: async () => ({
+        success: true,
+        started: true,
+        status: {
+          success: true,
+          provider: 'ollama',
+          model: 'qwen2.5-coder:3b',
+          ready: false,
+          needsSetup: true,
+          removeInProgress: true,
+          stage: 'removing_model',
+          statusText: 'Removing qwen2.5-coder:3b...'
+        }
+      })
+    }
+  });
+
+  const result = await handlers['ai:remove-model']();
+  assert.equal(result.success, true);
+  assert.equal(result.started, true);
+  assert.equal(result.status.stage, 'removing_model');
 });
 
 test('excel:resolveInstance dedupes concurrent requests and reuses one helper call', async () => {

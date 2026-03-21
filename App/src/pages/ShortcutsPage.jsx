@@ -542,7 +542,24 @@ const ShortcutsPage = ({
     <main className="main-content">
       {status !== 'ready' ? renderNonReadyState() : (
         <>
-          <section className="search-ready-section search-ready-section-first">
+          <PersonalMacrosSection
+            sectionModel={personalSectionModel}
+            infoRef={personalInfoRef}
+            showInfo={showPersonalInfo}
+            onInfoHoverChange={handlePersonalInfoHoverChange}
+            onInfoToggle={() => setPersonalInfoPinned((previous) => !previous)}
+            visibilityControl={personalVisibilityControl}
+            onToggleVisibility={handlePersonalVisibilityToggle}
+            onOpenFolder={handleOpenPersonalFolder}
+            actionInFlight={personalActionInFlight}
+            onAction={handlePersonalAction}
+            rows={personalMacroRows}
+            shortcutState={personalShortcutState}
+            selectedMacroId={selectedMacroId}
+            onRunMacro={onRunMacro}
+          />
+
+          <section className="search-ready-section">
             <WorkbookPicker
               menuRef={workbookMenuRef}
               isOpen={isWorkbookMenuOpen}
@@ -565,23 +582,6 @@ const ShortcutsPage = ({
               isLoading={workbookDataIsLoading && activeMacroRows.length === 0}
             />
           </section>
-
-          <PersonalMacrosSection
-            sectionModel={personalSectionModel}
-            infoRef={personalInfoRef}
-            showInfo={showPersonalInfo}
-            onInfoHoverChange={handlePersonalInfoHoverChange}
-            onInfoToggle={() => setPersonalInfoPinned((previous) => !previous)}
-            visibilityControl={personalVisibilityControl}
-            onToggleVisibility={handlePersonalVisibilityToggle}
-            onOpenFolder={handleOpenPersonalFolder}
-            actionInFlight={personalActionInFlight}
-            onAction={handlePersonalAction}
-            rows={personalMacroRows}
-            shortcutState={personalShortcutState}
-            selectedMacroId={selectedMacroId}
-            onRunMacro={onRunMacro}
-          />
         </>
       )}
     </main>

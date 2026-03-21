@@ -1,4 +1,5 @@
 ﻿import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import AiGate from '../components/AiGate';
 import CodePreview from '../components/CodePreview';
 import SplitDivider from '../components/SplitDivider';
 import {
@@ -79,21 +80,77 @@ function mapAiGenerationMessage(result, fallbackMessage = '') {
   }
 
   switch (reason) {
-    case 'AI_AUTH_FAILED':
-      return 'OpenAI authentication failed.';
-    case 'AI_RATE_LIMITED':
-      return 'OpenAI rate limit reached. Please try again shortly.';
+    case 'AI_RUNTIME_MISSING':
+      return 'Local AI runtime is not installed yet.';
+    case 'AI_MODEL_MISSING':
+      return 'The local AI model is not installed yet.';
+    case 'AI_NOT_READY':
+      return 'Local AI is not ready yet. Finish setup and retry.';
     case 'AI_TIMEOUT':
-      return 'OpenAI request timed out. Please retry.';
-    case 'AI_NETWORK_ERROR':
-      return 'Network error while contacting OpenAI.';
+      return 'Local AI timed out. Please retry.';
     case 'AI_INVALID_PROMPT':
       return 'Prompt is required to generate VBA.';
     case 'AI_INVALID_RESPONSE':
-      return 'OpenAI returned invalid VBA output.';
+      return 'Local AI returned invalid VBA output.';
     default:
       return fallbackMessage || 'Unable to generate VBA.';
   }
+}
+
+function buildAssistantMessageFromResult(result, fallbackText = '') {
+  const intent = String(result?.intent || '').trim().toLowerCase();
+  const content = String(result?.content || '').trim();
+
+  if (content) {
+    return {
+      role: 'assistant',
+      kind: 'text',
+      content,
+      timestamp: Date.now()
+    };
+  }
+
+  return {
+    role: 'assistant',
+    kind: 'text',
+    content: fallbackText || 'Response received.',
+    timestamp: Date.now()
+  };
+}
+
+function inferBuildPromptIntent(promptText) {
+  const normalized = String(promptText || '').trim().toLowerCase();
+  if (!normalized) {
+    return 'edit';
+  }
+
+  const questionPrefixes = [
+    'what ',
+    'what does',
+    'what is',
+    'why ',
+    'how ',
+    'can ',
+    'could ',
+    'should ',
+    'does ',
+    'is ',
+    'are ',
+    'explain ',
+    'help ',
+    'tell me ',
+    'walk me through '
+  ];
+
+  if (normalized.endsWith('?')) {
+    return 'ask';
+  }
+
+  if (questionPrefixes.some((prefix) => normalized.startsWith(prefix))) {
+    return 'ask';
+  }
+
+  return 'edit';
 }
 
 const CreatePage = ({
@@ -105,7 +162,9 @@ const CreatePage = ({
   launchSource = '',
   chatOpen: chatOpenProp,
   onChatToggle,
-  searchData
+  searchData,
+  onAiReady,
+  aiModelReady
 }) => {
   const [prompt, setPrompt] = useState('');
   const [buildState, setBuildState] = useState(() =>
@@ -129,7 +188,6 @@ const CreatePage = ({
   const [runOutcome, setRunOutcome] = useState('idle');
   const [savedMacroName, setSavedMacroName] = useState('');
   const [messages, setMessages] = useState([]);
-  const [includeCurrentCode, setIncludeCurrentCode] = useState(true);
   const [splitPct, setSplitPct] = useState(30);
   const [exitDialog, setExitDialog] = useState(null);
   const [savedShortcutLetter, setSavedShortcutLetter] = useState('');
@@ -139,6 +197,7 @@ const CreatePage = ({
   const [hasPendingChanges, setHasPendingChanges] = useState(false);
   const [moduleRenameDraft, setModuleRenameDraft] = useState('');
   const [moduleRenameActive, setModuleRenameActive] = useState(false);
+  const [aiStatus, setAiStatus] = useState(null);
 
   const { sessions, saveSession, restoreSession, removeSession } = useSessionHistory();
 
@@ -175,6 +234,7 @@ const CreatePage = ({
   const moduleRenameCommitInFlightRef = useRef(false);
   const messagesRef = useRef(messages);
   const moduleRenameRestoreValueRef = useRef('');
+  const aiStatusRef = useRef(aiStatus);
 
   buildStateRef.current = buildState;
   promptRef.current = prompt;
@@ -186,6 +246,89 @@ const CreatePage = ({
   draftShortcutLetterRef.current = draftShortcutLetter;
   shortcutSavingRef.current = shortcutSaving;
   messagesRef.current = messages;
+  aiStatusRef.current = aiStatus;
+
+  const refreshAiStatus = useCallback(async () => {
+    const getStatusApi = window.excel?.ai?.getStatus;
+    if (typeof getStatusApi !== 'function') {
+      setAiStatus({
+        ready: false,
+        needsSetup: true,
+        setupInProgress: false,
+        stage: 'error',
+        statusText: 'Local AI status API is unavailable. Restart MacroFlow dev mode to load the new preload bridge.'
+      });
+      return;
+    }
+
+    try {
+      const status = await getStatusApi();
+      setAiStatus(status || null);
+    } catch (error) {
+      setAiStatus({
+        ready: false,
+        needsSetup: true,
+        setupInProgress: false,
+        stage: 'error',
+        statusText: String(error?.message || 'Unable to read local AI status.')
+      });
+    }
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const unsubscribe = window.excel?.ai?.onStatus?.((status) => {
+      if (!cancelled) {
+        setAiStatus(status || null);
+      }
+    }) || (() => {});
+
+    void refreshAiStatus();
+
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, [refreshAiStatus]);
+
+  const handleLocalAiSetup = useCallback(async () => {
+    const setupApi = window.excel?.ai?.setup;
+    if (typeof setupApi !== 'function') {
+      setErrorInfo({
+        title: 'Local AI setup API is unavailable. Restart MacroFlow dev mode to load the new preload bridge.',
+        line: null
+      });
+      return;
+    }
+
+    try {
+      const result = await setupApi();
+      if (result?.status) {
+        setAiStatus(result.status);
+      } else {
+        await refreshAiStatus();
+      }
+    } catch (error) {
+      const message = String(error?.message || 'Unable to start local AI setup.');
+      setAiStatus((previous) => ({
+        ...(previous || {}),
+        ready: false,
+        needsSetup: true,
+        setupInProgress: false,
+        stage: 'error',
+        statusText: message
+      }));
+      setErrorInfo({ title: message, line: null });
+    }
+  }, [refreshAiStatus]);
+
+  const aiReady = Boolean(aiStatus?.ready);
+  const aiSetupInProgress = Boolean(aiStatus?.setupInProgress);
+  const aiRemoveInProgress = Boolean(aiStatus?.removeInProgress);
+  const aiOperationInProgress = aiSetupInProgress || aiRemoveInProgress;
+  const aiProgressPercent = typeof aiStatus?.progress === 'number'
+    ? Math.max(0, Math.min(100, Math.round(aiStatus.progress * 100)))
+    : null;
 
   const setDirtyState = useCallback((value) => {
     const nextValue = Boolean(value);
@@ -410,7 +553,6 @@ const CreatePage = ({
     setIsBusy(true);
     setErrorInfo(null);
     setExitDialog(null);
-    setIncludeCurrentCode(false);
     setSessionContext(null);
     setRunOutcome('idle');
     setMessages([]);
@@ -833,6 +975,14 @@ const CreatePage = ({
       return;
     }
 
+    if (!aiStatusRef.current?.ready) {
+      setErrorInfo({
+        title: String(aiStatusRef.current?.statusText || 'Local AI setup is required before generating VBA.'),
+        line: null
+      });
+      return;
+    }
+
     const generateVbaApi = window.excel?.ai?.generateVba;
     if (typeof generateVbaApi !== 'function') {
       setErrorInfo({
@@ -851,15 +1001,16 @@ const CreatePage = ({
 
     try {
       const session = sessionContextRef.current;
+      const intent = inferBuildPromptIntent(submittedPrompt);
       const request = {
         prompt: submittedPrompt,
+        intent,
         workbookName: String(session?.workbook?.name || '').trim(),
+        workbookPath: String(session?.workbook?.path || '').trim(),
         moduleName: String(session?.moduleName || '').trim(),
-        includeCurrentCode
+        includeCurrentCode: true,
+        currentCode: String(editedCodeRef.current || '')
       };
-      if (includeCurrentCode) {
-        request.currentCode = String(editedCodeRef.current || '');
-      }
 
       const result = await generateVbaApi(request);
 
@@ -867,18 +1018,23 @@ const CreatePage = ({
         throw new Error(mapAiGenerationMessage(result));
       }
 
+      if (intent === 'ask') {
+        setMessages((prev) => [...prev, buildAssistantMessageFromResult(result, 'Response received.')]);
+        return;
+      }
+
       const generatedCode = String(result?.code || '').trim();
       if (!generatedCode) {
-        throw new Error('OpenAI returned empty VBA output.');
+        throw new Error('Local AI returned empty VBA output.');
       }
 
       setEditedCode(generatedCode);
       setSavedMacroName(extractPrimaryMacroName(generatedCode));
-      setMessages((prev) => [...prev, { role: 'assistant', content: 'Code updated.', timestamp: Date.now() }]);
+      setMessages((prev) => [...prev, buildAssistantMessageFromResult(result, 'Code updated.')]);
       markLocalDirty();
     } catch (error) {
       const message = mapAiGenerationMessage(null, String(error?.message || 'Unable to generate VBA.'));
-      setMessages((prev) => [...prev, { role: 'assistant', content: `Error: ${message}`, timestamp: Date.now() }]);
+      setMessages((prev) => [...prev, { role: 'assistant', kind: 'text', content: `Error: ${message}`, timestamp: Date.now() }]);
       setErrorInfo({
         title: `Generation failed: ${message}`,
         line: null
@@ -887,11 +1043,19 @@ const CreatePage = ({
       setIsBusy(false);
       isBusyRef.current = false;
     }
-  }, [includeCurrentCode, markLocalDirty]);
+  }, [markLocalDirty]);
 
   const handleFirstSubmit = useCallback(async () => {
     const submittedPrompt = String(promptRef.current || '').trim();
     if (isBusyRef.current || !submittedPrompt) return;
+
+    if (!aiStatusRef.current?.ready) {
+      setErrorInfo({
+        title: String(aiStatusRef.current?.statusText || 'Local AI setup is required before generating VBA.'),
+        line: null
+      });
+      return;
+    }
 
     const generateVbaApi = window.excel?.ai?.generateVba;
     if (typeof generateVbaApi !== 'function') {
@@ -1010,7 +1174,9 @@ const CreatePage = ({
       // Phase 4: Generate VBA
       const result = await generateVbaApi({
         prompt: submittedPrompt,
+        intent: 'create',
         workbookName: createdWorkbook.name,
+        workbookPath: createdWorkbook.path,
         moduleName: createdModuleName,
         includeCurrentCode: false
       });
@@ -1020,17 +1186,17 @@ const CreatePage = ({
       }
       const generatedCode = String(result?.code || '').trim();
       if (!generatedCode) {
-        throw new Error('OpenAI returned empty VBA output.');
+        throw new Error('Local AI returned empty VBA output.');
       }
 
       setEditedCode(generatedCode);
       setSavedMacroName(extractPrimaryMacroName(generatedCode));
-      setMessages((prev) => [...prev, { role: 'assistant', content: 'Macro generated.', timestamp: Date.now() }]);
+      setMessages((prev) => [...prev, buildAssistantMessageFromResult(result, 'Macro generated.')]);
       setBuildState('ready');
       markLocalDirty();
     } catch (error) {
       const message = String(error?.message || 'Unable to generate VBA.');
-      setMessages((prev) => [...prev, { role: 'assistant', content: `Error: ${message}`, timestamp: Date.now() }]);
+      setMessages((prev) => [...prev, { role: 'assistant', kind: 'text', content: `Error: ${message}`, timestamp: Date.now() }]);
       setBuildState('idle');
       setErrorInfo({ title: `Generation failed: ${message}`, line: null });
     } finally {
@@ -1040,12 +1206,20 @@ const CreatePage = ({
   }, [ensureBuildApis, invalidateWorkbookMutation, normalizedWorkbook, markLocalDirty, stopWithError]);
 
   const dispatchSubmit = useCallback(() => {
+    // Open sidebar when user sends a prompt
+    if (!chatOpenRef.current) {
+      if (onChatToggle) {
+        onChatToggle();
+      } else {
+        setChatOpenInternal(true);
+      }
+    }
     if (sessionContextRef.current) {
       void handleSubmit();
     } else {
       void handleFirstSubmit();
     }
-  }, [handleSubmit, handleFirstSubmit]);
+  }, [handleSubmit, handleFirstSubmit, onChatToggle]);
 
   const handleRestoreSession = useCallback((id) => {
     const saved = restoreSession(id);
@@ -1063,7 +1237,6 @@ const CreatePage = ({
     setErrorInfo(null);
     setRunOutcome('idle');
     setDirtyState(false);
-    setIncludeCurrentCode(true);
     setPrompt('');
     setSavedShortcutLetter('');
     setDraftShortcutLetter('');
@@ -1520,8 +1693,58 @@ const CreatePage = ({
     conversationEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages.length, isBusy]);
 
+  const localAiSetupCard = !aiReady ? (
+    <div className={`local-ai-setup-card${aiOperationInProgress ? ' is-active' : ''}`}>
+      <div className="local-ai-setup-main">
+        <div className="local-ai-setup-header">
+          <div className="local-ai-setup-title">
+            {aiRemoveInProgress ? 'Removing local AI' : aiSetupInProgress ? 'Preparing local AI' : 'Local AI required'}
+          </div>
+          {aiProgressPercent !== null && (
+            <div className="local-ai-setup-progress-label">{aiProgressPercent}%</div>
+          )}
+        </div>
+        <div className="local-ai-setup-status">{String(aiStatus?.statusText || 'Checking local AI...')}</div>
+        {!aiOperationInProgress && (
+          <div className="local-ai-setup-copy">
+            Create runs on-device. Install once before generating VBA.
+          </div>
+        )}
+        {aiProgressPercent !== null && (
+          <div className="local-ai-setup-progress">
+            <div className="local-ai-setup-progress-bar" style={{ width: `${aiProgressPercent}%` }} />
+          </div>
+        )}
+      </div>
+      <div className="local-ai-setup-actions">
+        <button
+          type="button"
+          className="build-exit-btn primary"
+          onClick={() => {
+            void handleLocalAiSetup();
+          }}
+          disabled={aiOperationInProgress}
+        >
+          {aiSetupInProgress ? 'Setting up...' : aiRemoveInProgress ? 'Working...' : 'Install'}
+        </button>
+        <button
+          type="button"
+          className="local-ai-setup-refresh-btn"
+          onClick={() => {
+            void refreshAiStatus();
+          }}
+          disabled={aiOperationInProgress}
+        >
+          Refresh
+        </button>
+      </div>
+    </div>
+  ) : null;
+
+
   const conversationPanel = (
     <div className="conversation-panel">
+      {localAiSetupCard}
       {messages.map((msg, i) => (
         <div
           key={i}
@@ -1578,7 +1801,7 @@ const CreatePage = ({
             rows={2}
             value={prompt}
             onChange={(event) => setPrompt(event.target.value)}
-            disabled={isBusy || buildState === 'initializing' || Boolean(errorInfo?.restartRequired)}
+            disabled={isBusy || buildState === 'initializing' || Boolean(errorInfo?.restartRequired) || !aiReady}
             onKeyDown={(event) => {
               if (event.key === 'Enter' && !event.shiftKey && prompt.trim()) {
                 event.preventDefault();
@@ -1590,7 +1813,7 @@ const CreatePage = ({
             type="button"
             className="build-prompt-send-btn"
             onClick={() => { if (prompt.trim()) void dispatchSubmit(); }}
-            disabled={isBusy || !prompt.trim() || buildState === 'initializing'}
+            disabled={isBusy || !prompt.trim() || buildState === 'initializing' || !aiReady}
             title="Send"
           >
             <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
@@ -1648,39 +1871,39 @@ const CreatePage = ({
       <div className="build-empty-state build-idle-state">
         <h1 className="build-empty-title">Create a Macro</h1>
         <p className="build-empty-subtitle">
-          Describe what you want your macro to do and AI will generate the VBA code.
+          Describe what you want your macro to do and MacroFlow will generate the VBA locally.
         </p>
         {errorInfo && <div className="error-title">{errorInfo.title}</div>}
         <div className="build-prompt-input-wrap">
-          <div className="build-prompt-input-box">
-            <textarea
-              className="build-prompt-input"
-              placeholder="Describe the macro you want"
-              rows={2}
-              value={prompt}
-              onChange={(event) => setPrompt(event.target.value)}
-              disabled={isBusy}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter' && !event.shiftKey && prompt.trim()) {
-                  event.preventDefault();
-                  void dispatchSubmit();
-                }
-              }}
-            />
-            <button
-              type="button"
-              className="build-prompt-send-btn"
-              onClick={() => { if (prompt.trim()) void dispatchSubmit(); }}
-              disabled={isBusy || !prompt.trim()}
-              title="Send"
-            >
-              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                <line x1="12" y1="19" x2="12" y2="5" />
-                <polyline points="5,12 12,5 19,12" />
-              </svg>
-            </button>
+            <div className="build-prompt-input-box">
+              <textarea
+                className="build-prompt-input"
+                placeholder="Describe the macro you want"
+                rows={2}
+                value={prompt}
+                onChange={(event) => setPrompt(event.target.value)}
+                disabled={isBusy}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' && !event.shiftKey && prompt.trim()) {
+                    event.preventDefault();
+                    void dispatchSubmit();
+                  }
+                }}
+              />
+              <button
+                type="button"
+                className="build-prompt-send-btn"
+                onClick={() => { if (prompt.trim()) void dispatchSubmit(); }}
+                disabled={isBusy || !prompt.trim()}
+                title="Send"
+              >
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="12" y1="19" x2="12" y2="5" />
+                  <polyline points="5,12 12,5 19,12" />
+                </svg>
+              </button>
+            </div>
           </div>
-        </div>
         {isBusy && (
           <div className="build-generating-indicator">
             <span className="status-spinner" />
@@ -1732,6 +1955,7 @@ const CreatePage = ({
   );
 
   return (
+    <AiGate onReady={() => { onAiReady?.(true); }} onNotReady={() => { onAiReady?.(false); }} initialReady={aiModelReady}>
     <>
       <main className="main-content">
         {chatOpen ? (
@@ -1798,6 +2022,7 @@ const CreatePage = ({
         </div>
       )}
     </>
+    </AiGate>
   );
 };
 

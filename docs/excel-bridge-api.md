@@ -130,8 +130,18 @@ Returns: `{ success: boolean, sheet?: object, structuralContext?: object, dataCo
 
 ## AI Operations
 
+### `ai.getStatus()`
+Get local AI runtime/model setup status.
+
+Returns: `{ success: boolean, provider: string, model: string, ready: boolean, needsSetup: boolean, setupInProgress: boolean, runtimeInstalled: boolean, serverReachable: boolean, modelInstalled: boolean, stage: string, progress?: number | null, statusText: string, lastError?: string }`
+
+### `ai.setup()`
+Start local AI setup. Progress updates are delivered through `ai.onStatus(...)`.
+
+Returns: `{ success: boolean, started: boolean, status: object }`
+
 ### `ai.generateVba({ prompt: string, workbookName?: string, moduleName?: string, currentCode?: string, includeCurrentCode?: boolean })`
-Generate VBA module code with OpenAI.
+Generate VBA module code with the local AI runtime.
 
 - `includeCurrentCode` defaults to `false`
 - `currentCode` is only used when `includeCurrentCode` is `true`

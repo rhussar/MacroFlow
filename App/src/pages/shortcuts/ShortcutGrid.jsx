@@ -52,6 +52,7 @@ function ShortcutGrid({
               <button
                 type="button"
                 className="shortcut-icon-btn"
+                title="Run macro"
                 onClick={() => onRunMacro?.(macro)}
               >
                 <ReturnIcon size={20} />

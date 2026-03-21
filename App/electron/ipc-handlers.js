@@ -15,7 +15,8 @@
 
 const { ipcMain, app, BrowserWindow, shell } = require('electron');
 const excel = require('./excel-bridge');
-const { generateVba } = require('./openai-client');
+const { generateVba } = require('./llm-client');
+const localAiManager = require('./local-ai-manager');
 const {
   loadSecurityPolicy,
   isModuleAllowed,
@@ -42,6 +43,17 @@ const FOCUS_CONFIG = {
   // Delay between modal check attempts (ms)
   modalCheckInterval: 200
 };
+
+let aiStatusEventsRegistered = false;
+
+function sendToAllRenderers(channel, payload) {
+  const windows = BrowserWindow.getAllWindows();
+  for (const win of windows) {
+    if (win?.webContents && !win.webContents.isDestroyed()) {
+      win.webContents.send(channel, payload);
+    }
+  }
+}
 
 /**
  * Simple logger for IPC events (uses diagnostics logger)
@@ -222,6 +234,15 @@ async function withExcelFocus(fn, options = {}) {
 }
 
 function registerHandlers() {
+  if (!aiStatusEventsRegistered) {
+    aiStatusEventsRegistered = true;
+    localAiManager.subscribe((status) => {
+      sendToAllRenderers('ai:status', status);
+    });
+    // Pre-populate AI status cache so Create tab loads instantly
+    localAiManager.getStatus().catch(() => {});
+  }
+
   try {
     const auditInit = initializeAuditLog();
     logger.info('Audit', 'initialized', {
@@ -1441,21 +1462,72 @@ function registerHandlers() {
   });
 
   /**
-   * Generate VBA code from natural language prompt (OpenAI).
+   * Get local AI runtime/model status.
+   * Channel: 'ai:status'
+   */
+  ipcMain.handle('ai:status', async () => {
+    logIpc('ai:status', 'start');
+    const result = await localAiManager.getStatus();
+    logIpc('ai:status', 'end', {
+      ready: result.ready,
+      stage: result.stage,
+      setupInProgress: result.setupInProgress
+    });
+    return result;
+  });
+
+  /**
+   * Start local AI setup.
+   * Channel: 'ai:setup'
+   */
+  ipcMain.handle('ai:setup', async () => {
+    logIpc('ai:setup', 'start');
+    const result = await localAiManager.setup();
+    logIpc('ai:setup', 'end', {
+      success: result.success,
+      started: result.started,
+      stage: result.status?.stage
+    });
+    return result;
+  });
+
+  /**
+   * Remove the configured local AI model.
+   * Channel: 'ai:remove-model'
+   */
+  ipcMain.handle('ai:remove-model', async () => {
+    logIpc('ai:remove-model', 'start');
+    const result = await localAiManager.removeModel();
+    logIpc('ai:remove-model', 'end', {
+      success: result.success,
+      started: result.started,
+      stage: result.status?.stage
+    });
+    return result;
+  });
+
+  /**
+   * Generate VBA code from natural language prompt (local AI).
    * Channel: 'ai:generate-vba'
-   * Args: { prompt: string, workbookName?: string, moduleName?: string, currentCode?: string, includeCurrentCode?: boolean }
+   * Args: { prompt: string, intent?: string, workbookName?: string, workbookPath?: string, moduleName?: string, sheetName?: string, currentCode?: string, includeCurrentCode?: boolean }
    */
   ipcMain.handle('ai:generate-vba', async (_, {
     prompt = '',
+    intent = '',
     workbookName = '',
+    workbookPath = '',
     moduleName = '',
+    sheetName = '',
     currentCode = '',
     includeCurrentCode = false
   } = {}) => {
     const shouldIncludeCurrentCode = Boolean(includeCurrentCode);
     logIpc('ai:generate-vba', 'start', {
+      intent,
       workbookName,
+      workbookPath,
       moduleName,
+      sheetName,
       promptChars: String(prompt || '').length,
       includeCurrentCode: shouldIncludeCurrentCode,
       currentCodeChars: shouldIncludeCurrentCode ? String(currentCode || '').length : 0
@@ -1463,8 +1535,11 @@ function registerHandlers() {
 
     const result = await Promise.resolve(generateVba({
       prompt,
+      intent,
       workbookName,
+      workbookPath,
       moduleName,
+      sheetName,
       currentCode: shouldIncludeCurrentCode ? currentCode : '',
       includeCurrentCode: shouldIncludeCurrentCode
     }));
@@ -1940,6 +2015,41 @@ function registerHandlers() {
     logIpc('workbook:metadata', 'start', { sheetName: args?.sheetName });
     const result = await withChannelComRelease('workbook:metadata', () => excel.getWorksheetMetadata(args));
     logIpc('workbook:metadata', 'end', { success: result.success });
+    return result;
+  });
+
+  /**
+   * Get worksheet metadata for a specific open workbook
+   * Channel: 'workbook:metadata:by-workbook'
+   * Args: { workbookName?: string, workbookPath?: string, sheetName?: string }
+   */
+  ipcMain.handle('workbook:metadata:by-workbook', async (_, args) => {
+    const payload = args && typeof args === 'object' ? args : {};
+    if (
+      !hasOnlyKeys(payload, ['workbookName', 'workbookPath', 'sheetName']) ||
+      (Object.prototype.hasOwnProperty.call(payload, 'workbookName') && typeof payload.workbookName !== 'string') ||
+      (Object.prototype.hasOwnProperty.call(payload, 'workbookPath') && typeof payload.workbookPath !== 'string') ||
+      (Object.prototype.hasOwnProperty.call(payload, 'sheetName') && typeof payload.sheetName !== 'string')
+    ) {
+      return buildBlockedResult(
+        'VALIDATION_FAILED',
+        'workbook:metadata:by-workbook accepts optional string values for "workbookName", "workbookPath", and "sheetName".'
+      );
+    }
+
+    logIpc('workbook:metadata:by-workbook', 'start', {
+      workbookName: payload.workbookName,
+      workbookPath: payload.workbookPath,
+      sheetName: payload.sheetName
+    });
+    const result = await withChannelComRelease(
+      'workbook:metadata:by-workbook',
+      () => excel.getWorksheetMetadataByWorkbookName(payload.workbookName, payload)
+    );
+    logIpc('workbook:metadata:by-workbook', 'end', {
+      success: result.success,
+      workbookFound: result.workbookFound
+    });
     return result;
   });
 

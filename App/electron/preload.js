@@ -144,9 +144,46 @@ contextBridge.exposeInMainWorld('excel', {
   // ==========================================================================
   ai: {
     /**
-     * Generate VBA module code using OpenAI.
-     * @param {{ prompt: string, workbookName?: string, moduleName?: string, currentCode?: string, includeCurrentCode?: boolean }} args
-     * @returns {Promise<{ success: boolean, code?: string, model?: string, usage?: { promptTokens?: number, completionTokens?: number, totalTokens?: number }, reason?: string, message?: string }>}
+     * Get local AI runtime/model status.
+     * @returns {Promise<{ success: boolean, provider: string, model: string, ready: boolean, needsSetup: boolean, setupInProgress: boolean, runtimeInstalled: boolean, serverReachable: boolean, modelInstalled: boolean, stage: string, progress?: number | null, statusText: string, lastError?: string }>}
+     */
+    getStatus: () => ipcRenderer.invoke('ai:status'),
+
+    /**
+     * Start local AI setup. Progress arrives through `onStatus`.
+     * @returns {Promise<{ success: boolean, started: boolean, status: object }>}
+     */
+    setup: () => ipcRenderer.invoke('ai:setup'),
+
+    /**
+     * Remove the configured local AI model from the local runtime.
+     * @returns {Promise<{ success: boolean, started: boolean, status: object }>}
+     */
+    removeModel: () => ipcRenderer.invoke('ai:remove-model'),
+
+    /**
+     * Subscribe to local AI status/setup updates.
+     * @param {(payload: object) => void} callback
+     * @returns {() => void}
+     */
+    onStatus: (callback) => {
+      if (typeof callback !== 'function') {
+        return () => {};
+      }
+
+      const listener = (_event, payload) => {
+        callback(payload);
+      };
+      ipcRenderer.on('ai:status', listener);
+      return () => {
+        ipcRenderer.removeListener('ai:status', listener);
+      };
+    },
+
+    /**
+     * Generate VBA module code using the local AI runtime.
+     * @param {{ prompt: string, intent?: string, workbookName?: string, workbookPath?: string, moduleName?: string, sheetName?: string, currentCode?: string, includeCurrentCode?: boolean }} args
+     * @returns {Promise<{ success: boolean, code?: string, content?: string, intent?: string, model?: string, usage?: { promptTokens?: number, completionTokens?: number, totalTokens?: number }, reason?: string, message?: string }>}
      */
     generateVba: (args) => ipcRenderer.invoke('ai:generate-vba', args)
   },
@@ -243,6 +280,13 @@ contextBridge.exposeInMainWorld('excel', {
      * @returns {Promise<{ success: boolean, sheet?: object, structuralContext?: object, dataContext?: object }>}
      */
     metadata: (args) => ipcRenderer.invoke('workbook:metadata', args),
+
+    /**
+     * Get worksheet metadata for a specific open workbook
+     * @param {{ workbookName?: string, workbookPath?: string, sheetName?: string }} args
+     * @returns {Promise<{ success: boolean, workbookFound: boolean, workbook?: object | null, sheet?: object, structuralContext?: object, dataContext?: object, selectionContext?: object, llmContext?: object, message?: string }>}
+     */
+    metadataByWorkbook: (args) => ipcRenderer.invoke('workbook:metadata:by-workbook', args),
 
     /**
      * Get metadata for a closed workbook path

@@ -32,26 +32,30 @@ function friendlyModelStatus(statusText) {
  * Blurs the background content and shows a clean download prompt.
  * Only checks once per session.
  */
-export default function AiGate({ onReady, onNotReady, initialReady, children }) {
+export default function AiGate({ onReady, onNotReady, initialReady, onSetupChange, children }) {
   const [aiStatus, setAiStatus] = useState(null);
   const [setupInProgress, setSetupInProgress] = useState(false);
   const [error, setError] = useState('');
-  const [ready, setReady] = useState(initialReady ? true : null); // skip check if parent already knows
+  const [ready, setReady] = useState(initialReady === true ? true : initialReady === false ? false : null);
 
   const onReadyRef = useRef(onReady);
   onReadyRef.current = onReady;
   const onNotReadyRef = useRef(onNotReady);
   onNotReadyRef.current = onNotReady;
+  const onSetupChangeRef = useRef(onSetupChange);
+  onSetupChangeRef.current = onSetupChange;
 
   const handleStatusUpdate = useCallback((status) => {
     setAiStatus(status);
     if (status?.ready) {
       setReady(true);
       setSetupInProgress(false);
+      onSetupChangeRef.current?.(false);
       onReadyRef.current?.();
     } else if (status?.lastError) {
       setError(status.lastError);
       setSetupInProgress(false);
+      onSetupChangeRef.current?.(false);
     }
   }, []);
 
@@ -78,6 +82,7 @@ export default function AiGate({ onReady, onNotReady, initialReady, children }) 
 
   const handleDownload = async () => {
     setSetupInProgress(true);
+    onSetupChangeRef.current?.(true);
     setError('');
     try {
       const result = await window.excel?.ai?.setup?.();
@@ -85,6 +90,7 @@ export default function AiGate({ onReady, onNotReady, initialReady, children }) 
     } catch {
       setError('Setup failed. Please try again.');
       setSetupInProgress(false);
+      onSetupChangeRef.current?.(false);
     }
   };
 
@@ -113,8 +119,8 @@ export default function AiGate({ onReady, onNotReady, initialReady, children }) 
   // Model size from status or default
   const modelSize = aiStatus?.modelSize || '5.1 GB';
 
-  // Ready — render children directly, no wrapper
-  if (ready === true) return children;
+  // Ready or still checking — render children directly, no overlay
+  if (ready !== false) return children;
 
   return (
     <div style={{ position: 'relative', flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>

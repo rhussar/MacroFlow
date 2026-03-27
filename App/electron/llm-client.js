@@ -2,15 +2,13 @@ const logger = require('./logger');
 const {
   LOCAL_AI_MODEL,
   LOCAL_AI_BASE_URL,
-  REQUEST_TIMEOUT_MS,
-  MAX_PROMPT_CHARS,
-  MAX_COMPLETION_TOKENS,
   TEMPERATURE
 } = require('./llm-config');
 const { requestText } = require('./http-client');
 const localAiManager = require('./local-ai-manager');
 const { normalizeAiIntent, buildUserPrompt, getSystemPrompt } = require('./llm-prompts');
 const { resolveWorkbookPromptContext } = require('./llm-context');
+const { resolveLlmPerformanceProfile } = require('./llm-performance');
 
 function toSafeString(value) {
   return String(value || '').trim();
@@ -118,6 +116,57 @@ function createRequestId() {
   return `ai_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
+function normalizeContextPayload(contextPayload) {
+  if (typeof contextPayload === 'string') {
+    return {
+      text: contextPayload,
+      meta: {}
+    };
+  }
+
+  if (contextPayload && typeof contextPayload === 'object') {
+    return {
+      text: toSafeString(contextPayload.text),
+      meta: contextPayload.meta && typeof contextPayload.meta === 'object' ? contextPayload.meta : {}
+    };
+  }
+
+  return {
+    text: '',
+    meta: {}
+  };
+}
+
+function buildDiagnostics({
+  performanceProfile,
+  contextMeta,
+  workbookContextChars,
+  requestDurationMs = 0,
+  totalDurationMs = 0
+}) {
+  return {
+    profile: performanceProfile.name,
+    hardwareTier: performanceProfile.hardwareTier,
+    totalMemoryGb: performanceProfile.totalMemoryGb,
+    freeMemoryGb: performanceProfile.freeMemoryGb,
+    cpuCount: performanceProfile.cpuCount,
+    memoryPressureRatio: performanceProfile.memoryPressureRatio,
+    timings: {
+      workbookContextMs: Number(contextMeta?.durationMs) || 0,
+      llmRequestMs: Number(requestDurationMs) || 0,
+      totalMs: Number(totalDurationMs) || 0
+    },
+    context: {
+      included: Boolean(contextMeta?.included),
+      chars: Number(workbookContextChars) || 0,
+      cacheHit: Boolean(contextMeta?.cacheHit),
+      timedOut: Boolean(contextMeta?.timedOut),
+      mode: toSafeString(contextMeta?.mode),
+      skippedReason: toSafeString(contextMeta?.skippedReason)
+    }
+  };
+}
+
 async function generateVba(
   {
     prompt = '',
@@ -133,7 +182,12 @@ async function generateVba(
 ) {
   const requestId = createRequestId();
   const startedAt = Date.now();
-  const promptText = truncate(String(prompt || ''), MAX_PROMPT_CHARS);
+  const performanceProfile =
+    (typeof dependencies.performanceProfile === 'function'
+      ? dependencies.performanceProfile()
+      : dependencies.performanceProfile)
+    || resolveLlmPerformanceProfile();
+  const promptText = truncate(String(prompt || ''), performanceProfile.maxPromptChars);
   const normalizedIntent = normalizeAiIntent(intent, { includeCurrentCode: Boolean(includeCurrentCode) });
   const shouldIncludeCurrentCode = normalizedIntent === 'edit'
     ? Boolean(includeCurrentCode || toSafeString(currentCode))
@@ -181,17 +235,23 @@ async function generateVba(
     ? dependencies.contextImpl
     : resolveWorkbookPromptContext;
   let workbookContext = '';
+  let contextMeta = {};
 
   try {
-    workbookContext = await Promise.resolve(
+    const contextPayload = await Promise.resolve(
       contextImpl({
         intent: normalizedIntent,
         workbookName,
         workbookPath,
         moduleName,
         sheetName
+      }, {
+        performanceProfile
       })
     );
+    const normalizedContextPayload = normalizeContextPayload(contextPayload);
+    workbookContext = normalizedContextPayload.text;
+    contextMeta = normalizedContextPayload.meta;
   } catch (error) {
     logger.warn('[AI] workbook context unavailable', {
       requestId,
@@ -205,7 +265,7 @@ async function generateVba(
   const payload = {
     model: selectedModel,
     temperature: TEMPERATURE,
-    max_tokens: MAX_COMPLETION_TOKENS,
+    max_tokens: performanceProfile.maxCompletionTokens,
     messages: [
       {
         role: 'system',
@@ -222,7 +282,8 @@ async function generateVba(
           moduleName,
           workbookContext,
           currentCode,
-          includeCurrentCode: shouldIncludeCurrentCode
+          includeCurrentCode: shouldIncludeCurrentCode,
+          limits: performanceProfile
         })
       }
     ]
@@ -234,22 +295,28 @@ async function generateVba(
     model: selectedModel,
     intent: normalizedIntent,
     promptChars: promptText.length,
+    requestTimeoutMs: performanceProfile.requestTimeoutMs,
+    maxCompletionTokens: performanceProfile.maxCompletionTokens,
+    performanceProfile: performanceProfile.name,
     includeCurrentCode: shouldIncludeCurrentCode,
     currentCodeChars: shouldIncludeCurrentCode ? String(currentCode || '').length : 0,
-    workbookContextChars: String(workbookContext || '').length
+    workbookContextChars: String(workbookContext || '').length,
+    workbookContextMeta: contextMeta
   });
 
   const requestImpl = typeof dependencies.requestImpl === 'function'
     ? dependencies.requestImpl
     : requestText;
+  let requestStartedAt = 0;
 
   try {
     const url = `${LOCAL_AI_BASE_URL.replace(/\/+$/, '')}/v1/chat/completions`;
     const body = JSON.stringify(payload);
+    requestStartedAt = Date.now();
 
     const response = await requestImpl({
       url,
-      timeoutMs: REQUEST_TIMEOUT_MS,
+      timeoutMs: performanceProfile.requestTimeoutMs,
       headers: {
         'Content-Type': 'application/json',
         'Content-Length': Buffer.byteLength(body)
@@ -271,22 +338,39 @@ async function generateVba(
     if (statusCode >= 400) {
       const apiMessage = getErrorMessageFromResponse(parsedBody);
       const mapped = mapGenerateError(new Error(apiMessage || `Local AI request failed (HTTP ${statusCode}).`), statusCode);
+      const diagnostics = buildDiagnostics({
+        performanceProfile,
+        contextMeta,
+        workbookContextChars: String(workbookContext || '').length,
+        requestDurationMs: Date.now() - requestStartedAt,
+        totalDurationMs: Date.now() - startedAt
+      });
       return {
         success: false,
         reason: mapped.reason,
-        message: mapped.message
+        message: mapped.message,
+        diagnostics
       };
     }
 
     const rawContent = extractTextContent(parsedBody?.choices?.[0]?.message?.content);
     const normalizedContent = normalizeLineEndings(rawContent).trim();
+    const requestDurationMs = Date.now() - requestStartedAt;
+    const diagnostics = buildDiagnostics({
+      performanceProfile,
+      contextMeta,
+      workbookContextChars: String(workbookContext || '').length,
+      requestDurationMs,
+      totalDurationMs: Date.now() - startedAt
+    });
 
     if (normalizedIntent === 'ask') {
       if (!normalizedContent) {
         return {
           success: false,
           reason: 'AI_INVALID_RESPONSE',
-          message: 'Local AI returned an empty answer.'
+          message: 'Local AI returned an empty answer.',
+          diagnostics
         };
       }
 
@@ -303,8 +387,9 @@ async function generateVba(
         model: selectedModel,
         intent: normalizedIntent,
         statusCode,
-        durationMs: Date.now() - startedAt,
-        usage
+        durationMs: diagnostics.timings.totalMs,
+        usage,
+        diagnostics
       });
 
       return {
@@ -312,7 +397,8 @@ async function generateVba(
         content: normalizedContent,
         intent: normalizedIntent,
         model: selectedModel,
-        usage
+        usage,
+        diagnostics
       };
     }
 
@@ -322,7 +408,8 @@ async function generateVba(
       return {
         success: false,
         reason: 'AI_INVALID_RESPONSE',
-        message: 'Local AI did not return valid VBA code.'
+        message: 'Local AI did not return valid VBA code.',
+        diagnostics
       };
     }
 
@@ -339,8 +426,9 @@ async function generateVba(
       model: selectedModel,
       intent: normalizedIntent,
       statusCode,
-      durationMs: Date.now() - startedAt,
-      usage
+      durationMs: diagnostics.timings.totalMs,
+      usage,
+      diagnostics
     });
 
     return {
@@ -348,20 +436,30 @@ async function generateVba(
       code,
       intent: normalizedIntent,
       model: selectedModel,
-      usage
+      usage,
+      diagnostics
     };
   } catch (error) {
     const mapped = mapGenerateError(error);
+    const diagnostics = buildDiagnostics({
+      performanceProfile,
+      contextMeta,
+      workbookContextChars: String(workbookContext || '').length,
+      requestDurationMs: requestStartedAt > 0 ? Date.now() - requestStartedAt : 0,
+      totalDurationMs: Date.now() - startedAt
+    });
     logger.warn('[AI] generate-vba failed', {
       requestId,
       reason: mapped.reason,
-      durationMs: Date.now() - startedAt,
-      message: mapped.message
+      durationMs: diagnostics.timings.totalMs,
+      message: mapped.message,
+      diagnostics
     });
     return {
       success: false,
       reason: mapped.reason,
-      message: mapped.message
+      message: mapped.message,
+      diagnostics
     };
   }
 }

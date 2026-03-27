@@ -615,9 +615,12 @@ if (!gotLock) {
     registerAuthHandlers();
 
     // Check cached license (non-blocking — renderer will gate UI).
-    checkCachedLicense().catch((err) => {
+    // Store the promise so license:status can await it before responding.
+    const { setStartupCheckPromise } = require('./license');
+    const p = checkCachedLicense().catch((err) => {
       logger.warn('[License] startup check failed', { error: err.message });
     });
+    setStartupCheckPromise(p);
 
     registerHandlers();
     createWindow();

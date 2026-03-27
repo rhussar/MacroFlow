@@ -11,7 +11,6 @@ const {
   LOCAL_AI_PROVIDER,
   LOCAL_AI_MODEL,
   LOCAL_AI_BASE_URL,
-  LOCAL_AI_CONTEXT_LENGTH,
   ALLOW_EXTERNAL_OLLAMA,
   OLLAMA_RUNTIME_VERSION,
   OLLAMA_WINDOWS_ZIP_URL,
@@ -21,6 +20,7 @@ const {
   HEALTHCHECK_TIMEOUT_MS,
   SETUP_SERVER_TIMEOUT_MS
 } = require('./llm-config');
+const { resolveLlmPerformanceProfile } = require('./llm-performance');
 
 let electronApp = null;
 
@@ -50,6 +50,7 @@ const state = {
   snapshot: null,
   setupPromise: null,
   removePromise: null,
+  restartPromise: null,
   listeners: new Set()
 };
 
@@ -220,18 +221,25 @@ function getOllamaPortFromBaseUrl() {
 
 function getManagedOllamaEnv() {
   ensureManagedDirectories();
+  const performanceProfile = resolveLlmPerformanceProfile();
   return {
     ...process.env,
     OLLAMA_HOST: getOllamaHostFromBaseUrl(),
     OLLAMA_MODELS: modelsDir,
-    OLLAMA_CONTEXT_LENGTH: String(LOCAL_AI_CONTEXT_LENGTH),
+    OLLAMA_CONTEXT_LENGTH: String(performanceProfile.contextLength),
+    OLLAMA_MAX_LOADED_MODELS: String(performanceProfile.ollamaMaxLoadedModels),
+    OLLAMA_NUM_PARALLEL: String(performanceProfile.ollamaNumParallel),
+    OLLAMA_KEEP_ALIVE: String(performanceProfile.ollamaKeepAlive),
     OLLAMA_NO_CLOUD: '1'
   };
 }
 
-function getListeningProcessPath(port) {
+function getListeningProcessInfo(port) {
   if (process.platform !== 'win32' || !Number.isFinite(port) || port <= 0) {
-    return '';
+    return {
+      processId: 0,
+      processPath: ''
+    };
   }
 
   try {
@@ -246,6 +254,7 @@ function getListeningProcessPath(port) {
         [
           `$connection = Get-NetTCPConnection -State Listen -LocalPort ${Math.trunc(port)} -ErrorAction SilentlyContinue | Select-Object -First 1;`,
           'if (-not $connection) { return }',
+          'Write-Output ("PID=" + $connection.OwningProcess)',
           '$process = Get-Process -Id $connection.OwningProcess -ErrorAction SilentlyContinue;',
           'if ($process -and $process.Path) { Write-Output $process.Path }'
         ].join(' ')
@@ -257,12 +266,28 @@ function getListeningProcessPath(port) {
     );
 
     if (result.status !== 0) {
-      return '';
+      return {
+        processId: 0,
+        processPath: ''
+      };
     }
 
-    return normalizeRuntimePath(String(result.stdout || '').trim());
+    const outputLines = String(result.stdout || '')
+      .split(/\r?\n/)
+      .map((line) => String(line || '').trim())
+      .filter(Boolean);
+    const pidLine = outputLines.find((line) => line.startsWith('PID='));
+    const processId = Number(pidLine ? pidLine.slice(4) : 0) || 0;
+    const processPath = normalizeRuntimePath(outputLines.find((line) => !line.startsWith('PID=')) || '');
+    return {
+      processId,
+      processPath
+    };
   } catch {
-    return '';
+    return {
+      processId: 0,
+      processPath: ''
+    };
   }
 }
 
@@ -272,26 +297,142 @@ async function getServerState(runtime) {
     return {
       serverReachable: false,
       serverOwnedByRuntime: false,
+      listenerProcessId: 0,
       listenerProcessPath: ''
     };
   }
 
-  const listenerProcessPath = getListeningProcessPath(getOllamaPortFromBaseUrl());
+  const listenerProcessInfo = getListeningProcessInfo(getOllamaPortFromBaseUrl());
   if (ALLOW_EXTERNAL_OLLAMA || process.platform !== 'win32') {
     return {
       serverReachable: true,
       serverOwnedByRuntime: true,
-      listenerProcessPath
+      listenerProcessId: listenerProcessInfo.processId,
+      listenerProcessPath: listenerProcessInfo.processPath
     };
   }
 
   const expectedRuntimePath = normalizeRuntimePath(runtime?.commandPath).toLowerCase();
-  const normalizedListenerPath = normalizeRuntimePath(listenerProcessPath).toLowerCase();
+  const normalizedListenerPath = normalizeRuntimePath(listenerProcessInfo.processPath).toLowerCase();
   return {
     serverReachable: true,
     serverOwnedByRuntime: Boolean(expectedRuntimePath && normalizedListenerPath && expectedRuntimePath === normalizedListenerPath),
-    listenerProcessPath
+    listenerProcessId: listenerProcessInfo.processId,
+    listenerProcessPath: listenerProcessInfo.processPath
   };
+}
+
+function buildManagedServerSignature(runtime) {
+  const performanceProfile = resolveLlmPerformanceProfile();
+  return JSON.stringify({
+    runtimeVersion: OLLAMA_RUNTIME_VERSION,
+    runtimePath: normalizeRuntimePath(runtime?.commandPath),
+    baseUrl: LOCAL_AI_BASE_URL,
+    modelsDir,
+    contextLength: performanceProfile.contextLength,
+    maxLoadedModels: performanceProfile.ollamaMaxLoadedModels,
+    numParallel: performanceProfile.ollamaNumParallel,
+    keepAlive: performanceProfile.ollamaKeepAlive,
+    noCloud: true
+  });
+}
+
+function persistManagedServerSignature(runtime) {
+  if (runtime?.source !== 'managed') {
+    return;
+  }
+
+  writeStore({
+    managedServerSignature: buildManagedServerSignature(runtime),
+    managedRuntimeVersion: OLLAMA_RUNTIME_VERSION,
+    managedRuntimePath: normalizeRuntimePath(runtime.commandPath)
+  });
+}
+
+function shouldRestartManagedServer(runtime, serverState) {
+  if (runtime?.source !== 'managed') {
+    return false;
+  }
+
+  if (!serverState?.serverReachable || !serverState?.serverOwnedByRuntime) {
+    return false;
+  }
+
+  const store = readStore();
+  const expectedSignature = buildManagedServerSignature(runtime);
+  const storedSignature = String(store.managedServerSignature || '').trim();
+  return storedSignature !== expectedSignature;
+}
+
+async function waitForManagedServerStop(runtime, timeoutMs = 15000) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    const serverState = await getServerState(runtime);
+    if (!serverState.serverReachable || !serverState.serverOwnedByRuntime) {
+      return true;
+    }
+    await delay(500);
+  }
+  return false;
+}
+
+async function stopManagedServer(runtime, serverState) {
+  if (runtime?.source !== 'managed' || process.platform !== 'win32') {
+    return false;
+  }
+
+  const processId = Number(serverState?.listenerProcessId) || 0;
+  const runtimePath = normalizeRuntimePath(runtime?.commandPath).toLowerCase();
+  const listenerPath = normalizeRuntimePath(serverState?.listenerProcessPath).toLowerCase();
+  if (!processId || !runtimePath || !listenerPath || runtimePath !== listenerPath) {
+    return false;
+  }
+
+  const result = spawnSync(
+    'taskkill.exe',
+    ['/PID', String(processId), '/T', '/F'],
+    {
+      encoding: 'utf8',
+      windowsHide: true
+    }
+  );
+
+  if (result.status !== 0) {
+    const message = String(result.stderr || result.stdout || '').trim();
+    throw new Error(message || 'Unable to restart the local AI runtime.');
+  }
+
+  const stopped = await waitForManagedServerStop(runtime);
+  if (!stopped) {
+    throw new Error('Timed out while restarting the local AI runtime.');
+  }
+
+  return true;
+}
+
+async function restartManagedServer(runtime, serverState) {
+  if (state.restartPromise) {
+    return state.restartPromise;
+  }
+
+  state.restartPromise = (async () => {
+    setSnapshot({
+      restartInProgress: true,
+      stage: 'restarting_runtime',
+      progress: null,
+      statusText: 'Restarting local AI to apply updates...'
+    });
+
+    await stopManagedServer(runtime, serverState);
+    await ensureServer(runtime);
+    persistManagedServerSignature(runtime);
+  })();
+
+  try {
+    await state.restartPromise;
+  } finally {
+    state.restartPromise = null;
+  }
 }
 
 async function pingOllamaServer(timeoutMs = HEALTHCHECK_TIMEOUT_MS) {
@@ -358,6 +499,7 @@ function getStatusText({ runtimeInstalled, serverReachable, serverOwnedByRuntime
 
 function buildSnapshot(overrides = {}) {
   const base = state.snapshot || {};
+  const performanceProfile = resolveLlmPerformanceProfile();
   return {
     success: true,
     provider: LOCAL_AI_PROVIDER,
@@ -367,16 +509,22 @@ function buildSnapshot(overrides = {}) {
     needsSetup: true,
     setupInProgress: Boolean(state.setupPromise),
     removeInProgress: Boolean(state.removePromise),
+    restartInProgress: Boolean(state.restartPromise),
     runtimeInstalled: false,
     runtimeCommand: '',
     runtimeSource: '',
     serverReachable: false,
     serverOwnedByRuntime: false,
+    listenerProcessId: 0,
     listenerProcessPath: '',
     modelInstalled: false,
     localOnly: true,
     cloudFeaturesDisabled: true,
-    contextLength: LOCAL_AI_CONTEXT_LENGTH,
+    contextLength: performanceProfile.contextLength,
+    performanceProfile: performanceProfile.name,
+    hardwareTier: performanceProfile.hardwareTier,
+    freeMemoryGb: performanceProfile.freeMemoryGb,
+    memoryPressureRatio: performanceProfile.memoryPressureRatio,
     runtimeVersion: OLLAMA_RUNTIME_VERSION,
     externalRuntimeAllowed: ALLOW_EXTERNAL_OLLAMA,
     runtimeDirectory: runtimeDir,
@@ -403,7 +551,7 @@ function setSnapshot(overrides = {}) {
 }
 
 async function getStatus() {
-  if (state.setupPromise || state.removePromise) {
+  if (state.setupPromise || state.removePromise || state.restartPromise) {
     return buildSnapshot();
   }
 
@@ -416,12 +564,21 @@ async function getStatus() {
   const runtime = findOllamaRuntime();
   const serverState = runtime.installed
     ? await getServerState(runtime)
-    : { serverReachable: false, serverOwnedByRuntime: false, listenerProcessPath: '' };
+    : { serverReachable: false, serverOwnedByRuntime: false, listenerProcessId: 0, listenerProcessPath: '' };
   const models = serverState.serverReachable && serverState.serverOwnedByRuntime ? await listInstalledModels() : [];
   const modelInstalled = serverState.serverReachable && serverState.serverOwnedByRuntime
     ? isModelInstalled(models, getSelectedModel())
     : false;
-  const ready = Boolean(runtime.installed && serverState.serverReachable && serverState.serverOwnedByRuntime && modelInstalled);
+  const ready = Boolean(
+    runtime.installed
+    && serverState.serverReachable
+    && serverState.serverOwnedByRuntime
+    && modelInstalled
+  );
+
+  if (ready) {
+    persistManagedServerSignature(runtime);
+  }
 
   return setSnapshot({
     runtimeInstalled: runtime.installed,
@@ -429,12 +586,14 @@ async function getStatus() {
     runtimeSource: runtime.source,
     serverReachable: serverState.serverReachable,
     serverOwnedByRuntime: serverState.serverOwnedByRuntime,
+    listenerProcessId: serverState.listenerProcessId,
     listenerProcessPath: serverState.listenerProcessPath,
     modelInstalled,
     ready,
     needsSetup: !ready,
     setupInProgress: false,
     removeInProgress: false,
+    restartInProgress: false,
     stage: ready
       ? 'ready'
       : !runtime.installed
@@ -455,6 +614,24 @@ async function getStatus() {
     }),
     lastError: ''
   });
+}
+
+async function ensureManagedRuntimeCurrent() {
+  if (state.setupPromise || state.removePromise || state.restartPromise) {
+    return buildSnapshot();
+  }
+
+  const runtime = findOllamaRuntime();
+  if (!runtime.installed) {
+    return getStatus();
+  }
+
+  const serverState = await getServerState(runtime);
+  if (shouldRestartManagedServer(runtime, serverState)) {
+    await restartManagedServer(runtime, serverState);
+  }
+
+  return getStatus();
 }
 
 function subscribe(listener) {
@@ -908,6 +1085,7 @@ async function runSetupFlow() {
       statusText: 'Local AI is ready.',
       lastError: ''
     });
+    persistManagedServerSignature(runtime);
   } catch (error) {
     const message = String(error?.message || 'Local AI setup failed.').trim();
     writeStore({ lastError: message });
@@ -992,7 +1170,16 @@ async function runRemoveModelFlow() {
   }
 
   writeStore({ lastError: '' });
-  await getStatus();
+  setSnapshot({
+    removeInProgress: false,
+    ready: false,
+    needsSetup: true,
+    modelInstalled: false,
+    progress: null,
+    stage: 'model_missing',
+    statusText: 'Local AI model removed.',
+    lastError: ''
+  });
 }
 
 async function setup() {
@@ -1049,6 +1236,7 @@ async function removeModel() {
 
 module.exports = {
   getStatus,
+  ensureManagedRuntimeCurrent,
   setup,
   removeModel,
   subscribe

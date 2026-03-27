@@ -1,17 +1,38 @@
 const { MAX_WORKBOOK_CONTEXT_CHARS } = require('./llm-config');
+const { resolveLlmPerformanceProfile } = require('./llm-performance');
 
-const MAX_WORKSHEET_NAMES = 12;
-const MAX_COLUMNS = 10;
-const MAX_COLUMN_EXAMPLES = 3;
-const MAX_SAMPLE_ROWS = 3;
-const MAX_SAMPLE_ROW_COLUMNS = 6;
-const MAX_SELECTION_VALUE_CHARS = 80;
 const WORKBOOK_CONTEXT_BURST_CACHE_MS = 1000;
+const MAX_SELECTION_VALUE_CHARS = 80;
 
-let cachedContextKey = '';
-let cachedContextText = '';
-let cachedContextAt = 0;
+const CONTEXT_MODE_LIMITS = {
+  minimal: {
+    maxWorksheetNames: 8,
+    maxColumns: 0,
+    maxColumnExamples: 0,
+    maxSampleRows: 0,
+    maxSampleRowColumns: 0,
+    includeSelection: true
+  },
+  reduced: {
+    maxWorksheetNames: 10,
+    maxColumns: 6,
+    maxColumnExamples: 1,
+    maxSampleRows: 0,
+    maxSampleRowColumns: 0,
+    includeSelection: true
+  },
+  full: {
+    maxWorksheetNames: 12,
+    maxColumns: 10,
+    maxColumnExamples: 3,
+    maxSampleRows: 3,
+    maxSampleRowColumns: 6,
+    includeSelection: true
+  }
+};
+
 let cachedExcelBridge = null;
+let cachedContextEntry = null;
 
 function toSafeString(value) {
   return String(value || '').trim();
@@ -39,30 +60,51 @@ function formatValue(value, maxChars = MAX_SELECTION_VALUE_CHARS) {
   return truncate(String(value), maxChars);
 }
 
-function stringifyHeaders(headersByAddress) {
+function withTimeout(promise, timeoutMs, errorMessage) {
+  const normalizedTimeoutMs = Number(timeoutMs) || 0;
+  if (normalizedTimeoutMs <= 0) {
+    return Promise.resolve(promise);
+  }
+
+  let timeoutId = null;
+  const timeoutPromise = new Promise((_, reject) => {
+    timeoutId = setTimeout(() => {
+      reject(new Error(errorMessage));
+    }, normalizedTimeoutMs);
+  });
+
+  return Promise.race([Promise.resolve(promise), timeoutPromise]).finally(() => {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
+  });
+}
+
+function stringifyHeaders(headersByAddress, maxColumns) {
   if (!headersByAddress || typeof headersByAddress !== 'object') {
     return '';
   }
 
+  const normalizedMaxColumns = Number(maxColumns) || 0;
   return Object.entries(headersByAddress)
-    .slice(0, MAX_COLUMNS)
+    .slice(0, normalizedMaxColumns > 0 ? normalizedMaxColumns : undefined)
     .map(([address, header]) => `${address}=${formatValue(header, 40) || '(blank)'}`)
     .join(', ');
 }
 
-function stringifyColumns(columns) {
-  if (!Array.isArray(columns) || !columns.length) {
+function stringifyColumns(columns, modeLimits) {
+  if (!Array.isArray(columns) || !columns.length || !modeLimits.maxColumns) {
     return [];
   }
 
-  return columns.slice(0, MAX_COLUMNS).map((column) => {
+  return columns.slice(0, modeLimits.maxColumns).map((column) => {
     const columnLabel = toSafeString(column?.column) || '?';
     const header = formatValue(column?.header, 50) || '(blank)';
     const typeSummary = formatValue(column?.typeSummary, 80) || 'unknown';
     const examples = Array.isArray(column?.examples)
       ? column.examples
           .filter((value) => value !== null && value !== undefined && value !== '')
-          .slice(0, MAX_COLUMN_EXAMPLES)
+          .slice(0, modeLimits.maxColumnExamples)
           .map((value) => formatValue(value, 40))
           .filter(Boolean)
       : [];
@@ -74,22 +116,22 @@ function stringifyColumns(columns) {
   });
 }
 
-function stringifySampleRows(sampleRows, columns) {
-  if (!Array.isArray(sampleRows) || !sampleRows.length) {
+function stringifySampleRows(sampleRows, columns, modeLimits) {
+  if (!Array.isArray(sampleRows) || !sampleRows.length || !modeLimits.maxSampleRows) {
     return [];
   }
 
   const columnLabels = Array.isArray(columns)
-    ? columns.slice(0, MAX_SAMPLE_ROW_COLUMNS).map((column, index) => {
+    ? columns.slice(0, modeLimits.maxSampleRowColumns).map((column, index) => {
         const header = formatValue(column?.header, 30);
         const fallback = toSafeString(column?.column) || `Col${index + 1}`;
         return header || fallback;
       })
     : [];
 
-  return sampleRows.slice(0, MAX_SAMPLE_ROWS).map((row, rowIndex) => {
+  return sampleRows.slice(0, modeLimits.maxSampleRows).map((row, rowIndex) => {
     const values = Array.isArray(row) ? row : [];
-    const pairs = values.slice(0, MAX_SAMPLE_ROW_COLUMNS).map((value, valueIndex) => {
+    const pairs = values.slice(0, modeLimits.maxSampleRowColumns).map((value, valueIndex) => {
       const key = columnLabels[valueIndex] || `Col${valueIndex + 1}`;
       const normalizedValue = formatValue(value, 40) || '(blank)';
       return `${key}=${normalizedValue}`;
@@ -98,12 +140,22 @@ function stringifySampleRows(sampleRows, columns) {
   });
 }
 
-function serializeWorkbookContext(metadataResult, options = {}) {
+function resolveModeLimits(performanceProfile) {
+  const mode = toSafeString(performanceProfile?.workbookContextMode).toLowerCase();
+  return CONTEXT_MODE_LIMITS[mode] || CONTEXT_MODE_LIMITS.reduced;
+}
+
+function serializeWorkbookContext(
+  metadataResult,
+  options = {},
+  performanceProfile = resolveLlmPerformanceProfile()
+) {
   const llmContext = metadataResult?.llmContext;
   if (!llmContext || typeof llmContext !== 'object') {
     return '';
   }
 
+  const modeLimits = resolveModeLimits(performanceProfile);
   const structural = llmContext.structural || {};
   const data = llmContext.data || {};
   const selection = llmContext.selection || {};
@@ -115,7 +167,7 @@ function serializeWorkbookContext(metadataResult, options = {}) {
   }
 
   const worksheetNames = Array.isArray(structural.worksheetNames)
-    ? structural.worksheetNames.filter(Boolean).slice(0, MAX_WORKSHEET_NAMES)
+    ? structural.worksheetNames.filter(Boolean).slice(0, modeLimits.maxWorksheetNames)
     : [];
   if (worksheetNames.length) {
     lines.push(`Worksheets: ${worksheetNames.join(', ')}`);
@@ -129,51 +181,56 @@ function serializeWorkbookContext(metadataResult, options = {}) {
     lines.push(`Used range: ${usedRangeAddress} (${rowCount} rows x ${columnCount} columns)`);
   }
 
-  const headersLine = stringifyHeaders(data.headersByAddress);
+  const headersLine = stringifyHeaders(data.headersByAddress, Math.max(modeLimits.maxColumns, 8));
   if (headersLine) {
     lines.push(`Headers: ${headersLine}`);
   }
 
-  const columnLines = stringifyColumns(data.columns);
+  const columnLines = stringifyColumns(data.columns, modeLimits);
   if (columnLines.length) {
     lines.push('Columns:');
     lines.push(...columnLines);
   }
 
-  const sampleRowLines = stringifySampleRows(data.sampleRows?.rows, data.columns);
+  const sampleRowLines = stringifySampleRows(data.sampleRows?.rows, data.columns, modeLimits);
   if (sampleRowLines.length) {
     lines.push('Sample rows:');
     lines.push(...sampleRowLines);
   }
 
-  const selectionAddress = toSafeString(selection.address);
-  if (selectionAddress) {
-    lines.push(`Selection: ${selectionAddress}`);
+  if (modeLimits.includeSelection) {
+    const selectionAddress = toSafeString(selection.address);
+    if (selectionAddress) {
+      lines.push(`Selection: ${selectionAddress}`);
+    }
+
+    const activeCellAddress = toSafeString(selection?.activeCell?.address);
+    if (activeCellAddress) {
+      const activeCellValue = formatValue(selection?.activeCell?.value);
+      lines.push(
+        activeCellValue
+          ? `Active cell: ${activeCellAddress} = ${activeCellValue}`
+          : `Active cell: ${activeCellAddress}`
+      );
+    }
+
+    const tableName = toSafeString(selection?.table?.name);
+    const tableRange = toSafeString(selection?.table?.range);
+    if (tableName) {
+      lines.push(tableRange ? `Selected table: ${tableName} (${tableRange})` : `Selected table: ${tableName}`);
+    }
   }
 
-  const activeCellAddress = toSafeString(selection?.activeCell?.address);
-  if (activeCellAddress) {
-    const activeCellValue = formatValue(selection?.activeCell?.value);
-    lines.push(
-      activeCellValue
-        ? `Active cell: ${activeCellAddress} = ${activeCellValue}`
-        : `Active cell: ${activeCellAddress}`
-    );
-  }
-
-  const tableName = toSafeString(selection?.table?.name);
-  const tableRange = toSafeString(selection?.table?.range);
-  if (tableName) {
-    lines.push(tableRange ? `Selected table: ${tableName} (${tableRange})` : `Selected table: ${tableName}`);
-  }
-
-  return truncate(lines.join('\n'), MAX_WORKBOOK_CONTEXT_CHARS);
+  const maxWorkbookContextChars =
+    Number(performanceProfile?.maxWorkbookContextChars) || MAX_WORKBOOK_CONTEXT_CHARS;
+  return truncate(lines.join('\n'), maxWorkbookContextChars);
 }
 
 function resolveWorkbookMetadata(args = {}, dependencies = {}) {
   const workbookName = toSafeString(args.workbookName);
   const workbookPath = toSafeString(args.workbookPath);
   const sheetName = toSafeString(args.sheetName);
+  const contextMode = toSafeString(args.contextMode);
   const metadataByWorkbookImpl =
     typeof dependencies.metadataByWorkbookImpl === 'function'
       ? dependencies.metadataByWorkbookImpl
@@ -188,42 +245,142 @@ function resolveWorkbookMetadata(args = {}, dependencies = {}) {
       metadataByWorkbookImpl({
         workbookName,
         workbookPath,
-        sheetName
+        sheetName,
+        contextMode
       })
     );
   }
 
-  return Promise.resolve(metadataImpl({ sheetName }));
+  return Promise.resolve(metadataImpl({ sheetName, contextMode }));
+}
+
+function buildContextMeta(overrides = {}) {
+  return {
+    included: false,
+    chars: 0,
+    cacheHit: false,
+    timedOut: false,
+    durationMs: 0,
+    mode: 'reduced',
+    skippedReason: '',
+    ...overrides
+  };
 }
 
 async function resolveWorkbookPromptContext(args = {}, dependencies = {}) {
+  const performanceProfile = dependencies.performanceProfile || resolveLlmPerformanceProfile();
+  const normalizedIntent = toSafeString(args.intent).toLowerCase();
+  const contextMode = toSafeString(performanceProfile.workbookContextMode) || 'reduced';
+
+  if (!performanceProfile.enableWorkbookContext) {
+    return {
+      text: '',
+      meta: buildContextMeta({
+        mode: contextMode,
+        skippedReason: 'disabled'
+      })
+    };
+  }
+
+  if (normalizedIntent === 'ask' && !performanceProfile.includeWorkbookContextForAsk) {
+    return {
+      text: '',
+      meta: buildContextMeta({
+        mode: contextMode,
+        skippedReason: 'ask_disabled'
+      })
+    };
+  }
+
   const cacheKey = JSON.stringify({
     workbookName: toSafeString(args.workbookName),
     workbookPath: toSafeString(args.workbookPath),
     sheetName: toSafeString(args.sheetName),
-    intent: toSafeString(args.intent)
+    intent: normalizedIntent,
+    mode: contextMode,
+    maxWorkbookContextChars: Number(performanceProfile.maxWorkbookContextChars) || MAX_WORKBOOK_CONTEXT_CHARS
   });
   const now = Date.now();
   if (
-    cachedContextText &&
-    cachedContextKey === cacheKey &&
-    now - cachedContextAt < WORKBOOK_CONTEXT_BURST_CACHE_MS
+    cachedContextEntry &&
+    cachedContextEntry.key === cacheKey &&
+    now - cachedContextEntry.at < WORKBOOK_CONTEXT_BURST_CACHE_MS
   ) {
-    return cachedContextText;
+    return {
+      text: cachedContextEntry.text,
+      meta: buildContextMeta({
+        ...cachedContextEntry.meta,
+        cacheHit: true,
+        durationMs: 0
+      })
+    };
   }
 
-  const metadataResult = await resolveWorkbookMetadata(args, dependencies);
-  if (!metadataResult?.success) {
-    return '';
+  const startedAt = Date.now();
+  try {
+    const metadataResult = await withTimeout(
+      resolveWorkbookMetadata({
+        ...args,
+        contextMode
+      }, dependencies),
+      performanceProfile.contextFetchTimeoutMs,
+      'WORKBOOK_CONTEXT_TIMEOUT'
+    );
+
+    if (!metadataResult?.success) {
+      return {
+        text: '',
+        meta: buildContextMeta({
+          mode: contextMode,
+          durationMs: Date.now() - startedAt,
+          skippedReason: 'metadata_unavailable'
+        })
+      };
+    }
+
+    if (metadataResult?.workbookFound === false) {
+      return {
+        text: '',
+        meta: buildContextMeta({
+          mode: contextMode,
+          durationMs: Date.now() - startedAt,
+          skippedReason: 'workbook_not_found'
+        })
+      };
+    }
+
+    const text = serializeWorkbookContext(metadataResult, args, performanceProfile);
+    const meta = buildContextMeta({
+      included: Boolean(text),
+      chars: text.length,
+      mode: contextMode,
+      durationMs: Date.now() - startedAt,
+      skippedReason: text ? '' : 'empty'
+    });
+
+    cachedContextEntry = {
+      key: cacheKey,
+      text,
+      meta,
+      at: Date.now()
+    };
+
+    return {
+      text,
+      meta
+    };
+  } catch (error) {
+    const timedOut = String(error?.message || '') === 'WORKBOOK_CONTEXT_TIMEOUT';
+    return {
+      text: '',
+      meta: buildContextMeta({
+        mode: contextMode,
+        timedOut,
+        durationMs: Date.now() - startedAt,
+        skippedReason: timedOut ? 'timeout' : 'error'
+      })
+    };
   }
-  if (metadataResult?.workbookFound === false) {
-    return '';
-  }
-  const serialized = serializeWorkbookContext(metadataResult, args);
-  cachedContextKey = cacheKey;
-  cachedContextText = serialized;
-  cachedContextAt = Date.now();
-  return serialized;
 }
 
 module.exports = {

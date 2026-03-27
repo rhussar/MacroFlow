@@ -46,7 +46,8 @@ function AppInner() {
     originMode: 'shortcuts'
   }));
   const [buildChatOpen, setBuildChatOpen] = useState(false);
-  const [aiModelReady, setAiModelReady] = useState(false);
+  const [aiModelReady, setAiModelReady] = useState(null); // null = unknown, true/false = known
+  const [aiSetupInProgress, setAiSetupInProgress] = useState(false);
   const [filesSidebarOpen, setFilesSidebarOpen] = useState(true);
   const loadSearchDataRef = useRef(null);
   const shortcutSaveInFlightRef = useRef(false);
@@ -385,6 +386,7 @@ function AppInner() {
             searchData={searchData}
             onAiReady={setAiModelReady}
             aiModelReady={aiModelReady}
+            onAiSetupChange={setAiSetupInProgress}
           />
         );
 
@@ -414,7 +416,7 @@ function AppInner() {
       <header className="header">
         <div className="drag-region" />
         <div className="header-left">
-          {(mode === 'create' || mode === 'files') && !(mode === 'create' && !aiModelReady) && (
+          {(mode === 'create' || mode === 'files') && !(mode === 'create' && aiModelReady === false) && (
             <button
               className="sidebar-toggle-btn"
               onClick={mode === 'create' ? toggleBuildChat : toggleFilesSidebar}
@@ -473,7 +475,7 @@ function AppInner() {
       )}
 
       {/* Update available banner */}
-      {updateReady && (
+      {updateReady && !aiSetupInProgress && (
         <div className="app-update-banner">
           <span className="app-update-banner-text">
             Update{updateVersion ? ` ${updateVersion}` : ''} ready

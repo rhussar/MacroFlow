@@ -1,4 +1,5 @@
 import { useState, useRef, useCallback } from 'react';
+import { recordMacroRun } from './macroStats';
 
 export function useMacroRun({ loadSearchDataRef, setActionStatus }) {
   const [selectedMacro, setSelectedMacro] = useState(null);
@@ -29,9 +30,11 @@ export function useMacroRun({ loadSearchDataRef, setActionStatus }) {
     setRunState('running');
     setActionStatus('running', `Running ${macro.name || macroName}...`);
 
+    const startTime = Date.now();
     try {
       const result = await runApi({ macroName });
       if (result?.success) {
+        recordMacroRun(Date.now() - startTime);
         const backendMessage = result?.message || `Executed "${macroName}"`;
         setRunState('success');
         setActionStatus('success', `Run succeeded: ${backendMessage}`);

@@ -239,8 +239,12 @@ function registerHandlers() {
     localAiManager.subscribe((status) => {
       sendToAllRenderers('ai:status', status);
     });
-    // Pre-populate AI status cache so Create tab loads instantly
-    localAiManager.getStatus().catch(() => {});
+    // Pre-populate AI status cache and apply any managed-runtime refreshes in the background.
+    const primeLocalAiStatus =
+      typeof localAiManager.ensureManagedRuntimeCurrent === 'function'
+        ? localAiManager.ensureManagedRuntimeCurrent.bind(localAiManager)
+        : localAiManager.getStatus.bind(localAiManager);
+    primeLocalAiStatus().catch(() => {});
   }
 
   try {

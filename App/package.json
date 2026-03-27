@@ -1,7 +1,7 @@
 {
   "name": "macroflow",
   "productName": "MacroFlow",
-  "version": "0.2.3",
+  "version": "0.2.35",
   "description": "Natural language Excel automation via COM",
   "main": "electron/main.js",
   "private": true,
@@ -10,7 +10,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "test:search-data": "node --experimental-default-type=module --test src/lib/search-data.test.js src/lib/shortcut-audit.test.js src/lib/shortcut-keybind.test.js src/features/search/search-selectors.test.js src/features/search/explorer-selectors.test.js src/features/search/useSearchData.test.js src/features/search/useWorkbookPickerData.test.js src/features/search/usePersonalMacros.test.js src/features/search/explorer-selection.test.js src/features/search/module-actions.test.js src/features/shortcuts/useWorkbookShortcutState.test.js src/features/build/build-target.test.js src/features/workbooks/useWorkbookScopedData.test.js && npm run test:electron",
-    "test:electron": "node --test electron/excel-bridge.com-lifetime.test.cjs electron/ipc-handlers.polling-pause.test.cjs electron/openai-client.test.cjs electron/security-policy.test.cjs electron/audit-log.test.cjs electron/window-focus-helper-client.test.cjs",
+    "test:electron": "node --test electron/excel-bridge.com-lifetime.test.cjs electron/ipc-handlers.polling-pause.test.cjs electron/llm-performance.test.cjs electron/llm-context.test.cjs electron/openai-client.test.cjs electron/security-policy.test.cjs electron/audit-log.test.cjs electron/window-focus-helper-client.test.cjs",
     "start": "electron-forge start",
     "package": "npm run build:window-helper && npm run build && electron-forge package",
     "make": "npm run build:window-helper && npm run build && electron-forge make",

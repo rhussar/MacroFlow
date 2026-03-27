@@ -1561,7 +1561,38 @@ class ExcelBridge {
     };
   }
 
-  _collectWorksheetMetadata({ excel, workbook, sheet, includeSelection }) {
+  _getWorksheetMetadataLimits(contextMode = 'full') {
+    const normalizedMode = String(contextMode || '').trim().toLowerCase();
+    if (normalizedMode === 'minimal') {
+      return {
+        previewRows: 0,
+        previewCols: 8,
+        sampleRowCount: 0,
+        analyzeColumns: false,
+        readFormulaGrid: false
+      };
+    }
+
+    if (normalizedMode === 'reduced') {
+      return {
+        previewRows: 8,
+        previewCols: 8,
+        sampleRowCount: 2,
+        analyzeColumns: true,
+        readFormulaGrid: false
+      };
+    }
+
+    return {
+      previewRows: 50,
+      previewCols: 25,
+      sampleRowCount: 4,
+      analyzeColumns: true,
+      readFormulaGrid: true
+    };
+  }
+
+  _collectWorksheetMetadata({ excel, workbook, sheet, includeSelection, contextMode = 'full' }) {
     const buildRangeFromCells = (startRow, startColumn, endRow, endColumn) => {
       let startCell = null;
       let endCell = null;
@@ -1593,60 +1624,64 @@ class ExcelBridge {
       const startColumn = usedRange.Column;
       const totalRows = Number(usedRows.Count);
       const totalColumns = Number(usedColumns.Count);
+      const metadataLimits = this._getWorksheetMetadataLimits(contextMode);
+      const previewRows = Math.min(totalRows, metadataLimits.previewRows);
+      const previewCols = Math.min(totalColumns, metadataLimits.previewCols);
+      const headerCols = Math.max(1, previewCols || Math.min(totalColumns, 8));
+      let preview = [];
 
-      const SAMPLE_ROWS = 50;
-      const SAMPLE_COLS = 25;
-
-      const previewRows = Math.min(totalRows, SAMPLE_ROWS);
-      const previewCols = Math.min(totalColumns, SAMPLE_COLS);
-
-      previewRange = buildRangeFromCells(
-        startRow,
-        startColumn,
-        startRow + previewRows - 1,
-        startColumn + previewCols - 1
-      );
-      const previewValues = previewRange.Value2;
-      const preview = this._normalizeRangeValues(previewValues);
+      if (previewRows > 0 && previewCols > 0) {
+        previewRange = buildRangeFromCells(
+          startRow,
+          startColumn,
+          startRow + previewRows - 1,
+          startColumn + previewCols - 1
+        );
+        const previewValues = previewRange.Value2;
+        preview = this._normalizeRangeValues(previewValues);
+      }
 
       headerRange = buildRangeFromCells(
         startRow,
         startColumn,
         startRow,
-        startColumn + previewCols - 1
+        startColumn + headerCols - 1
       );
       const headerValues = this._normalizeRangeValues(headerRange.Value2);
       const headers = headerValues[0] || [];
 
       const headerAddressMap = {};
-      for (let colIndex = 0; colIndex < previewCols; colIndex++) {
+      for (let colIndex = 0; colIndex < headerCols; colIndex++) {
         const columnNumber = startColumn + colIndex;
         const address = `${this._columnLetter(columnNumber)}${startRow}`;
         headerAddressMap[address] = headers[colIndex] ?? null;
       }
 
       let formulaGrid = [];
-      try {
-        formulaGrid = this._normalizeRangeValues(previewRange.Formula);
-      } catch (error) {
-        formulaGrid = [];
+      if (metadataLimits.readFormulaGrid && previewRange) {
+        try {
+          formulaGrid = this._normalizeRangeValues(previewRange.Formula);
+        } catch (error) {
+          formulaGrid = [];
+        }
       }
 
-      const sampleRowCount = Math.max(0, Math.min(4, totalRows - 1));
+      const sampleRowCount = Math.max(0, Math.min(metadataLimits.sampleRowCount, totalRows - 1));
       let sampleRows = [];
       const sampleRowStart = startRow + 1;
-      if (sampleRowCount > 0) {
+      if (sampleRowCount > 0 && headerCols > 0) {
         sampleRange = buildRangeFromCells(
           sampleRowStart,
           startColumn,
           sampleRowStart + sampleRowCount - 1,
-          startColumn + previewCols - 1
+          startColumn + headerCols - 1
         );
         sampleRows = this._normalizeRangeValues(sampleRange.Value2);
       }
 
       const columns = [];
-      for (let colIndex = 0; colIndex < previewCols; colIndex++) {
+      const columnCountToAnalyze = metadataLimits.analyzeColumns ? headerCols : 0;
+      for (let colIndex = 0; colIndex < columnCountToAnalyze; colIndex++) {
         const columnNumber = startColumn + colIndex;
         const columnLetter = this._columnLetter(columnNumber);
         const header = headers[colIndex] !== undefined ? headers[colIndex] : '';
@@ -1795,7 +1830,9 @@ class ExcelBridge {
         llmContext,
         preview: {
           rows: preview,
-          truncated: totalRows > previewRows || totalColumns > previewCols
+          truncated: previewRows > 0
+            ? (totalRows > previewRows || totalColumns > previewCols)
+            : false
         }
       };
     } finally {
@@ -2578,7 +2615,8 @@ class ExcelBridge {
             excel,
             workbook,
             sheet,
-            includeSelection: true
+            includeSelection: true,
+            contextMode: options.contextMode
           });
 
           return {
@@ -2606,7 +2644,8 @@ class ExcelBridge {
     const {
       workbookPath = '',
       sheetName = '',
-      activate = true
+      activate = true,
+      contextMode = 'full'
     } = options;
     const normalizedName = String(workbookName || '').trim();
     const normalizedPath = String(workbookPath || '').trim();
@@ -2651,7 +2690,8 @@ class ExcelBridge {
             excel,
             workbook,
             sheet,
-            includeSelection: true
+            includeSelection: true,
+            contextMode
           });
 
           return {
@@ -2700,7 +2740,8 @@ class ExcelBridge {
             excel,
             workbook,
             sheet,
-            includeSelection: false
+            includeSelection: false,
+            contextMode: options.contextMode
           });
           return {
             success: true,

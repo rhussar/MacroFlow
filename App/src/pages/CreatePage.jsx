@@ -164,7 +164,8 @@ const CreatePage = ({
   onChatToggle,
   searchData,
   onAiReady,
-  aiModelReady
+  aiModelReady,
+  onAiSetupChange
 }) => {
   const [prompt, setPrompt] = useState('');
   const [buildState, setBuildState] = useState(() =>
@@ -188,7 +189,7 @@ const CreatePage = ({
   const [runOutcome, setRunOutcome] = useState('idle');
   const [savedMacroName, setSavedMacroName] = useState('');
   const [messages, setMessages] = useState([]);
-  const [splitPct, setSplitPct] = useState(30);
+  const [splitPct, setSplitPct] = useState(35);
   const [exitDialog, setExitDialog] = useState(null);
   const [savedShortcutLetter, setSavedShortcutLetter] = useState('');
   const [draftShortcutLetter, setDraftShortcutLetter] = useState('');
@@ -1170,6 +1171,7 @@ const CreatePage = ({
       };
       sessionContextRef.current = nextSession;
       setSessionContext(nextSession);
+      openSidebar();
 
       // Phase 4: Generate VBA
       const result = await generateVbaApi({
@@ -1203,10 +1205,9 @@ const CreatePage = ({
       setIsBusy(false);
       isBusyRef.current = false;
     }
-  }, [ensureBuildApis, invalidateWorkbookMutation, normalizedWorkbook, markLocalDirty, stopWithError]);
+  }, [ensureBuildApis, invalidateWorkbookMutation, normalizedWorkbook, markLocalDirty, stopWithError, openSidebar]);
 
-  const dispatchSubmit = useCallback(() => {
-    // Open sidebar when user sends a prompt
+  const openSidebar = useCallback(() => {
     if (!chatOpenRef.current) {
       if (onChatToggle) {
         onChatToggle();
@@ -1214,12 +1215,18 @@ const CreatePage = ({
         setChatOpenInternal(true);
       }
     }
+  }, [onChatToggle]);
+
+  const dispatchSubmit = useCallback(() => {
     if (sessionContextRef.current) {
+      // Session exists — open sidebar immediately, it already shows the module chat
+      openSidebar();
       void handleSubmit();
     } else {
+      // First submit — sidebar will be opened after session is created in handleFirstSubmit
       void handleFirstSubmit();
     }
-  }, [handleSubmit, handleFirstSubmit, onChatToggle]);
+  }, [handleSubmit, handleFirstSubmit, openSidebar]);
 
   const handleRestoreSession = useCallback((id) => {
     const saved = restoreSession(id);
@@ -1955,7 +1962,7 @@ const CreatePage = ({
   );
 
   return (
-    <AiGate onReady={() => { onAiReady?.(true); }} onNotReady={() => { onAiReady?.(false); }} initialReady={aiModelReady}>
+    <AiGate onReady={() => { onAiReady?.(true); }} onNotReady={() => { onAiReady?.(false); }} initialReady={aiModelReady} onSetupChange={onAiSetupChange}>
     <>
       <main className="main-content">
         {chatOpen ? (

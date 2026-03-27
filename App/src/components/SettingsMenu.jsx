@@ -6,6 +6,7 @@ import {
   SunIcon,
   MoonIcon
 } from './icons';
+import { getMacroStats, formatTimeSaved } from '../features/run/macroStats';
 /* global __APP_VERSION__ */
 
 function getTheme() {
@@ -252,6 +253,7 @@ function SettingsPanel({ onClose }) {
 
 const SettingsMenu = ({ isOpen, onClose, onQuit }) => {
   const [panelOpen, setPanelOpen] = useState(false);
+  const stats = isOpen ? getMacroStats() : null;
 
   if (panelOpen) {
     return (
@@ -294,7 +296,18 @@ const SettingsMenu = ({ isOpen, onClose, onQuit }) => {
     <>
       <div className="settings-menu-overlay" onClick={onClose} />
       <div className="settings-menu">
-        <div className="settings-menu-header">MacroFlow v{__APP_VERSION__}</div>
+        {stats && stats.totalRuns > 0 && (
+          <div className="settings-menu-stats">
+            <span className="settings-menu-stat">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" /></svg>
+              {stats.totalRuns.toLocaleString()} runs
+            </span>
+            <span className="settings-menu-stat">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" /></svg>
+              {formatTimeSaved(stats.totalTimeSavedMs)} saved
+            </span>
+          </div>
+        )}
         {menuItems.map((item, index) => (
           <button
             type="button"

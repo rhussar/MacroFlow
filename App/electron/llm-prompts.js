@@ -60,12 +60,16 @@ function buildUserPrompt({
   moduleName = '',
   currentCode = '',
   includeCurrentCode = false,
-  workbookContext = ''
+  workbookContext = '',
+  limits = {}
 }) {
   const normalizedIntent = normalizeAiIntent(intent, { includeCurrentCode });
   const workbookLabel = toSafeString(workbookName) || 'Unknown Workbook';
   const moduleLabel = toSafeString(moduleName) || 'Unknown Module';
-  const trimmedPrompt = truncate(prompt, MAX_PROMPT_CHARS);
+  const maxPromptChars = Number(limits.maxPromptChars) || MAX_PROMPT_CHARS;
+  const maxCurrentCodeChars = Number(limits.maxCurrentCodeChars) || MAX_CURRENT_CODE_CHARS;
+  const maxWorkbookContextChars = Number(limits.maxWorkbookContextChars) || MAX_WORKBOOK_CONTEXT_CHARS;
+  const trimmedPrompt = truncate(prompt, maxPromptChars);
   const lines = [
     `Intent: ${normalizedIntent}`,
     `Workbook: ${workbookLabel}`,
@@ -73,13 +77,13 @@ function buildUserPrompt({
   ];
 
   if (toSafeString(workbookContext)) {
-    lines.push('', 'Workbook context:', truncate(workbookContext, MAX_WORKBOOK_CONTEXT_CHARS));
+    lines.push('', 'Workbook context:', truncate(workbookContext, maxWorkbookContextChars));
   }
 
   lines.push('', normalizedIntent === 'ask' ? 'Question:' : 'Task:', trimmedPrompt);
 
   if ((normalizedIntent === 'edit' || normalizedIntent === 'ask') && includeCurrentCode) {
-    const trimmedCurrentCode = truncate(currentCode, MAX_CURRENT_CODE_CHARS);
+    const trimmedCurrentCode = truncate(currentCode, maxCurrentCodeChars);
     const currentCodeBlock = trimmedCurrentCode ? trimmedCurrentCode : "'(no existing code provided)'";
     lines.push('', 'Current module code:', currentCodeBlock);
   }

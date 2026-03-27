@@ -1342,13 +1342,18 @@ body {
   justify-content: center;
   cursor: pointer;
   color: var(--text-secondary);
-  transition: color 0.15s;
+  transition: none;
   -webkit-app-region: no-drag;
   z-index: 5;
 }
 
 .settings-floating:hover {
   color: var(--text-primary);
+  transition: none;
+}
+
+.settings-floating svg {
+  transition: none;
 }
 
 .footer-text {
@@ -1420,6 +1425,21 @@ body {
   font-size: 11px;
   color: var(--text-tertiary);
   border-bottom: 1px solid var(--border-subtle);
+}
+
+.settings-menu-stats {
+  display: flex;
+  gap: 12px;
+  padding: 8px 14px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.settings-menu-stat {
+  display: flex;
+  align-items: center;
+  gap: 4px;
 }
 
 .settings-menu-item {

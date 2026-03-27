@@ -21,7 +21,7 @@ function parseNumberEnv(name, fallback) {
 const LOCAL_AI_PROVIDER = 'ollama';
 const LOCAL_AI_MODEL = String(process.env.MACROFLOW_LLM_MODEL || 'qwen2.5-coder:3b').trim();
 const LOCAL_AI_BASE_URL = String(process.env.MACROFLOW_LLM_BASE_URL || 'http://127.0.0.1:11434').trim();
-const LOCAL_AI_CONTEXT_LENGTH = parseNumberEnv('MACROFLOW_LLM_CONTEXT_LENGTH', 32768);
+const LOCAL_AI_CONTEXT_LENGTH = parseNumberEnv('MACROFLOW_LLM_CONTEXT_LENGTH', 8192);
 const ALLOW_EXTERNAL_OLLAMA = parseBooleanEnv('MACROFLOW_ALLOW_EXTERNAL_OLLAMA', false);
 const OLLAMA_RUNTIME_VERSION = String(process.env.MACROFLOW_OLLAMA_RUNTIME_VERSION || '0.18.2').trim();
 const OLLAMA_RELEASE_BASE_URL = `https://github.com/ollama/ollama/releases/download/v${OLLAMA_RUNTIME_VERSION}`;
@@ -40,10 +40,10 @@ const OLLAMA_WINDOWS_ROCM_ZIP_SHA256 = String(
 const REQUEST_TIMEOUT_MS = 30000;
 const HEALTHCHECK_TIMEOUT_MS = 1500;
 const SETUP_SERVER_TIMEOUT_MS = 60 * 1000;
-const MAX_CURRENT_CODE_CHARS = 12000;
-const MAX_PROMPT_CHARS = 4000;
-const MAX_WORKBOOK_CONTEXT_CHARS = 5000;
-const MAX_COMPLETION_TOKENS = 1400;
+const MAX_CURRENT_CODE_CHARS = 8000;
+const MAX_PROMPT_CHARS = 3000;
+const MAX_WORKBOOK_CONTEXT_CHARS = 2200;
+const MAX_COMPLETION_TOKENS = 900;
 const TEMPERATURE = 0.2;
 
 module.exports = {

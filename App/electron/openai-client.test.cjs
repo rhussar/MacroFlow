@@ -2,7 +2,12 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 
 const { generateVba } = require('./llm-client');
-const { MAX_CURRENT_CODE_CHARS, MAX_PROMPT_CHARS } = require('./llm-config');
+const { resolveLlmPerformanceProfile } = require('./llm-performance');
+
+const TEST_PERFORMANCE_PROFILE = resolveLlmPerformanceProfile({
+  totalMemoryBytes: 24 * 1024 * 1024 * 1024,
+  cpuCount: 12
+});
 
 function readyStatus(overrides = {}) {
   return {
@@ -25,6 +30,7 @@ function createDeps(overrides = {}) {
   return {
     statusImpl: async () => readyStatus(),
     contextImpl: async () => '',
+    performanceProfile: TEST_PERFORMANCE_PROFILE,
     ...overrides
   };
 }
@@ -62,6 +68,7 @@ test('generateVba returns success for valid plain VBA output', async () => {
   assert.match(result.code, /Sub Hello/i);
   assert.equal(result.model, 'qwen2.5-coder:3b');
   assert.equal(result.usage?.totalTokens, 167);
+  assert.equal(result.diagnostics?.profile, TEST_PERFORMANCE_PROFILE.name);
 });
 
 test('generateVba extracts fenced VBA code blocks', async () => {
@@ -182,8 +189,8 @@ test('generateVba maps model-missing, timeout, and connection failures', async (
 });
 
 test('generateVba truncates prompt and omits current code by default', async () => {
-  const longPrompt = 'P'.repeat(MAX_PROMPT_CHARS + 150);
-  const longCurrentCode = 'C'.repeat(MAX_CURRENT_CODE_CHARS + 500);
+  const longPrompt = 'P'.repeat(TEST_PERFORMANCE_PROFILE.maxPromptChars + 150);
+  const longCurrentCode = 'C'.repeat(TEST_PERFORMANCE_PROFILE.maxCurrentCodeChars + 500);
   let taskText = '';
   let userContent = '';
 
@@ -212,12 +219,12 @@ test('generateVba truncates prompt and omits current code by default', async () 
   );
 
   assert.equal(result.success, true);
-  assert.equal(taskText.length, MAX_PROMPT_CHARS);
+  assert.equal(taskText.length, TEST_PERFORMANCE_PROFILE.maxPromptChars);
   assert.equal(userContent.includes('Current module code:'), false);
 });
 
 test('generateVba includes and truncates current code when opted in', async () => {
-  const longCurrentCode = 'C'.repeat(MAX_CURRENT_CODE_CHARS + 500);
+  const longCurrentCode = 'C'.repeat(TEST_PERFORMANCE_PROFILE.maxCurrentCodeChars + 500);
   let codeText = '';
 
   const result = await generateVba(
@@ -246,7 +253,34 @@ test('generateVba includes and truncates current code when opted in', async () =
   );
 
   assert.equal(result.success, true);
-  assert.equal(codeText.length, MAX_CURRENT_CODE_CHARS);
+  assert.equal(codeText.length, TEST_PERFORMANCE_PROFILE.maxCurrentCodeChars);
+});
+
+test('generateVba uses performance profile max token budget', async () => {
+  let observedMaxTokens = 0;
+
+  const result = await generateVba(
+    {
+      prompt: 'Generate a macro',
+      workbookName: 'Book1.xlsm',
+      moduleName: 'Module1'
+    },
+    createDeps({
+      requestImpl: async ({ body }) => {
+        const payload = JSON.parse(String(body || '{}'));
+        observedMaxTokens = Number(payload?.max_tokens) || 0;
+        return {
+          statusCode: 200,
+          bodyText: JSON.stringify({
+            choices: [{ message: { content: 'Sub RunA()\nEnd Sub' } }]
+          })
+        };
+      }
+    })
+  );
+
+  assert.equal(result.success, true);
+  assert.equal(observedMaxTokens, TEST_PERFORMANCE_PROFILE.maxCompletionTokens);
 });
 
 test('generateVba includes workbook context when available', async () => {

@@ -96,6 +96,7 @@ function writeStore(data) {
 let licenseValid = false;
 let licenseData = null; // { key, status, expiry, name, email, ... }
 let ipcRegistered = false;
+let startupCheckPromise = null;
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -406,7 +407,11 @@ function registerLicenseHandlers() {
   if (ipcRegistered) return;
   ipcRegistered = true;
 
-  ipcMain.handle('license:status', () => {
+  ipcMain.handle('license:status', async () => {
+    // Wait for startup check to complete before responding
+    if (startupCheckPromise) {
+      await startupCheckPromise;
+    }
     return {
       valid: licenseValid,
       licenseData,
@@ -434,8 +439,13 @@ function isLicenseValid() {
   return licenseValid;
 }
 
+function setStartupCheckPromise(promise) {
+  startupCheckPromise = promise;
+}
+
 module.exports = {
   checkCachedLicense,
   registerLicenseHandlers,
   isLicenseValid,
+  setStartupCheckPromise,
 };

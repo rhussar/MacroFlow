@@ -2,8 +2,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const http = require('node:http');
 const https = require('node:https');
-const crypto = require('node:crypto');
-const { spawn, spawnSync } = require('node:child_process');
+const { spawn } = require('node:child_process');
 
 const logger = require('./logger');
 const { requestJson } = require('./http-client');
@@ -11,12 +10,8 @@ const {
   LOCAL_AI_PROVIDER,
   LOCAL_AI_MODEL,
   LOCAL_AI_BASE_URL,
-  ALLOW_EXTERNAL_OLLAMA,
   OLLAMA_RUNTIME_VERSION,
   OLLAMA_WINDOWS_ZIP_URL,
-  OLLAMA_WINDOWS_ZIP_SHA256,
-  OLLAMA_WINDOWS_ROCM_ZIP_URL,
-  OLLAMA_WINDOWS_ROCM_ZIP_SHA256,
   HEALTHCHECK_TIMEOUT_MS,
   SETUP_SERVER_TIMEOUT_MS
 } = require('./llm-config');
@@ -44,14 +39,13 @@ const downloadsDir = path.join(managedRoot, 'downloads');
 const runtimeDir = path.join(managedRoot, 'runtime', 'ollama');
 const modelsDir = path.join(managedRoot, 'models');
 const runtimeZipPath = path.join(downloadsDir, 'ollama-windows-amd64.zip');
-const runtimeRocmZipPath = path.join(downloadsDir, 'ollama-windows-amd64-rocm.zip');
 
 const state = {
   snapshot: null,
   setupPromise: null,
   removePromise: null,
-  restartPromise: null,
-  listeners: new Set()
+  listeners: new Set(),
+  ollamaProcess: null
 };
 
 function delay(ms) {
@@ -95,440 +89,110 @@ function getSelectedModel() {
   return configured || LOCAL_AI_MODEL;
 }
 
-function normalizeRuntimePath(value) {
-  const normalized = String(value || '').trim();
-  return normalized ? path.normalize(normalized) : '';
+function getBaseUrl() {
+  return LOCAL_AI_BASE_URL;
 }
 
-function findFileRecursive(rootDir, fileName, maxDepth = 4) {
-  if (!rootDir || !fs.existsSync(rootDir) || maxDepth < 0) {
-    return '';
-  }
-
+function getOllamaHost() {
   try {
-    const entries = fs.readdirSync(rootDir, { withFileTypes: true });
-    for (const entry of entries) {
-      const nextPath = path.join(rootDir, entry.name);
-      if (entry.isFile() && entry.name.toLowerCase() === fileName.toLowerCase()) {
-        return nextPath;
-      }
-    }
-
-    for (const entry of entries) {
-      if (!entry.isDirectory()) {
-        continue;
-      }
-      const nested = findFileRecursive(path.join(rootDir, entry.name), fileName, maxDepth - 1);
-      if (nested) {
-        return nested;
-      }
-    }
+    const parsed = new URL(LOCAL_AI_BASE_URL);
+    return `${parsed.hostname}:${parsed.port || 11544}`;
   } catch {
-    return '';
+    return '127.0.0.1:11544';
   }
-
-  return '';
 }
+
+// --- Runtime discovery ---
 
 function findManagedRuntimePath() {
   const directPath = path.join(runtimeDir, 'ollama.exe');
   if (fs.existsSync(directPath)) {
     return directPath;
   }
-  return findFileRecursive(runtimeDir, 'ollama.exe', 3);
+  // Check one level deep (zip may have a subfolder)
+  try {
+    for (const entry of fs.readdirSync(runtimeDir, { withFileTypes: true })) {
+      if (entry.isDirectory()) {
+        const nested = path.join(runtimeDir, entry.name, 'ollama.exe');
+        if (fs.existsSync(nested)) {
+          return nested;
+        }
+      }
+    }
+  } catch {
+    // Directory may not exist yet.
+  }
+  return '';
 }
 
 function findOllamaRuntime() {
-  const candidates = [];
-  const envPath = normalizeRuntimePath(process.env.MACROFLOW_OLLAMA_PATH);
-  const managedPath = normalizeRuntimePath(findManagedRuntimePath());
-
-  if (envPath) {
-    candidates.push({ commandPath: envPath, source: 'env' });
+  const envPath = String(process.env.MACROFLOW_OLLAMA_PATH || '').trim();
+  if (envPath && fs.existsSync(envPath)) {
+    return { installed: true, commandPath: path.normalize(envPath), source: 'env' };
   }
 
+  const managedPath = findManagedRuntimePath();
   if (managedPath) {
-    candidates.push({ commandPath: managedPath, source: 'managed' });
+    return { installed: true, commandPath: managedPath, source: 'managed' };
   }
 
-  if (ALLOW_EXTERNAL_OLLAMA) {
-    const localAppData = String(process.env.LOCALAPPDATA || '').trim();
-    if (localAppData) {
-      candidates.push({
-        commandPath: path.join(localAppData, 'Programs', 'Ollama', 'ollama.exe'),
-        source: 'default-install'
-      });
-    }
-  }
-
-  for (const candidate of candidates) {
-    if (candidate.commandPath && fs.existsSync(candidate.commandPath)) {
-      return {
-        installed: true,
-        commandPath: candidate.commandPath,
-        source: candidate.source
-      };
-    }
-  }
-
-  if (ALLOW_EXTERNAL_OLLAMA) {
-    try {
-      const result = spawnSync('where.exe', ['ollama'], {
-        encoding: 'utf8',
-        windowsHide: true
-      });
-      if (result.status === 0) {
-        const commandPath = normalizeRuntimePath(String(result.stdout || '').split(/\r?\n/)[0]);
-        if (commandPath && fs.existsSync(commandPath)) {
-          return {
-            installed: true,
-            commandPath,
-            source: 'path'
-          };
-        }
-      }
-    } catch {
-      // Best-effort lookup only.
-    }
-  }
-
-  return {
-    installed: false,
-    commandPath: '',
-    source: ''
-  };
+  return { installed: false, commandPath: '', source: '' };
 }
 
-function getOllamaHostFromBaseUrl() {
-  try {
-    return new URL(LOCAL_AI_BASE_URL).host;
-  } catch {
-    return '127.0.0.1:11434';
-  }
-}
+// --- Server health ---
 
-function getOllamaPortFromBaseUrl() {
-  try {
-    const url = new URL(LOCAL_AI_BASE_URL);
-    if (url.port) {
-      return Number(url.port);
-    }
-    return url.protocol === 'https:' ? 443 : 80;
-  } catch {
-    return 11434;
-  }
-}
-
-function getManagedOllamaEnv() {
-  ensureManagedDirectories();
-  const performanceProfile = resolveLlmPerformanceProfile();
-  return {
-    ...process.env,
-    OLLAMA_HOST: getOllamaHostFromBaseUrl(),
-    OLLAMA_MODELS: modelsDir,
-    OLLAMA_CONTEXT_LENGTH: String(performanceProfile.contextLength),
-    OLLAMA_MAX_LOADED_MODELS: String(performanceProfile.ollamaMaxLoadedModels),
-    OLLAMA_NUM_PARALLEL: String(performanceProfile.ollamaNumParallel),
-    OLLAMA_KEEP_ALIVE: String(performanceProfile.ollamaKeepAlive),
-    OLLAMA_NO_CLOUD: '1'
-  };
-}
-
-function getListeningProcessInfo(port) {
-  if (process.platform !== 'win32' || !Number.isFinite(port) || port <= 0) {
-    return {
-      processId: 0,
-      processPath: ''
-    };
-  }
-
-  try {
-    const result = spawnSync(
-      'powershell.exe',
-      [
-        '-NoProfile',
-        '-NonInteractive',
-        '-ExecutionPolicy',
-        'Bypass',
-        '-Command',
-        [
-          `$connection = Get-NetTCPConnection -State Listen -LocalPort ${Math.trunc(port)} -ErrorAction SilentlyContinue | Select-Object -First 1;`,
-          'if (-not $connection) { return }',
-          'Write-Output ("PID=" + $connection.OwningProcess)',
-          '$process = Get-Process -Id $connection.OwningProcess -ErrorAction SilentlyContinue;',
-          'if ($process -and $process.Path) { Write-Output $process.Path }'
-        ].join(' ')
-      ],
-      {
-        encoding: 'utf8',
-        windowsHide: true
-      }
-    );
-
-    if (result.status !== 0) {
-      return {
-        processId: 0,
-        processPath: ''
-      };
-    }
-
-    const outputLines = String(result.stdout || '')
-      .split(/\r?\n/)
-      .map((line) => String(line || '').trim())
-      .filter(Boolean);
-    const pidLine = outputLines.find((line) => line.startsWith('PID='));
-    const processId = Number(pidLine ? pidLine.slice(4) : 0) || 0;
-    const processPath = normalizeRuntimePath(outputLines.find((line) => !line.startsWith('PID=')) || '');
-    return {
-      processId,
-      processPath
-    };
-  } catch {
-    return {
-      processId: 0,
-      processPath: ''
-    };
-  }
-}
-
-async function getServerState(runtime) {
-  const serverReachable = await pingOllamaServer();
-  if (!serverReachable) {
-    return {
-      serverReachable: false,
-      serverOwnedByRuntime: false,
-      listenerProcessId: 0,
-      listenerProcessPath: ''
-    };
-  }
-
-  const listenerProcessInfo = getListeningProcessInfo(getOllamaPortFromBaseUrl());
-  if (ALLOW_EXTERNAL_OLLAMA || process.platform !== 'win32') {
-    return {
-      serverReachable: true,
-      serverOwnedByRuntime: true,
-      listenerProcessId: listenerProcessInfo.processId,
-      listenerProcessPath: listenerProcessInfo.processPath
-    };
-  }
-
-  const expectedRuntimePath = normalizeRuntimePath(runtime?.commandPath).toLowerCase();
-  const normalizedListenerPath = normalizeRuntimePath(listenerProcessInfo.processPath).toLowerCase();
-  return {
-    serverReachable: true,
-    serverOwnedByRuntime: Boolean(expectedRuntimePath && normalizedListenerPath && expectedRuntimePath === normalizedListenerPath),
-    listenerProcessId: listenerProcessInfo.processId,
-    listenerProcessPath: listenerProcessInfo.processPath
-  };
-}
-
-function buildManagedServerSignature(runtime) {
-  const performanceProfile = resolveLlmPerformanceProfile();
-  return JSON.stringify({
-    runtimeVersion: OLLAMA_RUNTIME_VERSION,
-    runtimePath: normalizeRuntimePath(runtime?.commandPath),
-    baseUrl: LOCAL_AI_BASE_URL,
-    modelsDir,
-    contextLength: performanceProfile.contextLength,
-    maxLoadedModels: performanceProfile.ollamaMaxLoadedModels,
-    numParallel: performanceProfile.ollamaNumParallel,
-    keepAlive: performanceProfile.ollamaKeepAlive,
-    noCloud: true
-  });
-}
-
-function persistManagedServerSignature(runtime) {
-  if (runtime?.source !== 'managed') {
-    return;
-  }
-
-  writeStore({
-    managedServerSignature: buildManagedServerSignature(runtime),
-    managedRuntimeVersion: OLLAMA_RUNTIME_VERSION,
-    managedRuntimePath: normalizeRuntimePath(runtime.commandPath)
-  });
-}
-
-function shouldRestartManagedServer(runtime, serverState) {
-  if (runtime?.source !== 'managed') {
-    return false;
-  }
-
-  if (!serverState?.serverReachable || !serverState?.serverOwnedByRuntime) {
-    return false;
-  }
-
-  const store = readStore();
-  const expectedSignature = buildManagedServerSignature(runtime);
-  const storedSignature = String(store.managedServerSignature || '').trim();
-  return storedSignature !== expectedSignature;
-}
-
-async function waitForManagedServerStop(runtime, timeoutMs = 15000) {
-  const startedAt = Date.now();
-  while (Date.now() - startedAt < timeoutMs) {
-    const serverState = await getServerState(runtime);
-    if (!serverState.serverReachable || !serverState.serverOwnedByRuntime) {
-      return true;
-    }
-    await delay(500);
-  }
-  return false;
-}
-
-async function stopManagedServer(runtime, serverState) {
-  if (runtime?.source !== 'managed' || process.platform !== 'win32') {
-    return false;
-  }
-
-  const processId = Number(serverState?.listenerProcessId) || 0;
-  const runtimePath = normalizeRuntimePath(runtime?.commandPath).toLowerCase();
-  const listenerPath = normalizeRuntimePath(serverState?.listenerProcessPath).toLowerCase();
-  if (!processId || !runtimePath || !listenerPath || runtimePath !== listenerPath) {
-    return false;
-  }
-
-  const result = spawnSync(
-    'taskkill.exe',
-    ['/PID', String(processId), '/T', '/F'],
-    {
-      encoding: 'utf8',
-      windowsHide: true
-    }
-  );
-
-  if (result.status !== 0) {
-    const message = String(result.stderr || result.stdout || '').trim();
-    throw new Error(message || 'Unable to restart the local AI runtime.');
-  }
-
-  const stopped = await waitForManagedServerStop(runtime);
-  if (!stopped) {
-    throw new Error('Timed out while restarting the local AI runtime.');
-  }
-
-  return true;
-}
-
-async function restartManagedServer(runtime, serverState) {
-  if (state.restartPromise) {
-    return state.restartPromise;
-  }
-
-  state.restartPromise = (async () => {
-    setSnapshot({
-      restartInProgress: true,
-      stage: 'restarting_runtime',
-      progress: null,
-      statusText: 'Restarting local AI to apply updates...'
-    });
-
-    await stopManagedServer(runtime, serverState);
-    await ensureServer(runtime);
-    persistManagedServerSignature(runtime);
-  })();
-
-  try {
-    await state.restartPromise;
-  } finally {
-    state.restartPromise = null;
-  }
-}
-
-async function pingOllamaServer(timeoutMs = HEALTHCHECK_TIMEOUT_MS) {
+async function pingOllamaServer() {
   try {
     const response = await requestJson({
-      url: `${LOCAL_AI_BASE_URL.replace(/\/+$/, '')}/api/tags`,
-      timeoutMs
+      url: `${getBaseUrl()}/api/tags`,
+      timeoutMs: HEALTHCHECK_TIMEOUT_MS
     });
     return response.statusCode >= 200 && response.statusCode < 300;
-  } catch (error) {
-    if (error?.code && error.code !== 'ECONNREFUSED') {
-      logger.debug('[LocalAI] ping failed', { code: error.code, message: error.message });
-    }
+  } catch {
     return false;
   }
 }
 
 async function listInstalledModels() {
-  const response = await requestJson({
-    url: `${LOCAL_AI_BASE_URL.replace(/\/+$/, '')}/api/tags`,
-    timeoutMs: HEALTHCHECK_TIMEOUT_MS
-  });
-
-  if (response.statusCode < 200 || response.statusCode >= 300 || !Array.isArray(response.parsedBody?.models)) {
-    return [];
+  try {
+    const response = await requestJson({
+      url: `${getBaseUrl()}/api/tags`,
+      timeoutMs: HEALTHCHECK_TIMEOUT_MS
+    });
+    if (response.statusCode >= 200 && response.statusCode < 300 && Array.isArray(response.parsedBody?.models)) {
+      return response.parsedBody.models;
+    }
+  } catch {
+    // Server not reachable.
   }
-
-  return response.parsedBody.models;
+  return [];
 }
 
 function isModelInstalled(models, targetModel) {
-  const normalizedTarget = String(targetModel || '').trim().toLowerCase();
-  if (!normalizedTarget) {
-    return false;
-  }
-
+  const target = String(targetModel || '').trim().toLowerCase();
+  if (!target) return false;
   return models.some((entry) => {
     const name = String(entry?.name || entry?.model || '').trim().toLowerCase();
-    return name === normalizedTarget;
+    return name === target;
   });
 }
 
-function getStatusText({ runtimeInstalled, serverReachable, serverOwnedByRuntime, modelInstalled, ready, lastError }) {
-  if (ready) {
-    return 'Local AI is ready.';
-  }
-  if (lastError) {
-    return lastError;
-  }
-  if (!runtimeInstalled) {
-    return 'The local AI runtime is not installed yet.';
-  }
-  if (!serverReachable) {
-    return 'The local AI runtime is installed but not running yet.';
-  }
-  if (!serverOwnedByRuntime) {
-    return 'Another Ollama instance is already using MacroFlow\'s local AI port.';
-  }
-  if (!modelInstalled) {
-    return `The local model ${getSelectedModel()} is not installed yet.`;
-  }
-  return 'Local AI setup is required.';
-}
+// --- Snapshot / status ---
 
 function buildSnapshot(overrides = {}) {
   const base = state.snapshot || {};
-  const performanceProfile = resolveLlmPerformanceProfile();
   return {
     success: true,
     provider: LOCAL_AI_PROVIDER,
-    baseUrl: LOCAL_AI_BASE_URL,
+    baseUrl: getBaseUrl(),
     model: getSelectedModel(),
     ready: false,
     needsSetup: true,
     setupInProgress: Boolean(state.setupPromise),
     removeInProgress: Boolean(state.removePromise),
-    restartInProgress: Boolean(state.restartPromise),
     runtimeInstalled: false,
-    runtimeCommand: '',
-    runtimeSource: '',
     serverReachable: false,
-    serverOwnedByRuntime: false,
-    listenerProcessId: 0,
-    listenerProcessPath: '',
     modelInstalled: false,
-    localOnly: true,
-    cloudFeaturesDisabled: true,
-    contextLength: performanceProfile.contextLength,
-    performanceProfile: performanceProfile.name,
-    hardwareTier: performanceProfile.hardwareTier,
-    freeMemoryGb: performanceProfile.freeMemoryGb,
-    memoryPressureRatio: performanceProfile.memoryPressureRatio,
-    runtimeVersion: OLLAMA_RUNTIME_VERSION,
-    externalRuntimeAllowed: ALLOW_EXTERNAL_OLLAMA,
-    runtimeDirectory: runtimeDir,
-    modelsDirectory: modelsDir,
     stage: 'runtime_missing',
     progress: null,
     statusText: 'Local AI setup is required.',
@@ -550,104 +214,68 @@ function setSnapshot(overrides = {}) {
   return state.snapshot;
 }
 
+function subscribe(listener) {
+  if (typeof listener !== 'function') return () => {};
+  state.listeners.add(listener);
+  if (state.snapshot) listener(state.snapshot);
+  return () => { state.listeners.delete(listener); };
+}
+
 async function getStatus() {
-  if (state.setupPromise || state.removePromise || state.restartPromise) {
+  if (state.setupPromise || state.removePromise) {
     return buildSnapshot();
   }
 
-  // If we already know the model is ready, return cached snapshot immediately.
-  // The snapshot is kept current by setup/remove flows and subscriptions.
-  if (state.snapshot?.ready) {
-    return state.snapshot;
-  }
-
   const runtime = findOllamaRuntime();
-  const serverState = runtime.installed
-    ? await getServerState(runtime)
-    : { serverReachable: false, serverOwnedByRuntime: false, listenerProcessId: 0, listenerProcessPath: '' };
-  const models = serverState.serverReachable && serverState.serverOwnedByRuntime ? await listInstalledModels() : [];
-  const modelInstalled = serverState.serverReachable && serverState.serverOwnedByRuntime
-    ? isModelInstalled(models, getSelectedModel())
-    : false;
-  const ready = Boolean(
-    runtime.installed
-    && serverState.serverReachable
-    && serverState.serverOwnedByRuntime
-    && modelInstalled
-  );
+  let serverReachable = runtime.installed ? await pingOllamaServer() : false;
 
-  if (ready) {
-    persistManagedServerSignature(runtime);
+  // Auto-start Ollama if the runtime is installed but not running.
+  // The user should never need to manually re-install after a restart.
+  if (runtime.installed && !serverReachable) {
+    try {
+      await ensureServer(runtime);
+      serverReachable = await pingOllamaServer();
+    } catch (error) {
+      logger.warn('[LocalAI] auto-start failed', { error: error.message });
+    }
   }
+
+  const models = serverReachable ? await listInstalledModels() : [];
+  const modelInstalled = serverReachable && isModelInstalled(models, getSelectedModel());
+  const ready = Boolean(runtime.installed && serverReachable && modelInstalled);
+
+  const stage = ready
+    ? 'ready'
+    : !runtime.installed
+      ? 'runtime_missing'
+      : !serverReachable
+        ? 'runtime_not_running'
+        : 'model_missing';
+
+  const statusText = ready
+    ? 'Local AI is ready.'
+    : !runtime.installed
+      ? 'The local AI runtime is not installed yet.'
+      : !serverReachable
+        ? 'The local AI runtime is installed but not running yet.'
+        : `The local model ${getSelectedModel()} is not installed yet.`;
 
   return setSnapshot({
     runtimeInstalled: runtime.installed,
-    runtimeCommand: runtime.commandPath,
-    runtimeSource: runtime.source,
-    serverReachable: serverState.serverReachable,
-    serverOwnedByRuntime: serverState.serverOwnedByRuntime,
-    listenerProcessId: serverState.listenerProcessId,
-    listenerProcessPath: serverState.listenerProcessPath,
+    serverReachable,
     modelInstalled,
     ready,
     needsSetup: !ready,
     setupInProgress: false,
     removeInProgress: false,
-    restartInProgress: false,
-    stage: ready
-      ? 'ready'
-      : !runtime.installed
-        ? 'runtime_missing'
-        : !serverState.serverReachable
-          ? 'runtime_not_running'
-          : !serverState.serverOwnedByRuntime
-            ? 'runtime_conflict'
-          : 'model_missing',
+    stage,
     progress: null,
-    statusText: getStatusText({
-      runtimeInstalled: runtime.installed,
-      serverReachable: serverState.serverReachable,
-      serverOwnedByRuntime: serverState.serverOwnedByRuntime,
-      modelInstalled,
-      ready,
-      lastError: ''
-    }),
+    statusText,
     lastError: ''
   });
 }
 
-async function ensureManagedRuntimeCurrent() {
-  if (state.setupPromise || state.removePromise || state.restartPromise) {
-    return buildSnapshot();
-  }
-
-  const runtime = findOllamaRuntime();
-  if (!runtime.installed) {
-    return getStatus();
-  }
-
-  const serverState = await getServerState(runtime);
-  if (shouldRestartManagedServer(runtime, serverState)) {
-    await restartManagedServer(runtime, serverState);
-  }
-
-  return getStatus();
-}
-
-function subscribe(listener) {
-  if (typeof listener !== 'function') {
-    return () => {};
-  }
-
-  state.listeners.add(listener);
-  if (state.snapshot) {
-    listener(state.snapshot);
-  }
-
-  return () => {
-    state.listeners.delete(listener);
-  };
-}
+// --- Download & extract ---
 
 function downloadFile(url, destinationPath, onProgress, redirectCount = 0) {
   return new Promise((resolve, reject) => {
@@ -709,123 +337,38 @@ function downloadFile(url, destinationPath, onProgress, redirectCount = 0) {
   });
 }
 
-function createSha256HashForFile(filePath) {
-  return new Promise((resolve, reject) => {
-    const hash = crypto.createHash('sha256');
-    const stream = fs.createReadStream(filePath);
-
-    stream.on('error', reject);
-    stream.on('data', (chunk) => {
-      hash.update(chunk);
-    });
-    stream.on('end', () => {
-      resolve(hash.digest('hex'));
-    });
-  });
-}
-
-async function verifyDownloadChecksum(filePath, expectedDigest, label) {
-  const normalizedExpected = String(expectedDigest || '').trim().toLowerCase().replace(/^sha256:/, '');
-  if (!normalizedExpected) {
-    return;
-  }
-
-  const actualDigest = await createSha256HashForFile(filePath);
-  if (actualDigest !== normalizedExpected) {
-    fs.rmSync(filePath, { force: true });
-    throw new Error(`${label} failed checksum verification.`);
-  }
-}
-
-function escapePowerShellLiteral(value) {
-  return String(value || '').replace(/'/g, "''");
-}
-
-function runPowerShell(command) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(
-      'powershell.exe',
-      ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', command],
-      {
-        windowsHide: true,
-        stdio: ['ignore', 'pipe', 'pipe']
-      }
-    );
-
-    let stdout = '';
-    let stderr = '';
-
-    child.stdout.on('data', (chunk) => {
-      stdout += String(chunk || '');
-    });
-
-    child.stderr.on('data', (chunk) => {
-      stderr += String(chunk || '');
-    });
-
-    child.on('error', reject);
-    child.on('close', (code) => {
-      if (code === 0) {
-        resolve({ stdout, stderr });
-        return;
-      }
-      reject(new Error(stderr.trim() || stdout.trim() || `PowerShell failed with exit code ${code}.`));
-    });
-  });
-}
-
 async function extractZipArchive(zipPath, destinationDir) {
   ensureManagedDirectories();
   fs.mkdirSync(destinationDir, { recursive: true });
-  const escapedZipPath = escapePowerShellLiteral(zipPath);
-  const escapedDestination = escapePowerShellLiteral(destinationDir);
-  await runPowerShell(
-    `Expand-Archive -LiteralPath '${escapedZipPath}' -DestinationPath '${escapedDestination}' -Force`
-  );
-}
+  const escapedZip = String(zipPath).replace(/'/g, "''");
+  const escapedDest = String(destinationDir).replace(/'/g, "''");
 
-function detectAmdGpu() {
-  if (process.platform !== 'win32') {
-    return false;
-  }
-
-  try {
-    const result = spawnSync(
+  return new Promise((resolve, reject) => {
+    const child = spawn(
       'powershell.exe',
-      [
-        '-NoProfile',
-        '-NonInteractive',
-        '-ExecutionPolicy',
-        'Bypass',
-        '-Command',
-        'Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty Name'
-      ],
-      {
-        encoding: 'utf8',
-        windowsHide: true
-      }
+      ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command',
+        `Expand-Archive -LiteralPath '${escapedZip}' -DestinationPath '${escapedDest}' -Force`],
+      { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] }
     );
-
-    if (result.status !== 0) {
-      return false;
-    }
-
-    const output = String(result.stdout || '').toLowerCase();
-    return output.includes('amd') || output.includes('radeon');
-  } catch {
-    return false;
-  }
+    let stderr = '';
+    child.stderr.on('data', (chunk) => { stderr += String(chunk); });
+    child.on('error', reject);
+    child.on('close', (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(stderr.trim() || `Extraction failed (exit ${code}).`));
+    });
+  });
 }
 
-async function downloadAndExtractManagedRuntime() {
+async function downloadAndExtractRuntime() {
   ensureManagedDirectories();
-  const hasAmdGpu = detectAmdGpu();
 
   setSnapshot({
     stage: 'downloading_runtime',
     statusText: 'Downloading the local AI runtime...',
     progress: null
   });
+
   await downloadFile(OLLAMA_WINDOWS_ZIP_URL, runtimeZipPath, ({ progress }) => {
     setSnapshot({
       stage: 'downloading_runtime',
@@ -833,34 +376,10 @@ async function downloadAndExtractManagedRuntime() {
       progress: typeof progress === 'number' ? progress : null
     });
   });
-  setSnapshot({
-    stage: 'verifying_runtime',
-    statusText: `Verifying the local AI runtime (${OLLAMA_RUNTIME_VERSION})...`,
-    progress: null
-  });
-  await verifyDownloadChecksum(runtimeZipPath, OLLAMA_WINDOWS_ZIP_SHA256, 'The local AI runtime archive');
-
-  if (hasAmdGpu) {
-    await downloadFile(OLLAMA_WINDOWS_ROCM_ZIP_URL, runtimeRocmZipPath, ({ progress }) => {
-      setSnapshot({
-        stage: 'downloading_runtime_gpu',
-        statusText: 'Downloading AMD GPU support for the local AI runtime...',
-        progress: typeof progress === 'number' ? progress : null
-      });
-    });
-    setSnapshot({
-      stage: 'verifying_runtime_gpu',
-      statusText: 'Verifying AMD GPU support for the local AI runtime...',
-      progress: null
-    });
-    await verifyDownloadChecksum(runtimeRocmZipPath, OLLAMA_WINDOWS_ROCM_ZIP_SHA256, 'The AMD GPU support archive');
-  }
 
   setSnapshot({
     stage: 'extracting_runtime',
-    statusText: hasAmdGpu
-      ? 'Extracting the local AI runtime and AMD GPU support...'
-      : 'Extracting the local AI runtime...',
+    statusText: 'Extracting the local AI runtime...',
     progress: null
   });
 
@@ -868,30 +387,46 @@ async function downloadAndExtractManagedRuntime() {
   fs.mkdirSync(runtimeDir, { recursive: true });
   await extractZipArchive(runtimeZipPath, runtimeDir);
 
-  if (hasAmdGpu && fs.existsSync(runtimeRocmZipPath)) {
-    await extractZipArchive(runtimeRocmZipPath, runtimeDir);
-  }
-
   const runtimePath = findManagedRuntimePath();
   if (!runtimePath) {
-    throw new Error('The local AI runtime was extracted, but MacroFlow could not find ollama.exe.');
+    throw new Error('Extraction completed but ollama.exe was not found.');
   }
 
-  return {
-    installed: true,
-    commandPath: runtimePath,
-    source: 'managed'
+  return { installed: true, commandPath: runtimePath, source: 'managed' };
+}
+
+// --- Server lifecycle ---
+
+function getManagedOllamaEnv() {
+  ensureManagedDirectories();
+  const performanceProfile = resolveLlmPerformanceProfile();
+  const env = {
+    ...process.env,
+    OLLAMA_HOST: getOllamaHost(),
+    OLLAMA_MODELS: modelsDir,
+    OLLAMA_CONTEXT_LENGTH: String(performanceProfile.contextLength),
+    OLLAMA_MAX_LOADED_MODELS: String(performanceProfile.ollamaMaxLoadedModels),
+    OLLAMA_NUM_PARALLEL: String(performanceProfile.ollamaNumParallel),
+    OLLAMA_KEEP_ALIVE: String(performanceProfile.ollamaKeepAlive),
+    OLLAMA_NO_CLOUD: '1'
   };
+
+  // Cap CPU threads so Ollama doesn't saturate every core.
+  if (performanceProfile.ollamaNumThreads > 0) {
+    env.OLLAMA_NUM_THREADS = String(performanceProfile.ollamaNumThreads);
+  }
+
+  // Force CPU-only on low/balanced tiers to avoid GPU memory exhaustion.
+  if (performanceProfile.ollamaGpuLayers === 0) {
+    env.OLLAMA_GPU_LAYERS = '0';
+  }
+
+  return env;
 }
 
 async function ensureServer(runtime) {
-  const initialServerState = await getServerState(runtime);
-  if (initialServerState.serverReachable && initialServerState.serverOwnedByRuntime) {
-    return true;
-  }
-
-  if (initialServerState.serverReachable && !initialServerState.serverOwnedByRuntime) {
-    throw new Error('Another Ollama instance is already using MacroFlow\'s local AI port. Close it or opt in to an external Ollama runtime.');
+  if (await pingOllamaServer()) {
+    return;
   }
 
   if (!runtime?.commandPath) {
@@ -906,111 +441,90 @@ async function ensureServer(runtime) {
       env: getManagedOllamaEnv()
     });
     child.unref();
+    state.ollamaProcess = child;
+    child.on('exit', () => { state.ollamaProcess = null; });
   } catch (error) {
     logger.warn('[LocalAI] failed to launch ollama serve', { error: error.message });
   }
 
   const startedAt = Date.now();
   while (Date.now() - startedAt < SETUP_SERVER_TIMEOUT_MS) {
-    const serverState = await getServerState(runtime);
-    if (serverState.serverReachable && serverState.serverOwnedByRuntime) {
-      return true;
-    }
-    if (serverState.serverReachable && !serverState.serverOwnedByRuntime) {
-      throw new Error('Another Ollama instance is already using MacroFlow\'s local AI port. Close it or opt in to an external Ollama runtime.');
-    }
+    if (await pingOllamaServer()) return;
     await delay(1000);
   }
 
   throw new Error('The local AI runtime did not start in time.');
 }
 
-async function deleteInstalledModel(modelName) {
-  const response = await requestJson({
-    url: `${LOCAL_AI_BASE_URL.replace(/\/+$/, '')}/api/delete`,
-    method: 'DELETE',
-    bodyObject: {
-      model: modelName
-    },
-    timeoutMs: SETUP_SERVER_TIMEOUT_MS
-  });
+// --- Model pull ---
 
-  if (response.statusCode < 200 || response.statusCode >= 300) {
-    const apiError = String(response.parsedBody?.error || response.bodyText || '').trim();
-    throw new Error(apiError || `Model delete failed (HTTP ${response.statusCode}).`);
-  }
+function friendlyPullStatus(rawStatus) {
+  const status = String(rawStatus || '').trim().toLowerCase();
+  if (!status || status.startsWith('pulling')) return 'Downloading...';
+  if (status.includes('verifying')) return 'Verifying...';
+  if (status.includes('writing')) return 'Installing...';
+  if (status.includes('success')) return 'Installed.';
+  return 'Setting up...';
 }
 
 function pullModel(modelName) {
   return new Promise((resolve, reject) => {
-    const endpoint = `${LOCAL_AI_BASE_URL.replace(/\/+$/, '')}/api/pull`;
-    const transport = String(endpoint).trim().toLowerCase().startsWith('https:') ? https : http;
-    const request = transport.request(
-      endpoint,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        }
-      },
-      (response) => {
-        if ((Number(response.statusCode) || 0) >= 400) {
-          let errorText = '';
-          response.setEncoding('utf8');
-          response.on('data', (chunk) => {
-            errorText += chunk;
-          });
-          response.on('end', () => {
-            reject(new Error(errorText || `Model pull failed (HTTP ${response.statusCode}).`));
-          });
-          return;
-        }
-
+    const endpoint = `${getBaseUrl()}/api/pull`;
+    const transport = endpoint.startsWith('https:') ? https : http;
+    const request = transport.request(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' }
+    }, (response) => {
+      if ((Number(response.statusCode) || 0) >= 400) {
+        let errorText = '';
         response.setEncoding('utf8');
-        let buffer = '';
-
-        response.on('data', (chunk) => {
-          buffer += chunk;
-          const lines = buffer.split(/\r?\n/);
-          buffer = lines.pop() || '';
-
-          for (const line of lines) {
-            const trimmed = line.trim();
-            if (!trimmed) {
-              continue;
-            }
-
-            try {
-              const parsed = JSON.parse(trimmed);
-              const total = Number(parsed?.total) || 0;
-              const completed = Number(parsed?.completed) || 0;
-              setSnapshot({
-                stage: 'downloading_model',
-                statusText: String(parsed?.status || `Downloading ${modelName}...`),
-                progress: total > 0 ? completed / total : null
-              });
-            } catch {
-              // Ignore malformed progress chunks.
-            }
-          }
-        });
-
+        response.on('data', (chunk) => { errorText += chunk; });
         response.on('end', () => {
-          if (buffer.trim()) {
-            try {
-              const parsed = JSON.parse(buffer.trim());
-              if (parsed?.error) {
-                reject(new Error(String(parsed.error)));
-                return;
-              }
-            } catch {
-              // Ignore trailing non-JSON.
-            }
-          }
-          resolve();
+          reject(new Error(errorText || `Model pull failed (HTTP ${response.statusCode}).`));
         });
+        return;
       }
-    );
+
+      response.setEncoding('utf8');
+      let buffer = '';
+
+      response.on('data', (chunk) => {
+        buffer += chunk;
+        const lines = buffer.split(/\r?\n/);
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          try {
+            const parsed = JSON.parse(line.trim());
+            const total = Number(parsed?.total) || 0;
+            const completed = Number(parsed?.completed) || 0;
+            setSnapshot({
+              stage: 'downloading_model',
+              statusText: friendlyPullStatus(parsed?.status),
+              progress: total > 0 ? completed / total : null
+            });
+          } catch {
+            // Ignore malformed progress lines.
+          }
+        }
+      });
+
+      response.on('end', () => {
+        if (buffer.trim()) {
+          try {
+            const parsed = JSON.parse(buffer.trim());
+            if (parsed?.error) {
+              reject(new Error(String(parsed.error)));
+              return;
+            }
+          } catch {
+            // Ignore trailing non-JSON.
+          }
+        }
+        resolve();
+      });
+    });
 
     request.setTimeout(SETUP_SERVER_TIMEOUT_MS + 5 * 60 * 1000, () => {
       request.destroy(new Error('Model download timed out.'));
@@ -1021,6 +535,8 @@ function pullModel(modelName) {
     request.end();
   });
 }
+
+// --- Setup flow ---
 
 async function runSetupFlow() {
   const model = getSelectedModel();
@@ -1037,18 +553,17 @@ async function runSetupFlow() {
     let runtime = findOllamaRuntime();
 
     if (!runtime.installed) {
-      runtime = await downloadAndExtractManagedRuntime();
+      runtime = await downloadAndExtractRuntime();
     }
 
     setSnapshot({
       setupInProgress: true,
       runtimeInstalled: true,
-      runtimeCommand: runtime.commandPath,
-      runtimeSource: runtime.source,
       stage: 'starting_runtime',
       progress: null,
       statusText: 'Starting the local AI runtime...'
     });
+
     await ensureServer(runtime);
 
     const models = await listInstalledModels();
@@ -1056,15 +571,11 @@ async function runSetupFlow() {
       setSnapshot({
         setupInProgress: true,
         runtimeInstalled: true,
-        runtimeCommand: runtime.commandPath,
-        runtimeSource: runtime.source,
         serverReachable: true,
-        serverOwnedByRuntime: true,
-        listenerProcessPath: runtime.commandPath,
         modelInstalled: false,
         stage: 'downloading_model',
         progress: null,
-        statusText: `Downloading ${model}...`
+        statusText: 'Downloading...'
       });
       await pullModel(model);
     }
@@ -1074,18 +585,13 @@ async function runSetupFlow() {
       needsSetup: false,
       setupInProgress: false,
       runtimeInstalled: true,
-      runtimeCommand: runtime.commandPath,
-      runtimeSource: runtime.source,
       serverReachable: true,
-      serverOwnedByRuntime: true,
-      listenerProcessPath: runtime.commandPath,
       modelInstalled: true,
       stage: 'ready',
       progress: null,
       statusText: 'Local AI is ready.',
       lastError: ''
     });
-    persistManagedServerSignature(runtime);
   } catch (error) {
     const message = String(error?.message || 'Local AI setup failed.').trim();
     writeStore({ lastError: message });
@@ -1104,53 +610,45 @@ async function runSetupFlow() {
   }
 }
 
+// --- Remove model flow ---
+
 async function runRemoveModelFlow() {
   const model = getSelectedModel();
   writeStore({ selectedModel: model, lastError: '' });
   setSnapshot({
     removeInProgress: true,
-    progress: 0.08,
+    progress: 0.1,
     stage: 'removing_model',
-    statusText: 'Preparing removal...',
+    statusText: 'Removing local model...',
     lastError: ''
   });
 
   try {
     const runtime = findOllamaRuntime();
     if (runtime.installed) {
-      setSnapshot({
-        removeInProgress: true,
-        progress: 0.24,
-        stage: 'removing_model',
-        statusText: 'Connecting to local AI...'
-      });
       await ensureServer(runtime);
+
       setSnapshot({
         removeInProgress: true,
-        progress: 0.52,
+        progress: 0.5,
         stage: 'removing_model',
-        statusText: 'Checking installed model...'
+        statusText: 'Deleting model files...'
       });
-      const serverState = await getServerState(runtime);
-      const models = serverState.serverReachable && serverState.serverOwnedByRuntime
-        ? await listInstalledModels()
-        : [];
+
+      const models = await listInstalledModels();
       if (isModelInstalled(models, model)) {
-        setSnapshot({
-          removeInProgress: true,
-          progress: 0.82,
-          stage: 'removing_model',
-          statusText: 'Removing local model...'
+        const response = await requestJson({
+          url: `${getBaseUrl()}/api/delete`,
+          method: 'DELETE',
+          bodyObject: { model },
+          timeoutMs: SETUP_SERVER_TIMEOUT_MS
         });
-        await deleteInstalledModel(model);
+        if (response.statusCode < 200 || response.statusCode >= 300) {
+          const apiError = String(response.parsedBody?.error || response.bodyText || '').trim();
+          throw new Error(apiError || `Model delete failed (HTTP ${response.statusCode}).`);
+        }
       }
     }
-    setSnapshot({
-      removeInProgress: true,
-      progress: 0.96,
-      stage: 'removing_model',
-      statusText: 'Finalizing...'
-    });
   } catch (error) {
     const message = String(error?.message || 'Unable to remove the local AI model.').trim();
     writeStore({ lastError: message });
@@ -1182,22 +680,16 @@ async function runRemoveModelFlow() {
   });
 }
 
+// --- Public API ---
+
 async function setup() {
   if (state.setupPromise || state.removePromise) {
-    return {
-      success: true,
-      started: false,
-      status: buildSnapshot()
-    };
+    return { success: true, started: false, status: buildSnapshot() };
   }
 
   const status = await getStatus();
   if (status.ready) {
-    return {
-      success: true,
-      started: false,
-      status
-    };
+    return { success: true, started: false, status };
   }
 
   state.setupPromise = runSetupFlow();
@@ -1214,11 +706,7 @@ async function setup() {
 
 async function removeModel() {
   if (state.removePromise || state.setupPromise) {
-    return {
-      success: true,
-      started: false,
-      status: buildSnapshot()
-    };
+    return { success: true, started: false, status: buildSnapshot() };
   }
 
   state.removePromise = runRemoveModelFlow();
@@ -1234,10 +722,22 @@ async function removeModel() {
   };
 }
 
+function shutdown() {
+  if (state.ollamaProcess) {
+    try {
+      state.ollamaProcess.kill();
+      logger.info('[LocalAI] Ollama process killed on shutdown');
+    } catch (error) {
+      logger.warn('[LocalAI] failed to kill Ollama process', { error: error.message });
+    }
+    state.ollamaProcess = null;
+  }
+}
+
 module.exports = {
   getStatus,
-  ensureManagedRuntimeCurrent,
   setup,
   removeModel,
-  subscribe
+  subscribe,
+  shutdown
 };

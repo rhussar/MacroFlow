@@ -1,5 +1,4 @@
 ﻿import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import AiGate from '../components/AiGate';
 import CodePreview from '../components/CodePreview';
 import SplitDivider from '../components/SplitDivider';
 import {
@@ -35,6 +34,10 @@ import {
 } from '../features/search/search-invalidation';
 import { PERSONAL_WORKBOOK_NAME } from '../features/search/usePersonalMacros';
 import { useSessionHistory } from '../features/build/useSessionHistory';
+import ImageMsoIcon, { isSpriteReady } from '../components/ImageMsoIcon';
+import IconPicker from '../components/IconPicker';
+import { getMacroIcon, setMacroIcon } from '../features/icons/macroIconStore';
+import { ReturnIcon } from '../components/icons';
 
 const DEFAULT_MODULE_LABEL = 'New Module';
 const MODULE_PREFIX = 'MacroFlowModule';
@@ -163,9 +166,9 @@ const CreatePage = ({
   chatOpen: chatOpenProp,
   onChatToggle,
   searchData,
-  onAiReady,
-  aiModelReady,
-  onAiSetupChange
+  aiStatus,
+  onRequestAiSetup,
+  onRefreshAiStatus
 }) => {
   const [prompt, setPrompt] = useState('');
   const [buildState, setBuildState] = useState(() =>
@@ -197,9 +200,9 @@ const CreatePage = ({
   const [shortcutSaving, setShortcutSaving] = useState(false);
   const [hasPendingChanges, setHasPendingChanges] = useState(false);
   const [moduleRenameDraft, setModuleRenameDraft] = useState('');
+  const [showIconPicker, setShowIconPicker] = useState(false);
+  const [iconVersion, setIconVersion] = useState(0);
   const [moduleRenameActive, setModuleRenameActive] = useState(false);
-  const [aiStatus, setAiStatus] = useState(null);
-
   const { sessions, saveSession, restoreSession, removeSession } = useSessionHistory();
 
   const normalizedWorkbook = useMemo(
@@ -235,8 +238,6 @@ const CreatePage = ({
   const moduleRenameCommitInFlightRef = useRef(false);
   const messagesRef = useRef(messages);
   const moduleRenameRestoreValueRef = useRef('');
-  const aiStatusRef = useRef(aiStatus);
-
   buildStateRef.current = buildState;
   promptRef.current = prompt;
   chatOpenRef.current = chatOpen;
@@ -247,54 +248,8 @@ const CreatePage = ({
   draftShortcutLetterRef.current = draftShortcutLetter;
   shortcutSavingRef.current = shortcutSaving;
   messagesRef.current = messages;
-  aiStatusRef.current = aiStatus;
-
-  const refreshAiStatus = useCallback(async () => {
-    const getStatusApi = window.excel?.ai?.getStatus;
-    if (typeof getStatusApi !== 'function') {
-      setAiStatus({
-        ready: false,
-        needsSetup: true,
-        setupInProgress: false,
-        stage: 'error',
-        statusText: 'Local AI status API is unavailable. Restart MacroFlow dev mode to load the new preload bridge.'
-      });
-      return;
-    }
-
-    try {
-      const status = await getStatusApi();
-      setAiStatus(status || null);
-    } catch (error) {
-      setAiStatus({
-        ready: false,
-        needsSetup: true,
-        setupInProgress: false,
-        stage: 'error',
-        statusText: String(error?.message || 'Unable to read local AI status.')
-      });
-    }
-  }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-    const unsubscribe = window.excel?.ai?.onStatus?.((status) => {
-      if (!cancelled) {
-        setAiStatus(status || null);
-      }
-    }) || (() => {});
-
-    void refreshAiStatus();
-
-    return () => {
-      cancelled = true;
-      unsubscribe();
-    };
-  }, [refreshAiStatus]);
-
   const handleLocalAiSetup = useCallback(async () => {
-    const setupApi = window.excel?.ai?.setup;
-    if (typeof setupApi !== 'function') {
+    if (typeof onRequestAiSetup !== 'function') {
       setErrorInfo({
         title: 'Local AI setup API is unavailable. Restart MacroFlow dev mode to load the new preload bridge.',
         line: null
@@ -303,30 +258,18 @@ const CreatePage = ({
     }
 
     try {
-      const result = await setupApi();
-      if (result?.status) {
-        setAiStatus(result.status);
-      } else {
-        await refreshAiStatus();
-      }
+      await onRequestAiSetup();
     } catch (error) {
       const message = String(error?.message || 'Unable to start local AI setup.');
-      setAiStatus((previous) => ({
-        ...(previous || {}),
-        ready: false,
-        needsSetup: true,
-        setupInProgress: false,
-        stage: 'error',
-        statusText: message
-      }));
       setErrorInfo({ title: message, line: null });
     }
-  }, [refreshAiStatus]);
+  }, [onRequestAiSetup]);
 
+  const aiChecking = aiStatus == null;
   const aiReady = Boolean(aiStatus?.ready);
   const aiSetupInProgress = Boolean(aiStatus?.setupInProgress);
   const aiRemoveInProgress = Boolean(aiStatus?.removeInProgress);
-  const aiOperationInProgress = aiSetupInProgress || aiRemoveInProgress;
+  const aiOperationInProgress = aiChecking || aiSetupInProgress || aiRemoveInProgress;
   const aiProgressPercent = typeof aiStatus?.progress === 'number'
     ? Math.max(0, Math.min(100, Math.round(aiStatus.progress * 100)))
     : null;
@@ -976,9 +919,9 @@ const CreatePage = ({
       return;
     }
 
-    if (!aiStatusRef.current?.ready) {
+    if (!aiStatus?.ready) {
       setErrorInfo({
-        title: String(aiStatusRef.current?.statusText || 'Local AI setup is required before generating VBA.'),
+        title: String(aiStatus?.statusText || 'Local AI setup is required before generating VBA.'),
         line: null
       });
       return;
@@ -1046,13 +989,23 @@ const CreatePage = ({
     }
   }, [markLocalDirty]);
 
+  const openSidebar = useCallback(() => {
+    if (!chatOpenRef.current) {
+      if (onChatToggle) {
+        onChatToggle();
+      } else {
+        setChatOpenInternal(true);
+      }
+    }
+  }, [onChatToggle]);
+
   const handleFirstSubmit = useCallback(async () => {
     const submittedPrompt = String(promptRef.current || '').trim();
     if (isBusyRef.current || !submittedPrompt) return;
 
-    if (!aiStatusRef.current?.ready) {
+    if (!aiStatus?.ready) {
       setErrorInfo({
-        title: String(aiStatusRef.current?.statusText || 'Local AI setup is required before generating VBA.'),
+        title: String(aiStatus?.statusText || 'Local AI setup is required before generating VBA.'),
         line: null
       });
       return;
@@ -1206,16 +1159,6 @@ const CreatePage = ({
       isBusyRef.current = false;
     }
   }, [ensureBuildApis, invalidateWorkbookMutation, normalizedWorkbook, markLocalDirty, stopWithError, openSidebar]);
-
-  const openSidebar = useCallback(() => {
-    if (!chatOpenRef.current) {
-      if (onChatToggle) {
-        onChatToggle();
-      } else {
-        setChatOpenInternal(true);
-      }
-    }
-  }, [onChatToggle]);
 
   const dispatchSubmit = useCallback(() => {
     if (sessionContextRef.current) {
@@ -1456,6 +1399,16 @@ const CreatePage = ({
     [sessionContext?.moduleName, sessionMacroName]
   );
   const shortcutPrefix = formatShortcutPrefix(draftShortcutLetter);
+
+  // Build macro ID for icon lookup (same format as excel-bridge: module::name::kind::scope)
+  const currentMacroId = useMemo(() => {
+    const mod = sessionContext?.moduleName;
+    const name = sessionMacroName;
+    if (!mod || !name) return null;
+    return `${mod}::${name}::Sub::Public`;
+  }, [sessionContext?.moduleName, sessionMacroName]);
+
+  const currentMacroIcon = currentMacroId ? getMacroIcon(currentMacroId) : null;
 
   useEffect(() => {
     if (!sessionContext || !sessionMacroTarget) {
@@ -1700,50 +1653,61 @@ const CreatePage = ({
     conversationEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages.length, isBusy]);
 
-  const localAiSetupCard = !aiReady ? (
-    <div className={`local-ai-setup-card${aiOperationInProgress ? ' is-active' : ''}`}>
-      <div className="local-ai-setup-main">
-        <div className="local-ai-setup-header">
-          <div className="local-ai-setup-title">
-            {aiRemoveInProgress ? 'Removing local AI' : aiSetupInProgress ? 'Preparing local AI' : 'Local AI required'}
-          </div>
-          {aiProgressPercent !== null && (
-            <div className="local-ai-setup-progress-label">{aiProgressPercent}%</div>
-          )}
+  const aiGateOverlay = !aiReady ? (
+    <div className="ai-gate-overlay" role="dialog" aria-modal="true" aria-label="Local AI setup required">
+      <div className="ai-gate-card">
+        <div className="ai-gate-description">
+          {aiChecking
+            ? 'Checking local AI...'
+            : aiSetupInProgress
+              ? String(aiStatus?.statusText || 'Setting up local AI...')
+              : aiRemoveInProgress
+                ? String(aiStatus?.statusText || 'Removing local AI...')
+                : 'Create runs entirely on-device. Install the local AI model to get started.'}
         </div>
-        <div className="local-ai-setup-status">{String(aiStatus?.statusText || 'Checking local AI...')}</div>
-        {!aiOperationInProgress && (
-          <div className="local-ai-setup-copy">
-            Create runs on-device. Install once before generating VBA.
-          </div>
-        )}
+
         {aiProgressPercent !== null && (
-          <div className="local-ai-setup-progress">
-            <div className="local-ai-setup-progress-bar" style={{ width: `${aiProgressPercent}%` }} />
+          <div className="ai-gate-progress-section">
+            <div className="ai-gate-progress-label">
+              <span>{aiSetupInProgress ? 'Installing' : 'Working'}</span>
+              <span>{aiProgressPercent}%</span>
+            </div>
+            <div className="ai-gate-progress">
+              <div className="ai-gate-progress-bar" style={{ width: `${aiProgressPercent}%` }} />
+            </div>
           </div>
         )}
-      </div>
-      <div className="local-ai-setup-actions">
-        <button
-          type="button"
-          className="build-exit-btn primary"
-          onClick={() => {
-            void handleLocalAiSetup();
-          }}
-          disabled={aiOperationInProgress}
-        >
-          {aiSetupInProgress ? 'Setting up...' : aiRemoveInProgress ? 'Working...' : 'Install'}
-        </button>
-        <button
-          type="button"
-          className="local-ai-setup-refresh-btn"
-          onClick={() => {
-            void refreshAiStatus();
-          }}
-          disabled={aiOperationInProgress}
-        >
-          Refresh
-        </button>
+
+        {aiChecking && aiProgressPercent === null && (
+          <div className="ai-gate-progress">
+            <div className="ai-gate-progress-bar ai-gate-progress-indeterminate" />
+          </div>
+        )}
+
+        {aiStatus?.lastError && (
+          <div className="ai-gate-error">{aiStatus.lastError}</div>
+        )}
+
+        {!aiOperationInProgress && (
+          <button
+            type="button"
+            className="ai-gate-download-btn"
+            onClick={() => { void handleLocalAiSetup(); }}
+          >
+            Install Local AI
+          </button>
+        )}
+
+        <div className="ai-gate-badges">
+          <span className="ai-gate-badge">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="11" width="18" height="11" rx="2" /><path d="M7 11V7a5 5 0 0110 0v4" /></svg>
+            Private
+          </span>
+          <span className="ai-gate-badge">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="2" y="2" width="20" height="20" rx="2" /><path d="M7 12h10M12 7v10" /></svg>
+            On-device
+          </span>
+        </div>
       </div>
     </div>
   ) : null;
@@ -1751,7 +1715,6 @@ const CreatePage = ({
 
   const conversationPanel = (
     <div className="conversation-panel">
-      {localAiSetupCard}
       {messages.map((msg, i) => (
         <div
           key={i}
@@ -1797,8 +1760,32 @@ const CreatePage = ({
             </svg>
           </button>
           <span className="build-chat-module-name">{location.module}</span>
+          {currentMacroId && (
+            <button
+              type="button"
+              className="build-chat-icon-btn"
+              title={currentMacroIcon ? `Icon: ${currentMacroIcon} (click to change)` : 'Assign icon'}
+              onClick={() => setShowIconPicker(true)}
+            >
+              {isSpriteReady() ? (
+                <ImageMsoIcon name={currentMacroIcon || 'MacroRecord'} size={18} />
+              ) : (
+                <ReturnIcon size={16} />
+              )}
+            </button>
+          )}
         </div>
       </div>
+      {showIconPicker && currentMacroId && (
+        <IconPicker
+          currentIcon={currentMacroIcon}
+          onSelect={(iconName) => {
+            setMacroIcon(currentMacroId, iconName);
+            setIconVersion(v => v + 1);
+          }}
+          onClose={() => setShowIconPicker(false)}
+        />
+      )}
       {conversationPanel}
       <div className="build-prompt-input-wrap">
         <div className="build-prompt-input-box">
@@ -1962,22 +1949,24 @@ const CreatePage = ({
   );
 
   return (
-    <AiGate onReady={() => { onAiReady?.(true); }} onNotReady={() => { onAiReady?.(false); }} initialReady={aiModelReady} onSetupChange={onAiSetupChange}>
     <>
       <main className="main-content">
-        {chatOpen ? (
-          <div className="split-view">
-            <div className="split-left build-chat-panel" style={{ width: `${splitPct}%` }}>
-              {sidebarContent}
+        <div className={!aiReady ? 'ai-gate-bg-blur' : undefined} style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+          {chatOpen ? (
+            <div className="split-view">
+              <div className="split-left build-chat-panel" style={{ width: `${splitPct}%` }}>
+                {sidebarContent}
+              </div>
+              <SplitDivider onResize={setSplitPct} />
+              <div className="split-right">
+                {mainContent}
+              </div>
             </div>
-            <SplitDivider onResize={setSplitPct} />
-            <div className="split-right">
-              {mainContent}
-            </div>
-          </div>
-        ) : (
-          mainContent
-        )}
+          ) : (
+            mainContent
+          )}
+        </div>
+        {aiGateOverlay}
       </main>
 
       {exitDialog && (
@@ -2029,7 +2018,6 @@ const CreatePage = ({
         </div>
       )}
     </>
-    </AiGate>
   );
 };
 

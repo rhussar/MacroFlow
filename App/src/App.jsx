@@ -1,6 +1,5 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { startTransition, useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import './App.css';
-import lightningIcon from '../assets/lightning.png';
 
 // Import pages
 import ShortcutsPage from './pages/ShortcutsPage';
@@ -46,33 +45,12 @@ function AppInner() {
     originMode: 'shortcuts'
   }));
   const [buildChatOpen, setBuildChatOpen] = useState(false);
-  const [aiModelReady, setAiModelReady] = useState(null); // null = unknown, true/false = known
-  const [aiSetupInProgress, setAiSetupInProgress] = useState(false);
+  const [aiStatus, setAiStatus] = useState(null);
   const [filesSidebarOpen, setFilesSidebarOpen] = useState(true);
   const loadSearchDataRef = useRef(null);
   const shortcutSaveInFlightRef = useRef(false);
   const startupSettledNotifiedRef = useRef(false);
 
-  useEffect(() => {
-    const preloadKey = 'lightning-icon';
-    let preloadLink = document.querySelector(`link[data-preload-key="${preloadKey}"]`);
-    if (!preloadLink) {
-      preloadLink = document.createElement('link');
-      preloadLink.rel = 'preload';
-      preloadLink.as = 'image';
-      preloadLink.href = lightningIcon;
-      preloadLink.setAttribute('data-preload-key', preloadKey);
-      document.head.appendChild(preloadLink);
-    }
-
-    const image = new Image();
-    image.decoding = 'async';
-    image.src = lightningIcon;
-
-    return () => {
-      image.src = '';
-    };
-  }, []);
 
   const setActionStatus = useCallback((status, message) => {
     setActionState(status);
@@ -174,6 +152,93 @@ function AppInner() {
     });
   }, [searchData.macros, searchData.status, setSelectedMacro]);
 
+  const refreshAiStatus = useCallback(async () => {
+    const getStatusApi = window.excel?.ai?.getStatus;
+    if (typeof getStatusApi !== 'function') {
+      setAiStatus({
+        ready: false,
+        needsSetup: true,
+        setupInProgress: false,
+        stage: 'error',
+        statusText: 'Local AI status API is unavailable. Restart MacroFlow dev mode to load the new preload bridge.'
+      });
+      return null;
+    }
+
+    try {
+      const status = await getStatusApi();
+      const nextStatus = status || null;
+      setAiStatus(nextStatus);
+      return nextStatus;
+    } catch (error) {
+      const failedStatus = {
+        ready: false,
+        needsSetup: true,
+        setupInProgress: false,
+        stage: 'error',
+        statusText: String(error?.message || 'Unable to read local AI status.')
+      };
+      setAiStatus(failedStatus);
+      return failedStatus;
+    }
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const unsubscribe = window.excel?.ai?.onStatus?.((status) => {
+      if (!cancelled) {
+        setAiStatus(status || null);
+      }
+    }) || (() => {});
+
+    void refreshAiStatus();
+
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, [refreshAiStatus]);
+
+  const handleLocalAiSetup = useCallback(async () => {
+    const setupApi = window.excel?.ai?.setup;
+    if (typeof setupApi !== 'function') {
+      const unavailableStatus = {
+        ready: false,
+        needsSetup: true,
+        setupInProgress: false,
+        stage: 'error',
+        statusText: 'Local AI setup API is unavailable. Restart MacroFlow dev mode to load the new preload bridge.'
+      };
+      setAiStatus(unavailableStatus);
+      return unavailableStatus;
+    }
+
+    try {
+      const result = await setupApi();
+      if (result?.status) {
+        setAiStatus(result.status);
+        return result.status;
+      }
+      return await refreshAiStatus();
+    } catch (error) {
+      const failedStatus = {
+        ...(aiStatus || {}),
+        ready: false,
+        needsSetup: true,
+        setupInProgress: false,
+        stage: 'error',
+        statusText: String(error?.message || 'Unable to start local AI setup.')
+      };
+      setAiStatus(failedStatus);
+      return failedStatus;
+    }
+  }, [aiStatus, refreshAiStatus]);
+
+  const aiSetupInProgress = useMemo(
+    () => Boolean(aiStatus?.setupInProgress || aiStatus?.removeInProgress),
+    [aiStatus?.removeInProgress, aiStatus?.setupInProgress]
+  );
+
   const {
     shortcutByMacroId,
     shortcutDraftByMacroId,
@@ -249,16 +314,18 @@ function AppInner() {
       ? 'files'
       : 'shortcuts';
 
-    if (normalizedWorkbook) {
-      setSelectedWorkbookForBuild(normalizedWorkbook);
-    }
-    setBuildLaunchContext({
-      mode: launchMode,
-      moduleName: launchMode === 'existing_module' ? launchModuleName : '',
-      source: launchSource,
-      originMode: launchOriginMode
+    startTransition(() => {
+      if (normalizedWorkbook) {
+        setSelectedWorkbookForBuild(normalizedWorkbook);
+      }
+      setBuildLaunchContext({
+        mode: launchMode,
+        moduleName: launchMode === 'existing_module' ? launchModuleName : '',
+        source: launchSource,
+        originMode: launchOriginMode
+      });
+      setMode('create');
     });
-    setMode('create');
   }, []);
 
   openBuildModeRef.current = openBuildMode;
@@ -323,11 +390,13 @@ function AppInner() {
   }, [openBuildMode]);
 
   const handleCreateBack = useCallback(() => {
-    if (buildLaunchContext.originMode === 'files') {
-      setMode('files');
-      return;
-    }
-    setMode('shortcuts');
+    startTransition(() => {
+      if (buildLaunchContext.originMode === 'files') {
+        setMode('files');
+        return;
+      }
+      setMode('shortcuts');
+    });
   }, [buildLaunchContext.originMode]);
 
   const toggleSettings = useCallback(() => setSettingsOpen((prev) => !prev), []);
@@ -337,7 +406,9 @@ function AppInner() {
     if (newMode === 'create') {
       openBuildMode(null, { mode: 'new_module', source: 'tab', originMode: 'shortcuts' });
     } else {
-      setMode(newMode);
+      startTransition(() => {
+        setMode(newMode);
+      });
     }
   }, [openBuildMode]);
 
@@ -384,9 +455,9 @@ function AppInner() {
             chatOpen={buildChatOpen}
             onChatToggle={toggleBuildChat}
             searchData={searchData}
-            onAiReady={setAiModelReady}
-            aiModelReady={aiModelReady}
-            onAiSetupChange={setAiSetupInProgress}
+            aiStatus={aiStatus}
+            onRequestAiSetup={handleLocalAiSetup}
+            onRefreshAiStatus={refreshAiStatus}
           />
         );
 
@@ -416,7 +487,7 @@ function AppInner() {
       <header className="header">
         <div className="drag-region" />
         <div className="header-left">
-          {(mode === 'create' || mode === 'files') && !(mode === 'create' && aiModelReady === false) && (
+          {((mode === 'create' && aiStatus?.ready) || mode === 'files') && (
             <button
               className="sidebar-toggle-btn"
               onClick={mode === 'create' ? toggleBuildChat : toggleFilesSidebar}

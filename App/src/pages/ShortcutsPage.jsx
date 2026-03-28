@@ -78,8 +78,15 @@ const ShortcutsPage = ({
   onSelectedWorkbookForBuildChange
 }) => {
   const status = searchData.status || 'idle';
+  const preferredWorkbookKey = useMemo(() => {
+    const preferredWorkbookName = String(selectedWorkbookForBuild?.name || '').trim().toUpperCase();
+    if (preferredWorkbookName === PERSONAL_WORKBOOK_NAME) {
+      return '';
+    }
+    return String(selectedWorkbookForBuild?.key || '').trim();
+  }, [selectedWorkbookForBuild?.key, selectedWorkbookForBuild?.name]);
   const workbookPickerState = useWorkbookPickerData(searchData, {
-    preferredWorkbookKey: selectedWorkbookForBuild?.key || ''
+    preferredWorkbookKey
   });
   const [isWorkbookMenuOpen, setWorkbookMenuOpen] = useState(false);
   const [personalActionInFlight, setPersonalActionInFlight] = useState(false);
@@ -407,7 +414,7 @@ const ShortcutsPage = ({
     personalInfoHideTimerRef.current = window.setTimeout(() => {
       personalInfoHideTimerRef.current = null;
       setPersonalInfoHover(false);
-    }, 120);
+    }, 300);
   }, []);
 
   const toggleWorkbookMenu = useCallback(() => {

@@ -121,8 +121,7 @@ export function buildExplorerTree(searchDataOrOptions, personalStateArg) {
     orderedWorkbookKeys.push(workbookKey);
   };
 
-  registerWorkbook(activeWorkbook);
-  openWorkbooks.forEach((workbook) => registerWorkbook(workbook));
+  // Register PERSONAL.XLSB first so it always appears at the top
   const personalStatus = toSafeString(personalState?.status);
   const personalWorkbookKnown =
     personalState?.workbookFound ||
@@ -136,6 +135,9 @@ export function buildExplorerTree(searchDataOrOptions, personalStateArg) {
       path: toSafeString(personalState?.workbook?.path || personalState?.workbookPath)
     });
   }
+
+  registerWorkbook(activeWorkbook);
+  openWorkbooks.forEach((workbook) => registerWorkbook(workbook));
 
   const modulesByWorkbook = new Map();
   const registerModule = (moduleItem) => {

@@ -4,7 +4,11 @@ import {
   SettingsIcon,
   ExitIcon,
   SunIcon,
-  MoonIcon
+  MoonIcon,
+  InfoIcon,
+  UserIcon,
+  SlidersIcon,
+  SparkleIcon
 } from './icons';
 import { getMacroStats, formatTimeSaved } from '../features/run/macroStats';
 /* global __APP_VERSION__ */
@@ -18,7 +22,170 @@ function setTheme(theme) {
   localStorage.setItem('macroflow-theme', theme);
 }
 
+const NAV_GROUPS = [
+  {
+    label: 'SETTINGS',
+    items: [
+      { id: 'general', label: 'General', icon: <SlidersIcon size={15} /> },
+      { id: 'local-ai', label: 'Local AI', icon: <SparkleIcon size={15} /> },
+      { id: 'about', label: 'About', icon: <InfoIcon size={15} /> },
+    ],
+  },
+  {
+    label: 'ACCOUNT',
+    items: [
+      { id: 'account', label: 'Account', icon: <UserIcon size={15} /> },
+    ],
+  },
+];
+
+function GeneralContent({ theme, toggleTheme }) {
+  return (
+    <div className="settings-section">
+      <div className="settings-item">
+        <div className="settings-item-info">
+          <div className="settings-item-title">Theme</div>
+          <div className="settings-item-desc">Switch between light and dark mode</div>
+        </div>
+        <button className="settings-action-btn" onClick={toggleTheme}>
+          {theme === 'dark' ? (
+            <><SunIcon size={14} /> Light</>
+          ) : (
+            <><MoonIcon size={14} /> Dark</>
+          )}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function AccountContent({ licenseInfo, handleSignOut }) {
+  const email = licenseInfo?.email;
+
+  return (
+    <div className="settings-section">
+      <div className="settings-item">
+        <div className="settings-item-info">
+          <div className="settings-item-title">{email || 'Not signed in'}</div>
+          {email && <div className="settings-item-desc">Signed in with this email</div>}
+        </div>
+        <button className="settings-action-btn danger" onClick={handleSignOut}>
+          Sign Out
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function AboutContent({ updateStatus }) {
+  return (
+    <div className="settings-section">
+      <div className="settings-item">
+        <div className="settings-item-info">
+          <div className="settings-item-title">Version</div>
+          <div className="settings-item-desc">{__APP_VERSION__}</div>
+        </div>
+      </div>
+      <div className="settings-item">
+        <div className="settings-item-info">
+          <div className="settings-item-title">Updates</div>
+          <div className="settings-item-desc">{updateStatus}</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function LocalAiContent({
+  aiStatus,
+  aiNotice,
+  aiProgressPercent,
+  showAiDetail,
+  handleAiSetup,
+  handleAiRemoveModel,
+}) {
+  const statusLabel = aiStatus?.ready
+    ? 'Ready'
+    : aiStatus?.removeInProgress
+      ? 'Removing'
+      : aiStatus?.setupInProgress
+        ? 'Setting up'
+        : 'Needs setup';
+
+  return (
+    <div className="settings-section">
+      <div className="settings-item">
+        <div className="settings-item-info">
+          <div className="settings-item-title">Status</div>
+          <div className="settings-item-desc">{statusLabel}</div>
+        </div>
+        {!aiStatus?.ready && !aiStatus?.removeInProgress && (
+          <button
+            className="settings-action-btn"
+            onClick={handleAiSetup}
+            disabled={Boolean(aiStatus?.setupInProgress || aiStatus?.removeInProgress)}
+          >
+            {aiStatus?.setupInProgress ? 'Setting up...' : 'Install'}
+          </button>
+        )}
+      </div>
+
+      {showAiDetail && (
+        <div className="settings-subcopy">
+          {aiStatus?.removeInProgress
+            ? aiStatus?.statusText || 'Removing local model...'
+            : aiStatus?.statusText || 'Checking local AI...'}
+        </div>
+      )}
+      {aiNotice && !showAiDetail && (
+        <div className="settings-subcopy success">{aiNotice}</div>
+      )}
+      {aiProgressPercent !== null && (
+        <div className="settings-progress">
+          <div className="settings-progress-track">
+            <div className="settings-progress-fill" style={{ width: `${aiProgressPercent}%` }} />
+          </div>
+          <div className="settings-progress-label">{aiProgressPercent}%</div>
+        </div>
+      )}
+
+      <div className="settings-item">
+        <div className="settings-item-info">
+          <div className="settings-item-title">Model</div>
+          <div className="settings-item-desc">{aiStatus?.model || 'qwen2.5-coder:3b'}</div>
+        </div>
+      </div>
+
+      <div className="settings-item">
+        <div className="settings-item-info">
+          <div className="settings-item-title">Runtime</div>
+          <div className="settings-item-desc">
+            {aiStatus?.runtimeInstalled ? 'Installed' : 'Not installed'}
+          </div>
+        </div>
+      </div>
+
+      {(aiStatus?.modelInstalled || aiStatus?.removeInProgress) && (
+        <div className="settings-item">
+          <div className="settings-item-info">
+            <div className="settings-item-title">Remove model</div>
+            <div className="settings-item-desc">Free up disk space by removing the local model</div>
+          </div>
+          <button
+            className="settings-action-btn danger"
+            onClick={handleAiRemoveModel}
+            disabled={Boolean(aiStatus?.setupInProgress || aiStatus?.removeInProgress)}
+          >
+            {aiStatus?.removeInProgress ? 'Removing...' : 'Remove'}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function SettingsPanel({ onClose }) {
+  const [activeTab, setActiveTab] = useState('general');
   const [theme, setThemeState] = useState(getTheme);
   const [licenseInfo, setLicenseInfo] = useState(null);
   const [updateStatus, setUpdateStatus] = useState('Up to date');
@@ -118,131 +285,54 @@ function SettingsPanel({ onClose }) {
     await window.excel?.ai?.removeModel?.();
   };
 
+  const activeLabel = NAV_GROUPS.flatMap((g) => g.items).find((i) => i.id === activeTab)?.label;
+
   return (
     <>
       <div className="settings-panel-overlay" onClick={onClose} />
       <div className="settings-panel">
-        <div className="settings-panel-header">
-          <span className="settings-panel-title">Settings</span>
-          <button className="settings-panel-close" onClick={onClose}>&times;</button>
-        </div>
-
-        <div className="settings-panel-content">
-          <div className="settings-section">
-            <div className="settings-section-label">Account</div>
-            <div className="settings-row">
-              <span className="settings-row-label">Email</span>
-              <span className="settings-row-value">{licenseInfo?.email || '-'}</span>
-            </div>
-            <div className="settings-row">
-              <span className="settings-row-label"> </span>
-              <span className="settings-row-value">
-                <button className="settings-sign-out-btn danger" onClick={handleSignOut}>
-                  Sign Out
+        <nav className="settings-panel-sidebar">
+          {NAV_GROUPS.map((group) => (
+            <div className="settings-nav-group" key={group.label}>
+              <div className="settings-nav-group-label">{group.label}</div>
+              {group.items.map((item) => (
+                <button
+                  key={item.id}
+                  className={`settings-nav-item${activeTab === item.id ? ' active' : ''}`}
+                  onClick={() => setActiveTab(item.id)}
+                >
+                  <span className="settings-nav-icon">{item.icon}</span>
+                  {item.label}
                 </button>
-              </span>
+              ))}
             </div>
-          </div>
+          ))}
+          <div className="settings-sidebar-version">MacroFlow v{__APP_VERSION__}</div>
+        </nav>
 
-          <div className="settings-section">
-            <div className="settings-section-label">Appearance</div>
-            <div className="settings-row">
-              <span className="settings-row-label">Theme</span>
-              <span className="settings-row-value">
-                <button className="settings-theme-btn" onClick={toggleTheme}>
-                  {theme === 'dark' ? (
-                    <><SunIcon size={14} /> Light</>
-                  ) : (
-                    <><MoonIcon size={14} /> Dark</>
-                  )}
-                </button>
-              </span>
-            </div>
+        <div className="settings-panel-main">
+          <div className="settings-panel-header">
+            <span className="settings-panel-title">{activeLabel}</span>
           </div>
-
-          <div className="settings-section">
-            <div className="settings-section-label">About</div>
-            <div className="settings-row">
-              <span className="settings-row-label">Version</span>
-              <span className="settings-row-value">{__APP_VERSION__}</span>
-            </div>
-            <div className="settings-row">
-              <span className="settings-row-label">Updates</span>
-              <span className="settings-row-value">{updateStatus}</span>
-            </div>
-          </div>
-
-          <div className="settings-section">
-            <div className="settings-section-label">Local AI</div>
-            <div className="settings-row">
-              <span className="settings-row-label">Status</span>
-              <span className="settings-row-value">
-                {aiStatus?.ready
-                  ? 'Ready'
-                  : aiStatus?.removeInProgress
-                    ? 'Removing'
-                    : aiStatus?.setupInProgress
-                      ? 'Setting up'
-                      : 'Needs setup'}
-              </span>
-            </div>
-            <div className="settings-row">
-              <span className="settings-row-label">Model</span>
-              <span className="settings-row-value">{aiStatus?.model || 'qwen2.5-coder:3b'}</span>
-            </div>
-            <div className="settings-row">
-              <span className="settings-row-label">Runtime</span>
-              <span className="settings-row-value">
-                {aiStatus?.runtimeInstalled ? 'Installed' : 'Not installed'}
-              </span>
-            </div>
-            {showAiDetail && (
-              <div className="settings-subcopy">
-                {aiStatus?.removeInProgress
-                  ? aiStatus?.statusText || 'Removing local model...'
-                  : aiStatus?.statusText || 'Checking local AI...'}
-              </div>
+          <div className="settings-panel-content">
+            {activeTab === 'general' && (
+              <GeneralContent theme={theme} toggleTheme={toggleTheme} />
             )}
-            {aiNotice && !showAiDetail && (
-              <div className="settings-subcopy success">{aiNotice}</div>
+            {activeTab === 'account' && (
+              <AccountContent licenseInfo={licenseInfo} handleSignOut={handleSignOut} />
             )}
-            {aiProgressPercent !== null && (
-              <div className="settings-progress">
-                <div className="settings-progress-track">
-                  <div className="settings-progress-fill" style={{ width: `${aiProgressPercent}%` }} />
-                </div>
-                <div className="settings-progress-label">{aiProgressPercent}%</div>
-              </div>
+            {activeTab === 'about' && (
+              <AboutContent updateStatus={updateStatus} />
             )}
-            {!aiStatus?.ready && !aiStatus?.removeInProgress && (
-              <div className="settings-row">
-                <span className="settings-row-label">Setup</span>
-                <span className="settings-row-value">
-                  <button
-                    type="button"
-                    className="settings-text-btn-inline"
-                    onClick={handleAiSetup}
-                    disabled={Boolean(aiStatus?.setupInProgress || aiStatus?.removeInProgress)}
-                  >
-                    {aiStatus?.setupInProgress ? 'Setting up...' : 'Install Local AI'}
-                  </button>
-                </span>
-              </div>
-            )}
-            {(aiStatus?.modelInstalled || aiStatus?.removeInProgress) && (
-              <div className="settings-row">
-                <span className="settings-row-label">Actions</span>
-                <span className="settings-row-value">
-                  <button
-                    type="button"
-                    className="settings-text-btn-inline"
-                    onClick={handleAiRemoveModel}
-                    disabled={Boolean(aiStatus?.setupInProgress || aiStatus?.removeInProgress)}
-                  >
-                    {aiStatus?.removeInProgress ? 'Removing...' : 'Remove Local AI Model'}
-                  </button>
-                </span>
-              </div>
+            {activeTab === 'local-ai' && (
+              <LocalAiContent
+                aiStatus={aiStatus}
+                aiNotice={aiNotice}
+                aiProgressPercent={aiProgressPercent}
+                showAiDetail={showAiDetail}
+                handleAiSetup={handleAiSetup}
+                handleAiRemoveModel={handleAiRemoveModel}
+              />
             )}
           </div>
         </div>

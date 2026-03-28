@@ -5,6 +5,8 @@ import {
   ChevronDownIcon,
   WorkbookIcon,
 } from '../components/icons';
+import ImageMsoIcon, { isSpriteReady } from '../components/ImageMsoIcon';
+import { getMacroIcon } from '../features/icons/macroIconStore';
 import CodePreview from '../components/CodePreview';
 import SplitDivider from '../components/SplitDivider';
 import {
@@ -113,16 +115,13 @@ const FilesPage = ({
     [explorerModules, explorerWorkbooks, personalState, searchData]
   );
 
-  // Initialize expand state and auto-select first node when tree first becomes available
+  // Initialize expand state when tree first becomes available
   useEffect(() => {
     if (tree.length > 0 && !hasInitializedRef.current) {
       hasInitializedRef.current = true;
       setExpandedIds(getDefaultExpandedIds());
-      if (!selectedNode) {
-        setSelectedNode(tree[0]);
-      }
     }
-  }, [tree, selectedNode]);
+  }, [tree]);
 
   // Reset init flag when workbook changes
   useEffect(() => {
@@ -735,7 +734,12 @@ const FilesPage = ({
           <span className={`tree-node__icon tree-node__icon--${node.nodeType}`}>
             {node.nodeType === 'workbook' && <WorkbookIcon size={16} />}
             {node.nodeType === 'module' && <FolderIcon size={16} />}
-            {node.nodeType === 'macro' && <ReturnIcon size={14} />}
+            {node.nodeType === 'macro' && (() => {
+              const macroIcon = node.data?.id ? getMacroIcon(node.data.id) : null;
+              return isSpriteReady()
+                ? <ImageMsoIcon name={macroIcon || 'MacroRecord'} size={14} />
+                : <ReturnIcon size={14} />;
+            })()}
           </span>
 
           <span className="tree-node__label">
@@ -793,8 +797,7 @@ const FilesPage = ({
           {/* Left Panel - Tree */}
           {sidebarOpen && <div className="split-left" style={{ width: `${splitPct}%` }}>
             <div className="section-header">
-              <span className="section-title">Explorer</span>
-              <span className="section-count">{itemCount} items</span>
+              <span className="section-title">File Explorer</span>
             </div>
 
             <div className="tree-list">
@@ -972,8 +975,9 @@ const FilesPage = ({
                 </div>
               </div>
             ) : (
-              <div className="details-panel">
-                <p className="search-status-message">Select an item to view details.</p>
+              <div className="details-panel details-panel--empty">
+                <p className="details-empty-title">File Explorer</p>
+                <p className="details-empty-blurb">Browse your workbooks, modules, and macros. Select an item from the tree to view its code and metadata.</p>
               </div>
             )}
           </div>

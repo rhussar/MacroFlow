@@ -26,7 +26,9 @@ const PROFILE_PRESETS = {
     enableWorkbookContext: true,
     ollamaMaxLoadedModels: 1,
     ollamaNumParallel: 1,
-    ollamaKeepAlive: '30s'
+    ollamaNumThreads: 2,
+    ollamaKeepAlive: '10s',
+    ollamaGpuLayers: 0
   },
   balanced: {
     contextLength: Math.min(LOCAL_AI_CONTEXT_LENGTH, 4096),
@@ -41,7 +43,9 @@ const PROFILE_PRESETS = {
     enableWorkbookContext: true,
     ollamaMaxLoadedModels: 1,
     ollamaNumParallel: 1,
-    ollamaKeepAlive: '2m'
+    ollamaNumThreads: 4,
+    ollamaKeepAlive: '30s',
+    ollamaGpuLayers: 0
   },
   standard: {
     contextLength: Math.min(Math.max(LOCAL_AI_CONTEXT_LENGTH, 8192), 8192),
@@ -56,7 +60,9 @@ const PROFILE_PRESETS = {
     enableWorkbookContext: true,
     ollamaMaxLoadedModels: 1,
     ollamaNumParallel: 1,
-    ollamaKeepAlive: '5m'
+    ollamaNumThreads: 0,
+    ollamaKeepAlive: '2m',
+    ollamaGpuLayers: -1
   }
 };
 
@@ -182,10 +188,17 @@ function resolveLlmPerformanceProfile(options = {}) {
       'MACROFLOW_OLLAMA_NUM_PARALLEL',
       preset.ollamaNumParallel
     ),
+    ollamaNumThreads: parseNumberEnv(
+      'MACROFLOW_OLLAMA_NUM_THREADS',
+      preset.ollamaNumThreads > 0
+        ? preset.ollamaNumThreads
+        : Math.max(2, Math.floor(hardware.cpuCount / 2))
+    ),
     ollamaKeepAlive: parseStringEnv(
       'MACROFLOW_OLLAMA_KEEP_ALIVE',
       preset.ollamaKeepAlive
-    )
+    ),
+    ollamaGpuLayers: preset.ollamaGpuLayers
   };
 }
 

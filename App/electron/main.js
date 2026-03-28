@@ -9,6 +9,7 @@ const logger = require('./logger');
 const { initAutoUpdater, stopAutoUpdater } = require('./auto-updater');
 const { checkCachedLicense, registerLicenseHandlers } = require('./license');
 const { handleCallback, registerAuthHandlers } = require('./auth');
+const localAiManager = require('./local-ai-manager');
 
 const WINDOW_STARTUP_BG = '#00000000';
 
@@ -663,6 +664,7 @@ if (!gotLock) {
     }
     stopExcelWindowMonitor();
     stopAutoUpdater();
+    localAiManager.shutdown();
 
     // Force V8 GC to release any lingering COM proxy wrappers before exit.
     if (typeof global.gc === 'function') {

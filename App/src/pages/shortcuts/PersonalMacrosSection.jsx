@@ -7,10 +7,10 @@ function getPersonalActionButtonLabel(action) {
     return 'Create a macro +';
   }
   if (action === 'create_file') {
-    return 'Create file +';
+    return 'Create PERSONAL.xlsb';
   }
   if (action === 'open_file') {
-    return 'Open file +';
+    return 'Open PERSONAL.xlsb';
   }
   return '';
 }
@@ -81,30 +81,43 @@ function PersonalMacrosSection({
               onMouseEnter={() => onInfoHoverChange(true)}
               onMouseLeave={() => onInfoHoverChange(false)}
             >
-              <div className="personal-info-text">Global macros in PERSONAL.XLSB are available across all workbooks.</div>
-              <div className="personal-visibility-row">
-                <div className="personal-visibility-copy">
-                  <span className="personal-visibility-label">
-                    {visibilityControl?.label || 'Show workbook'}
-                  </span>
-                </div>
-                {visibilityControl?.showSwitch ? (
-                  <button
-                    type="button"
-                    role="switch"
-                    aria-checked={visibilityControl.checked}
-                    aria-label="Toggle PERSONAL.XLSB visibility"
-                    className={`personal-visibility-switch ${visibilityControl.checked ? 'on' : ''}`}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      onToggleVisibility?.();
-                    }}
-                    disabled={visibilityControl.disabled}
-                  >
-                    <span className="personal-visibility-thumb" />
-                  </button>
-                ) : null}
-              </div>
+              {sectionModel.action === 'create_file' ? (
+                <>
+                  <div className="personal-info-text">
+                    PERSONAL.XLSB is a hidden workbook that loads with Excel. Macros stored here are available across all workbooks.
+                  </div>
+                  <div className="personal-info-text" style={{ marginTop: 6 }}>
+                    To get started, click the create button below.
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="personal-info-text">Global macros in PERSONAL.XLSB are available across all workbooks.</div>
+                  <div className="personal-visibility-row">
+                    <div className="personal-visibility-copy">
+                      <span className="personal-visibility-label">
+                        {visibilityControl?.label || 'Show workbook'}
+                      </span>
+                    </div>
+                    {visibilityControl?.showSwitch ? (
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-checked={visibilityControl.checked}
+                        aria-label="Toggle PERSONAL.XLSB visibility"
+                        className={`personal-visibility-switch ${visibilityControl.checked ? 'on' : ''}`}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          onToggleVisibility?.();
+                        }}
+                        disabled={visibilityControl.disabled}
+                      >
+                        <span className="personal-visibility-thumb" />
+                      </button>
+                    ) : null}
+                  </div>
+                </>
+              )}
             </div>
           )}
         </div>

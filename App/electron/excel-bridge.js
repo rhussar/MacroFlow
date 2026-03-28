@@ -56,6 +56,8 @@ const VBA_COMPONENT_NAME = {
 };
 
 const PERSONAL_WORKBOOK_NAME = 'PERSONAL.XLSB';
+const WELCOME_TEMPLATE_NAME = 'welcome-template.xlsb';
+const WELCOME_SHEET_NAME = 'Welcome';
 const XLSB_FILE_FORMAT = 50;
 const VBA_MODULE_NAME_PATTERN = /^[A-Za-z][A-Za-z0-9_]*$/;
 const MACROFLOW_ADDIN_WORKBOOK_NAME = 'MacroFlow.xlam';
@@ -538,6 +540,81 @@ class ExcelBridge {
     }
 
     return path.join(appData, 'Microsoft', 'Excel', 'XLSTART', PERSONAL_WORKBOOK_NAME);
+  }
+
+  _getWelcomeTemplatePath() {
+    const isDev = process.env.NODE_ENV === 'development';
+
+    if (isDev) {
+      return path.join(__dirname, '../Resources', WELCOME_TEMPLATE_NAME);
+    }
+
+    if (process.resourcesPath) {
+      const candidates = [
+        path.join(process.resourcesPath, WELCOME_TEMPLATE_NAME),
+        path.join(process.resourcesPath, 'Resources', WELCOME_TEMPLATE_NAME),
+        path.join(process.resourcesPath, 'resources', WELCOME_TEMPLATE_NAME),
+      ];
+      for (const candidate of candidates) {
+        if (fs.existsSync(candidate)) {
+          return candidate;
+        }
+      }
+    }
+
+    return path.join(__dirname, '../Resources', WELCOME_TEMPLATE_NAME);
+  }
+
+  _copyWelcomeSheet(personalWorkbook, excel) {
+    const templatePath = this._getWelcomeTemplatePath();
+    if (!fs.existsSync(templatePath)) {
+      logger.warn('[ExcelBridge] Welcome template not found at: %s', templatePath);
+      return false;
+    }
+
+    // Check if Welcome sheet already exists in the personal workbook
+    const sheetsProxy = personalWorkbook.Sheets;
+    const sheetCount = Number(sheetsProxy.Count);
+    for (let i = 1; i <= sheetCount; i++) {
+      const sheet = sheetsProxy.Item(i);
+      if (String(sheet.Name).toLowerCase() === WELCOME_SHEET_NAME.toLowerCase()) {
+        this._safeRelease(sheet, sheetsProxy);
+        return false; // Already has Welcome sheet
+      }
+      this._safeRelease(sheet);
+    }
+    this._safeRelease(sheetsProxy);
+
+    let templateWorkbook = null;
+    let templateWorkbooks = null;
+    let welcomeSheet = null;
+
+    try {
+      templateWorkbooks = excel.Workbooks;
+      templateWorkbook = templateWorkbooks.Open(templatePath, 0, true); // ReadOnly
+      welcomeSheet = templateWorkbook.Sheets.Item(WELCOME_SHEET_NAME);
+
+      // Copy the Welcome sheet to the end of the personal workbook
+      const personalSheets = personalWorkbook.Sheets;
+      const lastSheet = personalSheets.Item(personalSheets.Count);
+      welcomeSheet.Copy(null, lastSheet); // after lastSheet
+      this._safeRelease(lastSheet, personalSheets);
+
+      logger.info('[ExcelBridge] Welcome sheet copied to PERSONAL.XLSB');
+      return true;
+    } catch (error) {
+      logger.warn('[ExcelBridge] Failed to copy Welcome sheet: %s', error.message);
+      return false;
+    } finally {
+      if (templateWorkbook) {
+        try {
+          templateWorkbook.Close(false);
+        } catch {
+          // Ignore close failures
+        }
+      }
+      this._safeRelease(welcomeSheet, templateWorkbook, templateWorkbooks);
+    }
   }
 
   getPersonalWorkbookLocation() {
@@ -2249,6 +2326,12 @@ class ExcelBridge {
           throw openError;
         }
         try {
+          // Add Welcome sheet if missing (covers existing users)
+          const welcomeCopied = this._copyWelcomeSheet(workbook, excel);
+          if (welcomeCopied) {
+            workbook.Save();
+          }
+
           const visibilityResult = this._setWorkbookWindowVisibility(workbook, excel, {
             visible,
             activateOnShow: visible,
@@ -2361,6 +2444,13 @@ class ExcelBridge {
           workbooksProxy = excel.Workbooks;
           workbook = workbooksProxy.Add();
           workbook.SaveAs(workbookPath, XLSB_FILE_FORMAT);
+
+          // Copy the Welcome sheet from the bundled template
+          const welcomeCopied = this._copyWelcomeSheet(workbook, excel);
+          if (welcomeCopied) {
+            workbook.Save();
+          }
+
           const visibilityResult = this._setWorkbookWindowVisibility(workbook, excel, {
             visible,
             activateOnShow: visible,

@@ -310,7 +310,8 @@ async function generateVba(
   let requestStartedAt = 0;
 
   try {
-    const url = `${LOCAL_AI_BASE_URL.replace(/\/+$/, '')}/v1/chat/completions`;
+    const baseUrl = String(aiStatus?.baseUrl || LOCAL_AI_BASE_URL).trim();
+    const url = `${baseUrl.replace(/\/+$/, '')}/v1/chat/completions`;
     const body = JSON.stringify(payload);
     requestStartedAt = Date.now();
 

@@ -8,10 +8,12 @@ const AI_INTENTS = new Set(['ask', 'create', 'edit']);
 
 const SYSTEM_PROMPTS = {
   ask: [
-    'You are an expert VBA engineer for Microsoft Excel.',
-    'Answer the user directly and concisely.',
-    'Use workbook context when it is relevant.',
-    'Include VBA examples only when they materially help.'
+    'You are a VBA assistant. STRICT RULES:',
+    '1. Maximum 3 sentences. No exceptions.',
+    '2. Never repeat or explain code that the user can already see.',
+    '3. No code blocks unless the user explicitly asks for code.',
+    '4. No numbered lists, no step-by-step breakdowns, no headings.',
+    '5. Answer like a knowledgeable coworker in a quick chat — brief and direct.'
   ].join(' '),
   create: [
     'You are an expert VBA engineer for Microsoft Excel.',

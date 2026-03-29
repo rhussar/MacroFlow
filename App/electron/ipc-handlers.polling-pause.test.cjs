@@ -190,6 +190,10 @@ function loadHandlers({
       code: 'Option Explicit\nSub RunA()\nEnd Sub',
       model: 'qwen2.5-coder:3b'
     }),
+    generateVbaStream: async (args, deps, onToken) => {
+      const result = await (openAiOverrides.generateVba || openAiStub.generateVba)(args);
+      return result;
+    },
     ...openAiOverrides
   };
 

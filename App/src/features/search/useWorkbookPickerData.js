@@ -262,8 +262,10 @@ export function useWorkbookPickerData(searchData, options = {}) {
 
   const selectedWorkbook = useMemo(() => {
     const source = Array.isArray(pickerState.workbooks) ? pickerState.workbooks : [];
+    const isPersonal = (wb) => wb && String(wb.name || '').trim().toUpperCase() === 'PERSONAL.XLSB';
+
     if (source.length === 0) {
-      return activeWorkbook;
+      return isPersonal(activeWorkbook) ? null : activeWorkbook;
     }
 
     const resolvedKey = resolveSelectedWorkbookKey({
@@ -271,7 +273,12 @@ export function useWorkbookPickerData(searchData, options = {}) {
       workbooks: source,
       activeWorkbookKey
     });
-    return source.find((workbook) => workbook.key === resolvedKey) || activeWorkbook || source[0] || null;
+    const matched = source.find((workbook) => workbook.key === resolvedKey);
+    if (matched) {
+      return matched;
+    }
+    const nonPersonalFallback = source.find((wb) => !isPersonal(wb));
+    return nonPersonalFallback || (!isPersonal(activeWorkbook) ? activeWorkbook : null) || source[0] || null;
   }, [activeWorkbook, activeWorkbookKey, pickerState.workbooks, selectedWorkbookKey]);
 
   const isSelectedActiveWorkbook =

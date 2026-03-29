@@ -594,11 +594,11 @@ class ExcelBridge {
       templateWorkbook = templateWorkbooks.Open(templatePath, 0, true); // ReadOnly
       welcomeSheet = templateWorkbook.Sheets.Item(WELCOME_SHEET_NAME);
 
-      // Copy the Welcome sheet to the end of the personal workbook
+      // Copy the Welcome sheet before the first sheet in the personal workbook
       const personalSheets = personalWorkbook.Sheets;
-      const lastSheet = personalSheets.Item(personalSheets.Count);
-      welcomeSheet.Copy(null, lastSheet); // after lastSheet
-      this._safeRelease(lastSheet, personalSheets);
+      const firstSheet = personalSheets.Item(1);
+      welcomeSheet.Copy(firstSheet, null); // before firstSheet
+      this._safeRelease(firstSheet, personalSheets);
 
       logger.info('[ExcelBridge] Welcome sheet copied to PERSONAL.XLSB');
       return true;
@@ -2445,9 +2445,22 @@ class ExcelBridge {
           workbook = workbooksProxy.Add();
           workbook.SaveAs(workbookPath, XLSB_FILE_FORMAT);
 
-          // Copy the Welcome sheet from the bundled template
+          // Copy the Welcome sheet and remove the default Sheet1
           const welcomeCopied = this._copyWelcomeSheet(workbook, excel);
           if (welcomeCopied) {
+            try {
+              const sheets = workbook.Sheets;
+              if (Number(sheets.Count) > 1) {
+                const sheet1 = sheets.Item('Sheet1');
+                if (sheet1) {
+                  sheet1.Delete();
+                }
+                this._safeRelease(sheet1);
+              }
+              this._safeRelease(sheets);
+            } catch {
+              // Ignore — Sheet1 may not exist or can't be deleted
+            }
             workbook.Save();
           }
 

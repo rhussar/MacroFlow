@@ -99,10 +99,17 @@ export function resolveSelectedWorkbookKey({ requestedKey, workbooks, activeWork
   if (normalizedRequested && source.some((workbook) => workbook.key === normalizedRequested)) {
     return normalizedRequested;
   }
-  if (normalizedActive && source.some((workbook) => workbook.key === normalizedActive)) {
-    return normalizedActive;
+  if (normalizedActive) {
+    const activeWorkbook = source.find((workbook) => workbook.key === normalizedActive);
+    if (activeWorkbook && toSafeString(activeWorkbook.name).toUpperCase() !== 'PERSONAL.XLSB') {
+      return normalizedActive;
+    }
   }
-  return source[0]?.key || '';
+  // Skip PERSONAL.XLSB as default — it shows in the global macros section instead
+  const fallback = source.find(
+    (workbook) => toSafeString(workbook.name).toUpperCase() !== 'PERSONAL.XLSB'
+  );
+  return fallback?.key || source[0]?.key || '';
 }
 
 export function qualifyWorkbookNameForRun(workbookName) {

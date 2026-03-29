@@ -221,29 +221,8 @@ function subscribe(listener) {
   return () => { state.listeners.delete(listener); };
 }
 
-async function getStatus() {
-  if (state.setupPromise || state.removePromise) {
-    return buildSnapshot();
-  }
-
-  const runtime = findOllamaRuntime();
-  let serverReachable = runtime.installed ? await pingOllamaServer() : false;
-
-  // Auto-start Ollama if the runtime is installed but not running.
-  // The user should never need to manually re-install after a restart.
-  if (runtime.installed && !serverReachable) {
-    try {
-      await ensureServer(runtime);
-      serverReachable = await pingOllamaServer();
-    } catch (error) {
-      logger.warn('[LocalAI] auto-start failed', { error: error.message });
-    }
-  }
-
-  const models = serverReachable ? await listInstalledModels() : [];
-  const modelInstalled = serverReachable && isModelInstalled(models, getSelectedModel());
+function resolveStatusFields(runtime, serverReachable, modelInstalled) {
   const ready = Boolean(runtime.installed && serverReachable && modelInstalled);
-
   const stage = ready
     ? 'ready'
     : !runtime.installed
@@ -251,7 +230,6 @@ async function getStatus() {
       : !serverReachable
         ? 'runtime_not_running'
         : 'model_missing';
-
   const statusText = ready
     ? 'Local AI is ready.'
     : !runtime.installed
@@ -259,9 +237,62 @@ async function getStatus() {
       : !serverReachable
         ? 'The local AI runtime is installed but not running yet.'
         : `The local model ${getSelectedModel()} is not installed yet.`;
+  return { ready, stage, statusText };
+}
+
+async function getStatus() {
+  if (state.setupPromise || state.removePromise) {
+    return buildSnapshot();
+  }
+
+  const runtime = findOllamaRuntime();
+  const serverReachable = runtime.installed ? await pingOllamaServer() : false;
+  const models = serverReachable ? await listInstalledModels() : [];
+  const modelInstalled = serverReachable && isModelInstalled(models, getSelectedModel());
+  const { ready, stage, statusText } = resolveStatusFields(runtime, serverReachable, modelInstalled);
 
   return setSnapshot({
     runtimeInstalled: runtime.installed,
+    serverReachable,
+    modelInstalled,
+    ready,
+    needsSetup: !ready,
+    setupInProgress: false,
+    removeInProgress: false,
+    stage,
+    progress: null,
+    statusText,
+    lastError: ''
+  });
+}
+
+async function ensureReady() {
+  if (state.setupPromise || state.removePromise) {
+    return buildSnapshot();
+  }
+
+  const runtime = findOllamaRuntime();
+  if (!runtime.installed) {
+    return getStatus();
+  }
+
+  let serverReachable = await pingOllamaServer();
+
+  if (!serverReachable) {
+    try {
+      await ensureServer(runtime);
+      serverReachable = await pingOllamaServer();
+    } catch (error) {
+      logger.warn('[LocalAI] ensureReady auto-start failed', { error: error.message });
+    }
+  }
+
+  const models = serverReachable ? await listInstalledModels() : [];
+  const modelInstalled = serverReachable && isModelInstalled(models, getSelectedModel());
+  const { ready, stage, statusText } = resolveStatusFields(runtime, serverReachable, modelInstalled);
+
+  return setSnapshot({
+    runtimeInstalled: true,
     serverReachable,
     modelInstalled,
     ready,
@@ -408,7 +439,8 @@ function getManagedOllamaEnv() {
     OLLAMA_MAX_LOADED_MODELS: String(performanceProfile.ollamaMaxLoadedModels),
     OLLAMA_NUM_PARALLEL: String(performanceProfile.ollamaNumParallel),
     OLLAMA_KEEP_ALIVE: String(performanceProfile.ollamaKeepAlive),
-    OLLAMA_NO_CLOUD: '1'
+    OLLAMA_NO_CLOUD: '1',
+    OLLAMA_FLASH_ATTENTION: '1'
   };
 
   // Cap CPU threads so Ollama doesn't saturate every core.
@@ -736,6 +768,7 @@ function shutdown() {
 
 module.exports = {
   getStatus,
+  ensureReady,
   setup,
   removeModel,
   subscribe,

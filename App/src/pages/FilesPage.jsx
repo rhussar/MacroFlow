@@ -29,7 +29,9 @@ import {
   canShowModuleContextActions,
   canShowMacroContextActions,
   isValidVbaModuleName,
-  shouldCommitModuleRename
+  shouldCommitModuleRename,
+  displayMacroName,
+  encodeMacroName
 } from '../features/search/module-actions';
 
 const defaultSearchData = {
@@ -86,7 +88,7 @@ const FilesPage = ({
   const [moduleActionInFlight, setModuleActionInFlight] = useState(false);
   const [previewCode, setPreviewCode] = useState(null);
   const [metadataRename, setMetadataRename] = useState(null);
-  const [splitPct, setSplitPct] = useState(50);
+  const [splitPct, setSplitPct] = useState(45);
   const hasInitializedRef = useRef(false);
   const consumedContextRef = useRef('');
   const moduleContextMenuRef = useRef(null);
@@ -310,7 +312,7 @@ const FilesPage = ({
       nodeId: String(target?.nodeId || ''),
       type: 'module',
       module: moduleItem,
-      draft: String(moduleItem?.name || '')
+      draft: displayMacroName(String(moduleItem?.name || ''))
     });
     setModuleContextMenu(null);
   }, []);
@@ -324,7 +326,7 @@ const FilesPage = ({
       nodeId: String(target?.nodeId || ''),
       type: 'macro',
       macro: macroItem,
-      draft: String(macroItem?.name || '')
+      draft: displayMacroName(String(macroItem?.name || ''))
     });
     setModuleContextMenu(null);
   }, []);
@@ -373,7 +375,7 @@ const FilesPage = ({
     }
 
     const currentName = String(currentRename.module.name || '').trim();
-    const nextName = String(currentRename.draft || '').trim();
+    const nextName = encodeMacroName(String(currentRename.draft || '').trim());
     if (!shouldCommitModuleRename({ currentName, nextName })) {
       setModuleRenameState(null);
       return;
@@ -439,7 +441,7 @@ const FilesPage = ({
     }
 
     const currentName = String(currentRename.macro.name || '').trim();
-    const nextName = String(currentRename.draft || '').trim();
+    const nextName = encodeMacroName(String(currentRename.draft || '').trim());
     if (!shouldCommitModuleRename({ currentName, nextName })) {
       setModuleRenameState(null);
       return;
@@ -495,7 +497,7 @@ const FilesPage = ({
   }, [invalidateWorkbookMutation, moduleRenameState, onActionStatus, searchData?.workbook]);
 
   const commitMetadataRename = useCallback(async () => {
-    const draft = (metadataRename || '').trim();
+    const draft = encodeMacroName((metadataRename || '').trim());
     setMetadataRename(null);
     if (!selectedNode || !draft) return;
 
@@ -686,6 +688,7 @@ const FilesPage = ({
     const isExpanded = expandedIds.has(node.id);
     const isSelected = selectedNode?.id === node.id;
     const hasChildren = node.children.length > 0;
+    const isExpandable = hasChildren || node.nodeType === 'workbook';
     const paddingLeft = 8 + depth * 16;
     const isRenaming = (node.nodeType === 'module' || node.nodeType === 'macro') && moduleRenameState?.nodeId === node.id;
 
@@ -717,13 +720,13 @@ const FilesPage = ({
           }}
         >
           <span
-            className={`tree-node__chevron ${hasChildren ? '' : 'tree-node__chevron--hidden'}`}
+            className={`tree-node__chevron ${isExpandable ? '' : 'tree-node__chevron--hidden'}`}
             onClick={(e) => {
               e.stopPropagation();
-              if (hasChildren) toggleExpand(node.id);
+              if (isExpandable) toggleExpand(node.id);
             }}
           >
-            {hasChildren && (
+            {isExpandable && (
               <ChevronDownIcon
                 size={14}
                 className={`tree-chevron-icon ${isExpanded ? '' : 'tree-chevron-icon--collapsed'}`}
@@ -775,12 +778,25 @@ const FilesPage = ({
                 }}
               />
             ) : (
-              node.label
+              (node.nodeType === 'module' || node.nodeType === 'macro') ? displayMacroName(node.label) : node.label
             )}
           </span>
         </div>
 
-        {hasChildren && isExpanded && node.children.map((child) => renderTreeNode(child, depth + 1))}
+        {isExpanded && hasChildren && node.children.map((child) => renderTreeNode(child, depth + 1))}
+        {isExpanded && !hasChildren && node.nodeType === 'workbook' && (
+          <div className="tree-node-empty" style={{ paddingLeft: (depth + 1) * 16 + 28 }}>
+            {String(node.data?.name || '').toUpperCase() === 'PERSONAL.XLSB' && personalState?.status !== 'ready' ? (
+              <div className="ai-loading-indicator">
+                <span className="ai-loading-dot" />
+                <span className="ai-loading-dot" />
+                <span className="ai-loading-dot" />
+              </div>
+            ) : (
+              'This workbook has no macros'
+            )}
+          </div>
+        )}
       </React.Fragment>
     );
   };
@@ -962,11 +978,11 @@ const FilesPage = ({
                             className={`metadata-value${isNameRow ? ' metadata-value--editable' : ''}`}
                             onDoubleClick={() => {
                               if (isNameRow) {
-                                setMetadataRename(row.value);
+                                setMetadataRename(displayMacroName(row.value));
                               }
                             }}
                           >
-                            {row.value}
+                            {isNameRow ? displayMacroName(row.value) : row.value}
                           </span>
                         )}
                       </div>
@@ -1036,7 +1052,7 @@ const FilesPage = ({
           <div className="module-action-dialog">
             <h3 className="module-action-title">Delete module?</h3>
             <p className="module-action-message">
-              {`Delete "${moduleDeleteTarget.name}" from "${moduleDeleteTarget.workbookName || searchData?.workbook?.name || 'workbook'}"?`}
+              {`Delete "${displayMacroName(moduleDeleteTarget.name)}" from "${moduleDeleteTarget.workbookName || searchData?.workbook?.name || 'workbook'}"?`}
             </p>
             <div className="module-action-buttons">
               <button

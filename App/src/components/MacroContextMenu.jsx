@@ -4,7 +4,7 @@ import { useEffect, useRef } from 'react';
  * Right-click context menu for macro rows.
  * Appears at cursor position and provides icon management options.
  */
-export default function MacroContextMenu({ x, y, hasIcon, onAssignIcon, onRemoveIcon, onClose }) {
+export default function MacroContextMenu({ x, y, hasIcon, onAssignIcon, onRemoveIcon, onEdit, onClose }) {
   const menuRef = useRef(null);
 
   useEffect(() => {
@@ -46,6 +46,18 @@ export default function MacroContextMenu({ x, y, hasIcon, onAssignIcon, onRemove
         </svg>
         <span>Assign Icon...</span>
       </button>
+      {onEdit && (
+        <button
+          type="button"
+          className="macro-context-menu-item"
+          onClick={() => { onEdit(); onClose(); }}
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M12 2L14.5 9.5L22 12L14.5 14.5L12 22L9.5 14.5L2 12L9.5 9.5L12 2Z" />
+          </svg>
+          <span>Edit</span>
+        </button>
+      )}
       {hasIcon && (
         <button
           type="button"

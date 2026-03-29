@@ -150,6 +150,11 @@ contextBridge.exposeInMainWorld('excel', {
     getStatus: () => ipcRenderer.invoke('ai:status'),
 
     /**
+     * Ensure local AI runtime is started and ready. Only starts Ollama if needed.
+     */
+    ensureReady: () => ipcRenderer.invoke('ai:ensure-ready'),
+
+    /**
      * Start local AI setup. Progress arrives through `onStatus`.
      * @returns {Promise<{ success: boolean, started: boolean, status: object }>}
      */
@@ -185,7 +190,25 @@ contextBridge.exposeInMainWorld('excel', {
      * @param {{ prompt: string, intent?: string, workbookName?: string, workbookPath?: string, moduleName?: string, sheetName?: string, currentCode?: string, includeCurrentCode?: boolean }} args
      * @returns {Promise<{ success: boolean, code?: string, content?: string, intent?: string, model?: string, usage?: { promptTokens?: number, completionTokens?: number, totalTokens?: number }, reason?: string, message?: string }>}
      */
-    generateVba: (args) => ipcRenderer.invoke('ai:generate-vba', args)
+    generateVba: (args) => ipcRenderer.invoke('ai:generate-vba', args),
+
+    /**
+     * Subscribe to streaming tokens during VBA generation.
+     * @param {(token: string) => void} callback
+     * @returns {() => void} Unsubscribe function
+     */
+    onGenerateToken: (callback) => {
+      if (typeof callback !== 'function') {
+        return () => {};
+      }
+      const listener = (_event, token) => {
+        callback(token);
+      };
+      ipcRenderer.on('ai:generate-token', listener);
+      return () => {
+        ipcRenderer.removeListener('ai:generate-token', listener);
+      };
+    }
   },
 
   // ==========================================================================

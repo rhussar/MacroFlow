@@ -10,6 +10,7 @@ import {
   SlidersIcon,
   SparkleIcon
 } from './icons';
+import { saveSessions } from '../features/build/sessionStore';
 import { getMacroStats, formatTimeSaved } from '../features/run/macroStats';
 /* global __APP_VERSION__ */
 
@@ -40,6 +41,16 @@ const NAV_GROUPS = [
 ];
 
 function GeneralContent({ theme, toggleTheme }) {
+  const [chatCleared, setChatCleared] = useState(false);
+
+  const handleClearChats = () => {
+    const confirmed = window.confirm('Clear all chat history? This cannot be undone.');
+    if (!confirmed) return;
+    saveSessions([]);
+    setChatCleared(true);
+    setTimeout(() => setChatCleared(false), 3000);
+  };
+
   return (
     <div className="settings-section">
       <div className="settings-item">
@@ -53,6 +64,17 @@ function GeneralContent({ theme, toggleTheme }) {
           ) : (
             <><MoonIcon size={14} /> Dark</>
           )}
+        </button>
+      </div>
+      <div className="settings-item">
+        <div className="settings-item-info">
+          <div className="settings-item-title">Chat History</div>
+          <div className="settings-item-desc">
+            {chatCleared ? 'Chat history cleared.' : 'Clear all saved chat sessions'}
+          </div>
+        </div>
+        <button className="settings-action-btn danger" onClick={handleClearChats} disabled={chatCleared}>
+          {chatCleared ? 'Cleared' : 'Clear All'}
         </button>
       </div>
     </div>

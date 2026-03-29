@@ -383,6 +383,7 @@ export function useShortcutState({
 
   const handleShortcutDraftChange = useCallback((macroId, value) => {
     const normalizedLetter = normalizeShortcutLetterDraft(value);
+    shortcutDraftByMacroIdRef.current = { ...shortcutDraftByMacroIdRef.current, [macroId]: normalizedLetter };
     setShortcutDraftByMacroId((previous) => ({
       ...previous,
       [macroId]: normalizedLetter
@@ -475,7 +476,6 @@ export function useShortcutState({
       shortcutSaveInFlightRef.current = true;
     }
     setShortcutSavingMacroId(macro.id);
-    setActionStatus?.('running', 'Saving shortcut...');
 
     try {
       const excelShortcutKey = toExcelShortcutKeyFromLetter(normalizedShortcut);
@@ -512,7 +512,6 @@ export function useShortcutState({
           delete next[macro.id];
           return next;
         });
-        setActionStatus?.('success', 'Shortcut assigned.');
         invalidateSearchBuckets([
           {
             bucket: SEARCH_INVALIDATION_BUCKETS.SHORTCUT_AUDIT,

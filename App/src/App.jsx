@@ -262,6 +262,7 @@ function AppInner() {
   const selectedWorkbookForBuildRef = useRef(selectedWorkbookForBuild);
   const searchWorkbookRef = useRef(searchData?.workbook || null);
   const openBuildModeRef = useRef(() => {});
+  const buildAttemptExitRef = useRef(null);
   modeRef.current = mode;
   settingsOpenRef.current = settingsOpen;
   selectedWorkbookForBuildRef.current = selectedWorkbookForBuild;
@@ -367,11 +368,19 @@ function AppInner() {
   }, []);
 
   // Stable callback references for child components
-  const handleClose = useCallback(() => {
+  const doClose = useCallback(() => {
     if (window.excel?.app?.close) {
       window.excel.app.close();
     }
   }, []);
+
+  const handleClose = useCallback(() => {
+    if (modeRef.current === 'create' && buildAttemptExitRef.current) {
+      void buildAttemptExitRef.current('close');
+      return;
+    }
+    doClose();
+  }, [doClose]);
 
   const handleMinimize = useCallback(() => {
     if (window.excel?.app?.minimize) {
@@ -389,8 +398,28 @@ function AppInner() {
     openBuildMode(workbook, { mode: 'new_module', source: 'toolbar', originMode: 'shortcuts' });
   }, [openBuildMode]);
 
+  const handleEditMacro = useCallback((macro) => {
+    const workbook = macro.workbookPath || macro.workbookName
+      ? { name: macro.workbookName, path: macro.workbookPath }
+      : null;
+    openBuildMode(workbook, {
+      mode: 'existing_module',
+      moduleName: macro.module || '',
+      source: 'context-menu',
+      originMode: 'shortcuts'
+    });
+  }, [openBuildMode]);
+
+  const pendingExitModeRef = useRef(null);
+
   const handleCreateBack = useCallback(() => {
     startTransition(() => {
+      const target = pendingExitModeRef.current;
+      pendingExitModeRef.current = null;
+      if (target) {
+        setMode(target);
+        return;
+      }
       if (buildLaunchContext.originMode === 'files') {
         setMode('files');
         return;
@@ -405,6 +434,9 @@ function AppInner() {
   const handleTabChange = useCallback((newMode) => {
     if (newMode === 'create') {
       openBuildMode(null, { mode: 'new_module', source: 'tab', originMode: 'shortcuts' });
+    } else if (modeRef.current === 'create' && buildAttemptExitRef.current) {
+      pendingExitModeRef.current = newMode;
+      void buildAttemptExitRef.current('back');
     } else {
       startTransition(() => {
         setMode(newMode);
@@ -428,6 +460,7 @@ function AppInner() {
           <ShortcutsPage
             onBuildModeClick={goToCreate}
             onRunMacro={handleRunMacro}
+            onEditMacro={handleEditMacro}
             searchData={searchData}
             selectedMacroId={selectedMacro?.id || null}
             shortcutByMacroId={shortcutByMacroId}
@@ -447,7 +480,8 @@ function AppInner() {
         return (
           <CreatePage
             onBack={handleCreateBack}
-            onClose={handleClose}
+            onClose={doClose}
+            attemptExitRef={buildAttemptExitRef}
             targetWorkbook={selectedWorkbookForBuild}
             launchMode={buildLaunchContext.mode}
             launchModuleName={buildLaunchContext.moduleName}

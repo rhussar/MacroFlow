@@ -1,5 +1,6 @@
 import { useState, useMemo, useCallback, useRef, useEffect } from 'react';
 import ImageMsoIcon, { getAllIconNames } from './ImageMsoIcon';
+import { CloseIcon } from './icons';
 import { ICON_CATEGORIES, POPULAR_ICONS } from '../features/icons/imagemso-categories';
 
 const GRID_COLS = 10;
@@ -106,7 +107,7 @@ export default function IconPicker({ onSelect, onClose, currentIcon }) {
         <div className="icon-picker-header">
           <h3 className="icon-picker-title">Choose an Icon</h3>
           <button type="button" className="icon-picker-close" onClick={onClose} title="Close">
-            &times;
+            <CloseIcon size={16} />
           </button>
         </div>
 

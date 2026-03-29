@@ -5,6 +5,14 @@ export function normalizeModuleName(value) {
   return String(value || '').trim();
 }
 
+export function displayMacroName(value) {
+  return String(value || '').replace(/_/g, ' ');
+}
+
+export function encodeMacroName(value) {
+  return String(value || '').replace(/ /g, '_');
+}
+
 export function isStandardModule(moduleItem) {
   return Number(moduleItem?.typeId) === STANDARD_MODULE_TYPE_ID;
 }

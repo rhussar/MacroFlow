@@ -25,7 +25,9 @@ import {
 } from '../lib/shortcut-keybind';
 import {
   isValidVbaModuleName,
-  shouldCommitModuleRename
+  shouldCommitModuleRename,
+  displayMacroName,
+  encodeMacroName
 } from '../features/search/module-actions';
 import { getSearchStatusView } from '../features/search/search-selectors';
 import {
@@ -159,6 +161,7 @@ function inferBuildPromptIntent(promptText) {
 const CreatePage = ({
   onBack,
   onClose,
+  attemptExitRef: parentAttemptExitRef,
   targetWorkbook,
   launchMode = 'new_module',
   launchModuleName = '',
@@ -201,9 +204,17 @@ const CreatePage = ({
   const [hasPendingChanges, setHasPendingChanges] = useState(false);
   const [moduleRenameDraft, setModuleRenameDraft] = useState('');
   const [showIconPicker, setShowIconPicker] = useState(false);
+  const [sessionContextMenu, setSessionContextMenu] = useState(null);
   const [iconVersion, setIconVersion] = useState(0);
   const [moduleRenameActive, setModuleRenameActive] = useState(false);
-  const { sessions, saveSession, restoreSession, removeSession } = useSessionHistory();
+
+  // Sync icon changes from other tabs (Shortcuts, Files)
+  useEffect(() => {
+    const handler = () => setIconVersion(v => v + 1);
+    window.addEventListener('macroflow-icon-change', handler);
+    return () => window.removeEventListener('macroflow-icon-change', handler);
+  }, []);
+  const { sessions, saveSession, updateSession, restoreSession, removeSession } = useSessionHistory();
 
   const normalizedWorkbook = useMemo(
     () => normalizeBuildWorkbook(targetWorkbook),
@@ -237,6 +248,7 @@ const CreatePage = ({
   const moduleRenameInputRef = useRef(null);
   const moduleRenameCommitInFlightRef = useRef(false);
   const messagesRef = useRef(messages);
+  const activeSessionIdRef = useRef(null);
   const moduleRenameRestoreValueRef = useRef('');
   buildStateRef.current = buildState;
   promptRef.current = prompt;
@@ -273,6 +285,18 @@ const CreatePage = ({
   const aiProgressPercent = typeof aiStatus?.progress === 'number'
     ? Math.max(0, Math.min(100, Math.round(aiStatus.progress * 100)))
     : null;
+
+  // Auto-start Ollama when Create page mounts and runtime is installed but not running.
+  useEffect(() => {
+    if (
+      aiStatus?.runtimeInstalled &&
+      !aiStatus?.serverReachable &&
+      !aiStatus?.setupInProgress &&
+      !aiStatus?.removeInProgress
+    ) {
+      window.excel?.ai?.ensureReady?.().catch(() => {});
+    }
+  }, [aiStatus?.runtimeInstalled, aiStatus?.serverReachable, aiStatus?.setupInProgress, aiStatus?.removeInProgress]);
 
   const setDirtyState = useCallback((value) => {
     const nextValue = Boolean(value);
@@ -373,19 +397,28 @@ const CreatePage = ({
 
   const finalizeExit = useCallback((intent) => {
     if (sessionContextRef.current && messagesRef.current.length > 0) {
-      saveSession({
+      const payload = {
         sessionContext: sessionContextRef.current,
         messages: messagesRef.current,
         editedCode: editedCodeRef.current
-      });
+      };
+      if (activeSessionIdRef.current && updateSession(activeSessionIdRef.current, payload)) {
+        // updated in place
+      } else {
+        activeSessionIdRef.current = saveSession(payload);
+      }
     }
+    // Clear refs so no other code path can re-save the same session
+    activeSessionIdRef.current = null;
+    sessionContextRef.current = null;
+    messagesRef.current = [];
     const normalizedIntent = normalizeExitIntent(intent);
     if (normalizedIntent === 'close') {
       onClose?.();
       return;
     }
     onBack?.();
-  }, [onBack, onClose, saveSession]);
+  }, [onBack, onClose, saveSession, updateSession]);
 
   const persistUnsyncedChanges = useCallback(async () => {
     const setModuleCodeByWorkbookApi = window.excel?.vba?.setModuleCodeByWorkbook;
@@ -435,6 +468,43 @@ const CreatePage = ({
     });
   }, [invalidateWorkbookMutation, setDirtyState]);
 
+  const pendingInternalActionHandlerRef = useRef(null);
+
+  const runPendingInternalAction = useCallback(() => {
+    const pending = pendingInternalActionRef.current;
+    pendingInternalActionRef.current = null;
+    if (!pending) return false;
+    const handler = pendingInternalActionHandlerRef.current;
+    if (handler) {
+      handler(pending);
+    }
+    return true;
+  }, []);
+
+  const confirmAndSaveExit = useCallback(async (intent) => {
+    const normalizedIntent = normalizeExitIntent(intent);
+    exitInFlightRef.current = true;
+    setIsBusy(true);
+
+    try {
+      await persistUnsyncedChanges();
+      setExitDialog(null);
+      if (!runPendingInternalAction()) {
+        finalizeExit(normalizedIntent);
+      }
+    } catch (error) {
+      const message = String(error?.message || 'Unable to save changes before exit.');
+      setExitDialog({
+        intent: normalizedIntent,
+        message,
+        type: 'error'
+      });
+    } finally {
+      exitInFlightRef.current = false;
+      setIsBusy(false);
+    }
+  }, [finalizeExit, persistUnsyncedChanges, runPendingInternalAction]);
+
   const attemptExit = useCallback(async (intent = 'back') => {
     if (exitInFlightRef.current) {
       return;
@@ -451,26 +521,21 @@ const CreatePage = ({
       return;
     }
 
-    exitInFlightRef.current = true;
-    setIsBusy(true);
-
-    try {
-      await persistUnsyncedChanges();
-      setExitDialog(null);
-      finalizeExit(normalizedIntent);
-    } catch (error) {
-      const message = String(error?.message || 'Unable to save changes before exit.');
-      setExitDialog({
-        intent: normalizedIntent,
-        message
-      });
-    } finally {
-      exitInFlightRef.current = false;
-      setIsBusy(false);
-    }
-  }, [finalizeExit, persistUnsyncedChanges]);
+    setExitDialog({ intent: normalizedIntent, type: 'confirm' });
+  }, [finalizeExit]);
 
   attemptExitRef.current = attemptExit;
+  if (parentAttemptExitRef) {
+    parentAttemptExitRef.current = attemptExit;
+  }
+
+  useEffect(() => {
+    return () => {
+      if (parentAttemptExitRef) {
+        parentAttemptExitRef.current = null;
+      }
+    };
+  }, [parentAttemptExitRef]);
 
   useEffect(() => {
     const setSelectedWorkbookApi = window.excel?.security?.setSelectedWorkbook;
@@ -946,6 +1011,29 @@ const CreatePage = ({
     try {
       const session = sessionContextRef.current;
       const intent = inferBuildPromptIntent(submittedPrompt);
+      const isCodeIntent = intent === 'create' || intent === 'edit';
+
+      // For ask intent: stream tokens into a chat bubble
+      // For code intents: no streaming — loading dots show activity, code goes straight to editor when done
+      let placeholderId = null;
+      let unsubTokens = () => {};
+
+      if (!isCodeIntent) {
+        placeholderId = `stream_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+        setMessages((prev) => [...prev, { role: 'assistant', kind: 'text', content: '', _id: placeholderId, streaming: true, timestamp: Date.now() }]);
+        unsubTokens = window.excel?.ai?.onGenerateToken?.((token) => {
+          setMessages((prev) => {
+            const last = prev[prev.length - 1];
+            if (last?._id === placeholderId && last?.streaming) {
+              const updated = [...prev];
+              updated[updated.length - 1] = { ...last, content: last.content + token };
+              return updated;
+            }
+            return prev;
+          });
+        }) || (() => {});
+      }
+
       const request = {
         prompt: submittedPrompt,
         intent,
@@ -957,16 +1045,22 @@ const CreatePage = ({
       };
 
       const result = await generateVbaApi(request);
+      unsubTokens();
 
       if (!result?.success) {
+        if (placeholderId) setMessages((prev) => prev.filter((m) => m._id !== placeholderId));
         throw new Error(mapAiGenerationMessage(result));
       }
 
-      if (intent === 'ask') {
-        setMessages((prev) => [...prev, buildAssistantMessageFromResult(result, 'Response received.')]);
+      if (!isCodeIntent) {
+        // Ask intent: finalize the streamed chat message
+        setMessages((prev) => prev.map((m) =>
+          m._id === placeholderId ? { ...buildAssistantMessageFromResult(result, 'Response received.'), _id: placeholderId } : m
+        ));
         return;
       }
 
+      // Code intent: put clean extracted code into the editor
       const generatedCode = String(result?.code || '').trim();
       if (!generatedCode) {
         throw new Error('Local AI returned empty VBA output.');
@@ -974,7 +1068,7 @@ const CreatePage = ({
 
       setEditedCode(generatedCode);
       setSavedMacroName(extractPrimaryMacroName(generatedCode));
-      setMessages((prev) => [...prev, buildAssistantMessageFromResult(result, 'Code updated.')]);
+      setMessages((prev) => [...prev, { role: 'assistant', kind: 'text', content: 'Done — code updated in the editor.', timestamp: Date.now() }]);
       markLocalDirty();
     } catch (error) {
       const message = mapAiGenerationMessage(null, String(error?.message || 'Unable to generate VBA.'));
@@ -1021,6 +1115,7 @@ const CreatePage = ({
     setPrompt('');
     setBuildState('initializing');
     setIsBusy(true);
+    openSidebar();
     isBusyRef.current = true;
     setErrorInfo(null);
     setRunOutcome('idle');
@@ -1126,29 +1221,33 @@ const CreatePage = ({
       setSessionContext(nextSession);
       openSidebar();
 
-      // Phase 4: Generate VBA
-      const result = await generateVbaApi({
-        prompt: submittedPrompt,
-        intent: 'create',
-        workbookName: createdWorkbook.name,
-        workbookPath: createdWorkbook.path,
-        moduleName: createdModuleName,
-        includeCurrentCode: false
-      });
+      // Phase 4: Generate VBA (loading dots show activity, code goes to editor when done)
 
-      if (!result?.success) {
-        throw new Error(mapAiGenerationMessage(result));
-      }
-      const generatedCode = String(result?.code || '').trim();
-      if (!generatedCode) {
-        throw new Error('Local AI returned empty VBA output.');
-      }
+      try {
+        const result = await generateVbaApi({
+          prompt: submittedPrompt,
+          intent: 'create',
+          workbookName: createdWorkbook.name,
+          workbookPath: createdWorkbook.path,
+          moduleName: createdModuleName,
+          includeCurrentCode: false
+        });
+        if (!result?.success) {
+          throw new Error(mapAiGenerationMessage(result));
+        }
+        const generatedCode = String(result?.code || '').trim();
+        if (!generatedCode) {
+          throw new Error('Local AI returned empty VBA output.');
+        }
 
-      setEditedCode(generatedCode);
-      setSavedMacroName(extractPrimaryMacroName(generatedCode));
-      setMessages((prev) => [...prev, buildAssistantMessageFromResult(result, 'Macro generated.')]);
-      setBuildState('ready');
-      markLocalDirty();
+        setEditedCode(generatedCode);
+        setSavedMacroName(extractPrimaryMacroName(generatedCode));
+        setMessages((prev) => [...prev, { role: 'assistant', kind: 'text', content: 'Done — macro generated in the editor.', timestamp: Date.now() }]);
+        setBuildState('ready');
+        markLocalDirty();
+      } catch (streamError) {
+        throw streamError;
+      }
     } catch (error) {
       const message = String(error?.message || 'Unable to generate VBA.');
       setMessages((prev) => [...prev, { role: 'assistant', kind: 'text', content: `Error: ${message}`, timestamp: Date.now() }]);
@@ -1171,10 +1270,11 @@ const CreatePage = ({
     }
   }, [handleSubmit, handleFirstSubmit, openSidebar]);
 
-  const handleRestoreSession = useCallback((id) => {
+  const doRestoreSession = useCallback((id) => {
     const saved = restoreSession(id);
     if (!saved) return;
 
+    activeSessionIdRef.current = id;
     setSessionContext(saved.sessionContext);
     sessionContextRef.current = saved.sessionContext;
     setMessages(saved.messages);
@@ -1192,17 +1292,33 @@ const CreatePage = ({
     setDraftShortcutLetter('');
     setShortcutInputError(false);
     setShortcutSaving(false);
-    removeSession(id);
-  }, [restoreSession, removeSession, setDirtyState]);
+  }, [restoreSession, setDirtyState]);
 
-  const handleBackToHistory = useCallback(() => {
+  const pendingInternalActionRef = useRef(null);
+
+  const handleRestoreSession = useCallback((id) => {
+    if (dirtyLocalRef.current && sessionContextRef.current) {
+      pendingInternalActionRef.current = { type: 'restore', id };
+      setExitDialog({ intent: 'back', type: 'confirm' });
+      return;
+    }
+    doRestoreSession(id);
+  }, [doRestoreSession]);
+
+  const doBackToHistory = useCallback(() => {
     if (sessionContextRef.current && messagesRef.current.length > 0) {
-      saveSession({
+      const payload = {
         sessionContext: sessionContextRef.current,
         messages: messagesRef.current,
         editedCode: editedCodeRef.current
-      });
+      };
+      if (activeSessionIdRef.current && updateSession(activeSessionIdRef.current, payload)) {
+        // updated in place
+      } else {
+        activeSessionIdRef.current = saveSession(payload);
+      }
     }
+    activeSessionIdRef.current = null;
     setSessionContext(null);
     sessionContextRef.current = null;
     setMessages([]);
@@ -1220,7 +1336,24 @@ const CreatePage = ({
     setShortcutInputError(false);
     setShortcutSaving(false);
     setLocation(buildLocation(normalizedWorkbook?.name, DEFAULT_MODULE_LABEL));
-  }, [saveSession, setDirtyState, normalizedWorkbook?.name]);
+  }, [saveSession, updateSession, setDirtyState, normalizedWorkbook?.name]);
+
+  pendingInternalActionHandlerRef.current = (pending) => {
+    if (pending.type === 'restore') {
+      doRestoreSession(pending.id);
+    } else if (pending.type === 'history') {
+      doBackToHistory();
+    }
+  };
+
+  const handleBackToHistory = useCallback(() => {
+    if (dirtyLocalRef.current && sessionContextRef.current) {
+      pendingInternalActionRef.current = { type: 'history' };
+      setExitDialog({ intent: 'back', type: 'confirm' });
+      return;
+    }
+    doBackToHistory();
+  }, [doBackToHistory]);
 
   const cancelModuleRename = useCallback(() => {
     const restoreName = String(
@@ -1252,11 +1385,11 @@ const CreatePage = ({
     }
 
     const currentModuleName = String(session.moduleName || '').trim();
-    const nextModuleName = String(
+    const nextModuleName = encodeMacroName(String(
       nextModuleNameOverride ??
       moduleRenameInputRef.current?.textContent ??
       moduleRenameDraft
-    ).trim();
+    ).trim());
 
     if (!shouldCommitModuleRename({ currentName: currentModuleName, nextName: nextModuleName })) {
       setModuleRenameDraft(currentModuleName);
@@ -1400,13 +1533,16 @@ const CreatePage = ({
   );
   const shortcutPrefix = formatShortcutPrefix(draftShortcutLetter);
 
-  // Build macro ID for icon lookup (same format as excel-bridge: module::name::kind::scope)
+  // Build macro ID for icon lookup — the store normalizes keys so kind/scope suffix doesn't matter
   const currentMacroId = useMemo(() => {
     const mod = sessionContext?.moduleName;
     const name = sessionMacroName;
     if (!mod || !name) return null;
-    return `${mod}::${name}::Sub::Public`;
-  }, [sessionContext?.moduleName, sessionMacroName]);
+    const workbookKey = String(sessionContext?.workbook?.path || sessionContext?.workbook?.name || '').trim();
+    return workbookKey
+      ? `${workbookKey}::macro::${mod}::${name}`
+      : `${mod}::${name}`;
+  }, [sessionContext?.moduleName, sessionMacroName, sessionContext?.workbook?.path, sessionContext?.workbook?.name]);
 
   const currentMacroIcon = currentMacroId ? getMacroIcon(currentMacroId) : null;
 
@@ -1636,13 +1772,13 @@ const CreatePage = ({
           if (!isBusy) {
             const currentName = String(location.module || '').trim();
             moduleRenameRestoreValueRef.current = currentName;
-            setModuleRenameDraft(currentName);
+            setModuleRenameDraft(displayMacroName(currentName));
             setModuleRenameActive(true);
           }
         }}
         disabled={isBusy}
       >
-        {location.module}
+        {displayMacroName(location.module)}
       </button>
     );
   };
@@ -1759,33 +1895,9 @@ const CreatePage = ({
               <polyline points="15,18 9,12 15,6" />
             </svg>
           </button>
-          <span className="build-chat-module-name">{location.module}</span>
-          {currentMacroId && (
-            <button
-              type="button"
-              className="build-chat-icon-btn"
-              title={currentMacroIcon ? `Icon: ${currentMacroIcon} (click to change)` : 'Assign icon'}
-              onClick={() => setShowIconPicker(true)}
-            >
-              {isSpriteReady() ? (
-                <ImageMsoIcon name={currentMacroIcon || 'MacroRecord'} size={18} />
-              ) : (
-                <ReturnIcon size={16} />
-              )}
-            </button>
-          )}
+          <span className="build-chat-module-name">{displayMacroName(sessionMacroName || location.module)}</span>
         </div>
       </div>
-      {showIconPicker && currentMacroId && (
-        <IconPicker
-          currentIcon={currentMacroIcon}
-          onSelect={(iconName) => {
-            setMacroIcon(currentMacroId, iconName);
-            setIconVersion(v => v + 1);
-          }}
-          onClose={() => setShowIconPicker(false)}
-        />
-      )}
       {conversationPanel}
       <div className="build-prompt-input-wrap">
         <div className="build-prompt-input-box">
@@ -1827,20 +1939,34 @@ const CreatePage = ({
       </div>
       <div className="build-session-history-list">
         {sessions.length > 0 ? (
-          sessions.slice().reverse().map((s) => (
-            <button
-              key={s.id}
-              className="build-session-history-item"
-              onClick={() => handleRestoreSession(s.id)}
-            >
-              <span className="build-session-history-module">{s.sessionContext.moduleName}</span>
-              <span className="build-session-history-preview">
-                {(s.messages.find((m) => m.role === 'user')?.content || 'No prompt').slice(0, 60)}
-              </span>
-              <span className="build-session-history-time">
-                {new Date(s.savedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-              </span>
-            </button>
+          sessions
+            .filter((s) => !normalizedWorkbook?.key || s.sessionContext?.workbook?.key === normalizedWorkbook.key)
+            .slice().reverse().map((s) => (
+            <div key={s.id} style={{ position: 'relative' }}>
+              <button
+                className="build-session-history-item"
+                onClick={() => { setSessionContextMenu(null); handleRestoreSession(s.id); }}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  setSessionContextMenu((prev) => prev === s.id ? null : s.id);
+                }}
+              >
+                <span className="build-session-history-module">{displayMacroName(extractPrimaryMacroName(s.editedCode) || s.sessionContext.moduleName)}</span>
+                <span className="build-session-history-time">
+                  {new Date(s.savedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                </span>
+              </button>
+              {sessionContextMenu === s.id && (
+                <button
+                  className="session-context-menu-delete"
+                  onClick={() => { setSessionContextMenu(null); removeSession(s.id); }}
+                  onBlur={() => setSessionContextMenu(null)}
+                  autoFocus
+                >
+                  Delete
+                </button>
+              )}
+            </div>
           ))
         ) : (
           <div className="build-session-history-empty">No previous sessions</div>
@@ -1898,12 +2024,6 @@ const CreatePage = ({
               </button>
             </div>
           </div>
-        {isBusy && (
-          <div className="build-generating-indicator">
-            <span className="status-spinner" />
-            <span>Generating macro...</span>
-          </div>
-        )}
       </div>
     ) : (
       <div className="build-empty-state">
@@ -1920,23 +2040,49 @@ const CreatePage = ({
   ) : (
     <div className="build-code-fullwidth">
       <div className="build-code-bar">
-        <button
-          type="button"
-          className="build-run-action"
-          onClick={() => {
-            if (!isBusy) {
-              if (hasPendingChanges) {
-                void handleSave();
-                return;
+        {currentMacroId && (
+          <button
+            type="button"
+            className="build-chat-icon-btn"
+            title={currentMacroIcon ? `Icon: ${currentMacroIcon} (click to change)` : 'Assign icon'}
+            onClick={() => setShowIconPicker(true)}
+          >
+            {isSpriteReady() ? (
+              <ImageMsoIcon name={currentMacroIcon || 'MacroRecord'} size={22} />
+            ) : (
+              <ReturnIcon size={22} />
+            )}
+          </button>
+        )}
+        {buildState !== 'initializing' && (
+          <button
+            type="button"
+            className="build-run-action"
+            onClick={() => {
+              if (!isBusy) {
+                if (hasPendingChanges) {
+                  void handleSave();
+                  return;
+                }
+                void handleRunMacro();
               }
-              void handleRunMacro();
-            }
-          }}
-          disabled={isBusy}
-        >
-          {primaryActionLabel}
-        </button>
+            }}
+            disabled={isBusy}
+          >
+            {primaryActionLabel}
+          </button>
+        )}
       </div>
+      {showIconPicker && currentMacroId && (
+        <IconPicker
+          currentIcon={currentMacroIcon}
+          onSelect={(iconName) => {
+            setMacroIcon(currentMacroId, iconName);
+            setIconVersion(v => v + 1);
+          }}
+          onClose={() => setShowIconPicker(false)}
+        />
+      )}
       <CodePreview
         code={currentCode}
         showHeader={false}
@@ -1969,21 +2115,57 @@ const CreatePage = ({
         {aiGateOverlay}
       </main>
 
-      {exitDialog && (
+      {exitDialog && exitDialog.type === 'confirm' && (
+        <div className="build-exit-overlay" role="dialog" aria-modal="true" aria-label="Unsaved changes">
+          <div className="build-exit-dialog">
+            <div className="build-exit-title">Unsaved changes</div>
+            <div className="build-exit-message">Do you want to save your changes before leaving?</div>
+            <div className="build-exit-actions">
+              <button
+                type="button"
+                className="build-exit-btn primary"
+                onClick={() => void confirmAndSaveExit(exitDialog.intent)}
+              >
+                Save
+              </button>
+              <button
+                type="button"
+                className="build-exit-btn danger"
+                onClick={() => {
+                  setDirtyState(false);
+                  setExitDialog(null);
+                  if (!runPendingInternalAction()) {
+                    finalizeExit(exitDialog.intent);
+                  }
+                }}
+              >
+                Discard
+              </button>
+              <button
+                type="button"
+                className="build-exit-btn"
+                onClick={() => {
+                  pendingInternalActionRef.current = null;
+                  setExitDialog(null);
+                }}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {exitDialog && exitDialog.type === 'error' && (
         <div className="build-exit-overlay" role="dialog" aria-modal="true" aria-label="Exit build mode save conflict">
           <div className="build-exit-dialog">
-            <div className="build-exit-title">Unable to save before exit</div>
+            <div className="build-exit-title">Unable to save</div>
             <div className="build-exit-message">{exitDialog.message}</div>
             <div className="build-exit-actions">
               <button
                 type="button"
                 className="build-exit-btn primary"
-                onClick={() => {
-                  const action = resolveBuildExitAction('retry');
-                  if (action === 'retry') {
-                    void attemptExitRef.current(exitDialog.intent);
-                  }
-                }}
+                onClick={() => void confirmAndSaveExit(exitDialog.intent)}
               >
                 Retry
               </button>
@@ -1991,10 +2173,9 @@ const CreatePage = ({
                 type="button"
                 className="build-exit-btn danger"
                 onClick={() => {
-                  const action = resolveBuildExitAction('exit_without_save');
-                  if (action === 'exit_without_save') {
-                    setDirtyState(false);
-                    setExitDialog(null);
+                  setDirtyState(false);
+                  setExitDialog(null);
+                  if (!runPendingInternalAction()) {
                     finalizeExit(exitDialog.intent);
                   }
                 }}
@@ -2005,10 +2186,8 @@ const CreatePage = ({
                 type="button"
                 className="build-exit-btn"
                 onClick={() => {
-                  const action = resolveBuildExitAction('cancel');
-                  if (action === 'cancel') {
-                    setExitDialog(null);
-                  }
+                  pendingInternalActionRef.current = null;
+                  setExitDialog(null);
                 }}
               >
                 Cancel

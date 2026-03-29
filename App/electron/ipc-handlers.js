@@ -15,7 +15,7 @@
 
 const { ipcMain, app, BrowserWindow, shell } = require('electron');
 const excel = require('./excel-bridge');
-const { generateVba } = require('./llm-client');
+const { generateVba, generateVbaStream } = require('./llm-client');
 const localAiManager = require('./local-ai-manager');
 const {
   loadSecurityPolicy,
@@ -1477,6 +1477,20 @@ function registerHandlers() {
   });
 
   /**
+   * Ensure the local AI runtime is started and ready.
+   * Channel: 'ai:ensure-ready'
+   */
+  ipcMain.handle('ai:ensure-ready', async () => {
+    logIpc('ai:ensure-ready', 'start');
+    const result = await localAiManager.ensureReady();
+    logIpc('ai:ensure-ready', 'end', {
+      ready: result.ready,
+      stage: result.stage
+    });
+    return result;
+  });
+
+  /**
    * Start local AI setup.
    * Channel: 'ai:setup'
    */
@@ -1511,7 +1525,7 @@ function registerHandlers() {
    * Channel: 'ai:generate-vba'
    * Args: { prompt: string, intent?: string, workbookName?: string, workbookPath?: string, moduleName?: string, sheetName?: string, currentCode?: string, includeCurrentCode?: boolean }
    */
-  ipcMain.handle('ai:generate-vba', async (_, {
+  ipcMain.handle('ai:generate-vba', async (event, {
     prompt = '',
     intent = '',
     workbookName = '',
@@ -1533,7 +1547,9 @@ function registerHandlers() {
       currentCodeChars: shouldIncludeCurrentCode ? String(currentCode || '').length : 0
     });
 
-    const result = await Promise.resolve(generateVba({
+    const normalizedIntent = String(intent || '').trim().toLowerCase();
+    const useStreaming = normalizedIntent === 'ask';
+    const params = {
       prompt,
       intent,
       workbookName,
@@ -1542,7 +1558,15 @@ function registerHandlers() {
       sheetName,
       currentCode: shouldIncludeCurrentCode ? currentCode : '',
       includeCurrentCode: shouldIncludeCurrentCode
-    }));
+    };
+
+    const result = useStreaming
+      ? await generateVbaStream(params, {}, (token) => {
+          if (event.sender && !event.sender.isDestroyed()) {
+            event.sender.send('ai:generate-token', token);
+          }
+        })
+      : await generateVba(params);
 
     logIpc('ai:generate-vba', 'end', {
       success: result.success,

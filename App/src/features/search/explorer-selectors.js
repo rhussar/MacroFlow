@@ -107,7 +107,23 @@ export function buildExplorerTree(searchDataOrOptions, personalStateArg) {
 
   const workbookMap = new Map();
   const orderedWorkbookKeys = [];
+  let personalRegistered = false;
   const registerWorkbook = (workbook) => {
+    // Prevent duplicate PERSONAL.XLSB entries when the placeholder was
+    // registered with name-only key but the real workbook has a path key.
+    if (personalRegistered && toSafeString(workbook?.name).toUpperCase() === PERSONAL_WORKBOOK_NAME) {
+      // Update the existing placeholder with the real path if we now have it
+      const realPath = toSafeString(workbook?.path);
+      if (realPath) {
+        for (const [key, wb] of workbookMap) {
+          if (toSafeString(wb.name).toUpperCase() === PERSONAL_WORKBOOK_NAME && !wb.path) {
+            wb.path = realPath;
+          }
+        }
+      }
+      return;
+    }
+
     const workbookKey = toWorkbookKey(workbook);
     if (!workbookKey || workbookMap.has(workbookKey)) {
       return;
@@ -121,19 +137,19 @@ export function buildExplorerTree(searchDataOrOptions, personalStateArg) {
     orderedWorkbookKeys.push(workbookKey);
   };
 
-  // Register PERSONAL.XLSB first so it always appears at the top
+  // Register PERSONAL.XLSB first so it always appears at the top.
+  // Show a placeholder immediately (even while loading) so the tree
+  // doesn't shift when personal data arrives later.
   const personalStatus = toSafeString(personalState?.status);
-  const personalWorkbookKnown =
-    personalState?.workbookFound ||
-    (Array.isArray(personalState?.macros) && personalState.macros.length > 0);
-  if (
-    (personalStatus === 'ready' || personalStatus === 'loading') &&
-    personalWorkbookKnown
-  ) {
+  const personalConfirmedMissing =
+    personalStatus === 'ready' && !personalState?.workbookFound &&
+    !(Array.isArray(personalState?.macros) && personalState.macros.length > 0);
+  if (personalState && !personalConfirmedMissing) {
     registerWorkbook({
       name: PERSONAL_WORKBOOK_NAME,
       path: toSafeString(personalState?.workbook?.path || personalState?.workbookPath)
     });
+    personalRegistered = true;
   }
 
   registerWorkbook(activeWorkbook);

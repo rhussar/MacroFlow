@@ -64,6 +64,7 @@ function buildPersonalVisibilityControl(personalState, actionInFlight) {
 const ShortcutsPage = ({
   onBuildModeClick,
   onRunMacro,
+  onEditMacro,
   searchData = defaultSearchData,
   selectedMacroId = null,
   shortcutByMacroId = {},
@@ -270,7 +271,7 @@ const ShortcutsPage = ({
     }
 
     const runAction = action === 'create_file'
-      ? personalApi.create
+      ? () => personalApi.create({ visible: true })
       : personalApi.open;
     if (typeof runAction !== 'function') {
       onActionStatus?.('error', 'Action unavailable.');
@@ -564,6 +565,7 @@ const ShortcutsPage = ({
             shortcutState={personalShortcutState}
             selectedMacroId={selectedMacroId}
             onRunMacro={onRunMacro}
+            onEditMacro={onEditMacro}
           />
 
           <section className="search-ready-section">
@@ -573,7 +575,7 @@ const ShortcutsPage = ({
               selectedWorkbookLabel={selectedWorkbookLabel}
               pickerStatus={workbookPickerState.pickerStatus}
               pickerError={workbookPickerState.pickerError}
-              workbooks={workbookPickerState.workbooks}
+              workbooks={workbookPickerState.workbooks.filter(wb => String(wb.name || '').trim().toUpperCase() !== PERSONAL_WORKBOOK_NAME)}
               selectedWorkbookKey={workbookPickerState.selectedWorkbookKey}
               onToggle={toggleWorkbookMenu}
               onSelectWorkbook={handleWorkbookSelection}
@@ -584,6 +586,7 @@ const ShortcutsPage = ({
               shortcutState={effectiveShortcutState}
               selectedMacroId={usingActiveWorkbookShortcuts ? selectedMacroId : null}
               onRunMacro={onRunMacro}
+              onEditMacro={onEditMacro}
               emptyMessage={macrosEmptyMessage}
               showEmptyState={workbookDataHasError || activeMacroRows.length === 0}
               isLoading={workbookDataIsLoading && activeMacroRows.length === 0}

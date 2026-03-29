@@ -1,16 +1,18 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import { ReturnIcon } from '../../components/icons';
 import { formatShortcutPrefix } from '../../lib/shortcut-keybind';
 import ImageMsoIcon, { isSpriteReady } from '../../components/ImageMsoIcon';
 import MacroContextMenu from '../../components/MacroContextMenu';
 import IconPicker from '../../components/IconPicker';
 import { getMacroIcon, setMacroIcon, removeMacroIcon } from '../../features/icons/macroIconStore';
+import { displayMacroName } from '../../features/search/module-actions';
 
 function ShortcutGrid({
   rows = [],
   shortcutState,
   selectedMacroId = null,
   onRunMacro,
+  onEditMacro,
   emptyMessage = '',
   showEmptyState = false,
   isLoading = false
@@ -29,13 +31,19 @@ function ShortcutGrid({
   const [contextMenu, setContextMenu] = useState(null);
   // Icon picker state
   const [pickerMacroId, setPickerMacroId] = useState(null);
-  // Force re-render after icon changes
+  // Force re-render after icon changes (local or from other components)
   const [iconVersion, setIconVersion] = useState(0);
 
-  const handleContextMenu = useCallback((e, macroId) => {
+  useEffect(() => {
+    const handler = () => setIconVersion(v => v + 1);
+    window.addEventListener('macroflow-icon-change', handler);
+    return () => window.removeEventListener('macroflow-icon-change', handler);
+  }, []);
+
+  const handleContextMenu = useCallback((e, macro) => {
     e.preventDefault();
     e.stopPropagation();
-    setContextMenu({ x: e.clientX, y: e.clientY, macroId });
+    setContextMenu({ x: e.clientX, y: e.clientY, macroId: macro.id, macro });
   }, []);
 
   const handleAssignIcon = useCallback(() => {
@@ -50,6 +58,12 @@ function ShortcutGrid({
       setIconVersion(v => v + 1);
     }
   }, [contextMenu]);
+
+  const handleEditMacro = useCallback(() => {
+    if (contextMenu?.macro && onEditMacro) {
+      onEditMacro(contextMenu.macro);
+    }
+  }, [contextMenu, onEditMacro]);
 
   const handleIconSelect = useCallback((iconName) => {
     if (pickerMacroId) {
@@ -85,7 +99,7 @@ function ShortcutGrid({
           <div
             key={row.uiId}
             className={`shortcut-item ${selectedMacroId === macro.id ? 'selected' : ''} ${isSaving ? 'saving' : ''}`}
-            onContextMenu={(e) => handleContextMenu(e, macro.id)}
+            onContextMenu={(e) => handleContextMenu(e, macro)}
           >
             <div className="shortcut-run-target">
               <button
@@ -100,7 +114,7 @@ function ShortcutGrid({
                   <ReturnIcon size={20} />
                 )}
               </button>
-              <span className="shortcut-name">{macro.name}</span>
+              <span className="shortcut-name">{displayMacroName(macro.name)}</span>
             </div>
             <div className="shortcut-binding" onClick={(event) => event.stopPropagation()}>
               <span className="shortcut-prefix">Ctrl +</span>
@@ -116,8 +130,14 @@ function ShortcutGrid({
                 autoCapitalize="off"
                 autoComplete="off"
                 spellCheck={false}
-                aria-label={`Shortcut letter for ${macro.name}`}
-                onChange={(event) => handleShortcutDraftChange?.(macro.id, event.target.value)}
+                aria-label={`Shortcut letter for ${displayMacroName(macro.name)}`}
+                onChange={(event) => {
+                  const input = event.target;
+                  handleShortcutDraftChange?.(macro.id, input.value);
+                  if (input.value) {
+                    requestAnimationFrame(() => input.blur());
+                  }
+                }}
                 onFocus={selectShortcutInputValue}
                 onBlur={() => handleShortcutCommit?.(macro, 'blur')}
                 onKeyDown={(event) => {
@@ -149,6 +169,7 @@ function ShortcutGrid({
           hasIcon={Boolean(getMacroIcon(contextMenu.macroId))}
           onAssignIcon={handleAssignIcon}
           onRemoveIcon={handleRemoveIcon}
+          onEdit={onEditMacro ? handleEditMacro : undefined}
           onClose={() => setContextMenu(null)}
         />
       )}

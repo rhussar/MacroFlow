@@ -5,7 +5,7 @@ import './App.css';
 import ShortcutsPage from './pages/ShortcutsPage';
 import CreatePage from './pages/CreatePage';
 import FilesPage from './pages/FilesPage';
-import SettingsMenu from './components/SettingsMenu';
+import SettingsMenu, { getShowModules } from './components/SettingsMenu';
 import LicenseGate from './components/LicenseGate';
 import { SettingsIcon, SidebarIcon, MinimizeIcon, CloseIcon } from './components/icons';
 import { useSearchData } from './features/search/useSearchData';
@@ -47,6 +47,7 @@ function AppInner() {
   const [buildChatOpen, setBuildChatOpen] = useState(false);
   const [aiStatus, setAiStatus] = useState(null);
   const [filesSidebarOpen, setFilesSidebarOpen] = useState(true);
+  const [showModules, setShowModules] = useState(getShowModules);
   const loadSearchDataRef = useRef(null);
   const shortcutSaveInFlightRef = useRef(false);
   const startupSettledNotifiedRef = useRef(false);
@@ -394,8 +395,8 @@ function AppInner() {
     }
   }, []);
 
-  const goToCreate = useCallback((workbook = null) => {
-    openBuildMode(workbook, { mode: 'new_module', source: 'toolbar', originMode: 'shortcuts' });
+  const goToCreate = useCallback((workbook = null, options = {}) => {
+    openBuildMode(workbook, { mode: options.mode || 'new_module', source: options.source || 'toolbar', originMode: options.originMode || 'shortcuts' });
   }, [openBuildMode]);
 
   const handleEditMacro = useCallback((macro) => {
@@ -502,6 +503,8 @@ function AppInner() {
             onActionStatus={setActionStatus}
             sidebarOpen={filesSidebarOpen}
             onEditModule={openBuildMode}
+            onCreateModule={goToCreate}
+            showModules={showModules}
           />
         );
 
@@ -521,11 +524,11 @@ function AppInner() {
       <header className="header">
         <div className="drag-region" />
         <div className="header-left">
-          {((mode === 'create' && aiStatus?.ready) || mode === 'files') && (
+          {searchData?.status === 'ready' && ((mode === 'create' && aiStatus?.ready) || mode === 'files') && (
             <button
               className="sidebar-toggle-btn"
               onClick={mode === 'create' ? toggleBuildChat : toggleFilesSidebar}
-              title="Toggle sidebar"
+              title={mode === 'create' ? (buildChatOpen ? 'Close chat' : 'Open chat') : 'Toggle sidebar'}
             >
               <SidebarIcon size={19} />
             </button>
@@ -613,6 +616,7 @@ function AppInner() {
         isOpen={settingsOpen}
         onClose={closeSettings}
         onQuit={handleQuit}
+        onShowModulesChange={setShowModules}
       />
     </div>
   );

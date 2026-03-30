@@ -4,7 +4,7 @@ import { useEffect, useRef } from 'react';
  * Right-click context menu for macro rows.
  * Appears at cursor position and provides icon management options.
  */
-export default function MacroContextMenu({ x, y, hasIcon, onAssignIcon, onRemoveIcon, onEdit, onClose }) {
+export default function MacroContextMenu({ x, y, hasIcon, onAssignIcon, onRemoveIcon, onRename, onEdit, onClose }) {
   const menuRef = useRef(null);
 
   useEffect(() => {
@@ -44,7 +44,7 @@ export default function MacroContextMenu({ x, y, hasIcon, onAssignIcon, onRemove
           <circle cx="8.5" cy="8.5" r="1.5" />
           <polyline points="21,15 16,10 5,21" />
         </svg>
-        <span>Assign Icon...</span>
+        <span>Change Icon...</span>
       </button>
       {onEdit && (
         <button
@@ -58,7 +58,19 @@ export default function MacroContextMenu({ x, y, hasIcon, onAssignIcon, onRemove
           <span>Edit</span>
         </button>
       )}
-      {hasIcon && (
+      {onRename && (
+        <button
+          type="button"
+          className="macro-context-menu-item"
+          onClick={() => { onRename(); onClose(); }}
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M17 3a2.85 2.85 0 0 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z" />
+          </svg>
+          <span>Rename</span>
+        </button>
+      )}
+      {hasIcon && !onRename && (
         <button
           type="button"
           className="macro-context-menu-item macro-context-menu-item--danger"

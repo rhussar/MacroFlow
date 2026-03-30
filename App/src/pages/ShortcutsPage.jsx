@@ -245,6 +245,17 @@ const ShortcutsPage = ({
     }));
   }, [personalMacrosState.workbook?.path, personalMacrosState.workbookPath]);
 
+  const handleRenameComplete = useCallback((wb) => {
+    invalidateSearchBuckets(buildWorkbookInvalidationDescriptors({
+      workbook: wb || searchData?.workbook,
+      includeActiveWorkbook: true,
+      includeExplorerAllFiles: true,
+      includePersonalMacros: true,
+      includeShortcutAudit: true,
+      includeWorkbookScopedData: true
+    }));
+  }, [searchData?.workbook]);
+
   const handlePersonalAction = useCallback(async (action) => {
     if (!action || personalActionInFlight) {
       return;
@@ -566,6 +577,9 @@ const ShortcutsPage = ({
             selectedMacroId={selectedMacroId}
             onRunMacro={onRunMacro}
             onEditMacro={onEditMacro}
+            onActionStatus={onActionStatus}
+            onRenameComplete={handleRenameComplete}
+            workbook={personalMacrosState.workbook}
           />
 
           <section className="search-ready-section">
@@ -587,6 +601,9 @@ const ShortcutsPage = ({
               selectedMacroId={usingActiveWorkbookShortcuts ? selectedMacroId : null}
               onRunMacro={onRunMacro}
               onEditMacro={onEditMacro}
+              onActionStatus={onActionStatus}
+              onRenameComplete={handleRenameComplete}
+              workbook={displayedWorkbookData.workbook || selectedWorkbook}
               emptyMessage={macrosEmptyMessage}
               showEmptyState={workbookDataHasError || activeMacroRows.length === 0}
               isLoading={workbookDataIsLoading && activeMacroRows.length === 0}

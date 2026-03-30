@@ -95,6 +95,7 @@ export function buildExplorerTree(searchDataOrOptions, personalStateArg) {
   const personalState = options?.personalState;
   const openWorkbooks = Array.isArray(options?.workbooks) ? options.workbooks : [];
   const allFilesModules = Array.isArray(options?.allFilesModules) ? options.allFilesModules : [];
+  const showModules = options?.showModules !== false;
 
   if (!searchData || searchData.status !== 'ready' || !searchData.workbook) {
     return [];
@@ -189,6 +190,16 @@ export function buildExplorerTree(searchDataOrOptions, personalStateArg) {
         ? (Array.isArray(personalState?.macros) ? personalState.macros : [])
         : []);
 
+    const children = showModules
+      ? buildModuleNodes({ workbook, modules: workbookModules, macros: workbookMacros })
+      : (Array.isArray(workbookMacros) ? workbookMacros : []).map((macro) => ({
+          id: macro.id,
+          nodeType: 'macro',
+          label: macro.name,
+          data: macro,
+          children: []
+        }));
+
     return {
       id: `wb::${workbookKey}`,
       nodeType: 'workbook',
@@ -196,11 +207,7 @@ export function buildExplorerTree(searchDataOrOptions, personalStateArg) {
         ? 'PERSONAL.XLSB (Global Macros)'
         : workbook.name,
       data: workbook,
-      children: buildModuleNodes({
-        workbook,
-        modules: workbookModules,
-        macros: workbookMacros
-      })
+      children
     };
   });
 

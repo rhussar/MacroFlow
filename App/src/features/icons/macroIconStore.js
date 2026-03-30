@@ -128,6 +128,14 @@ export function removeMacroIcon(macroId) {
   notifyChange();
 }
 
+export function renameMacroIcon(oldMacroId, newMacroId) {
+  if (!oldMacroId || !newMacroId || oldMacroId === newMacroId) return;
+  const icon = getMacroIcon(oldMacroId);
+  if (!icon) return;
+  removeMacroIcon(oldMacroId);
+  setMacroIcon(newMacroId, icon);
+}
+
 export function getAllMacroIcons() {
   return { ...load() };
 }

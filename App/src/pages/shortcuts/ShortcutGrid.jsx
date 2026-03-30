@@ -1,11 +1,11 @@
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { ReturnIcon } from '../../components/icons';
 import { formatShortcutPrefix } from '../../lib/shortcut-keybind';
 import ImageMsoIcon, { isSpriteReady } from '../../components/ImageMsoIcon';
 import MacroContextMenu from '../../components/MacroContextMenu';
 import IconPicker from '../../components/IconPicker';
-import { getMacroIcon, setMacroIcon, removeMacroIcon } from '../../features/icons/macroIconStore';
-import { displayMacroName } from '../../features/search/module-actions';
+import { getMacroIcon, setMacroIcon, removeMacroIcon, renameMacroIcon } from '../../features/icons/macroIconStore';
+import { displayMacroName, buildMacroRenameRequest, isValidVbaModuleName, encodeMacroName } from '../../features/search/module-actions';
 
 function ShortcutGrid({
   rows = [],
@@ -13,6 +13,9 @@ function ShortcutGrid({
   selectedMacroId = null,
   onRunMacro,
   onEditMacro,
+  onActionStatus,
+  onRenameComplete,
+  workbook = null,
   emptyMessage = '',
   showEmptyState = false,
   isLoading = false
@@ -72,6 +75,56 @@ function ShortcutGrid({
     }
   }, [pickerMacroId]);
 
+  // Rename state
+  const [renameMacro, setRenameMacro] = useState(null);
+  const [renameDraft, setRenameDraft] = useState('');
+  const renameInFlightRef = useRef(false);
+
+  const handleStartRename = useCallback(() => {
+    if (contextMenu?.macro) {
+      setRenameMacro(contextMenu.macro);
+      setRenameDraft(displayMacroName(contextMenu.macro.name));
+    }
+  }, [contextMenu]);
+
+  const handleCommitRename = useCallback(async () => {
+    if (!renameMacro || renameInFlightRef.current) return;
+    const nextName = encodeMacroName(renameDraft.trim());
+    if (!nextName || nextName === renameMacro.name) {
+      setRenameMacro(null);
+      return;
+    }
+    if (!isValidVbaModuleName(nextName)) {
+      onActionStatus?.('error', 'Invalid name.');
+      return;
+    }
+    const renameApi = window.excel?.vba?.renameMacroByWorkbook;
+    if (typeof renameApi !== 'function') {
+      onActionStatus?.('error', 'Rename unavailable.');
+      return;
+    }
+    const request = buildMacroRenameRequest(renameMacro, workbook);
+    if (!request.workbookName && !request.workbookPath) {
+      onActionStatus?.('error', 'Workbook not found.');
+      return;
+    }
+    renameInFlightRef.current = true;
+    try {
+      const result = await renameApi({ ...request, nextMacroName: nextName });
+      if (!result?.success) {
+        onActionStatus?.('error', String(result?.message || 'Unable to rename macro.'));
+        return;
+      }
+      renameMacroIcon(renameMacro.id, renameMacro.id.replace(`::${renameMacro.name}::`, `::${nextName}::`));
+      setRenameMacro(null);
+      onRenameComplete?.(workbook);
+    } catch (error) {
+      onActionStatus?.('error', error?.message ? String(error.message) : 'Unable to rename macro.');
+    } finally {
+      renameInFlightRef.current = false;
+    }
+  }, [renameMacro, renameDraft, workbook, onActionStatus]);
+
   return (
     <div className="shortcuts-grid">
       {showEmptyState && (
@@ -109,12 +162,30 @@ function ShortcutGrid({
                 onClick={() => onRunMacro?.(macro)}
               >
                 {isSpriteReady() ? (
-                  <ImageMsoIcon name={assignedIcon || 'MacroRecord'} size={22} />
+                  <ImageMsoIcon name={assignedIcon || 'FileSaveAs'} size={22} title="" />
                 ) : (
                   <ReturnIcon size={20} />
                 )}
               </button>
-              <span className="shortcut-name">{displayMacroName(macro.name)}</span>
+              {renameMacro?.id === macro.id ? (
+                <input
+                  type="text"
+                  className="shortcut-rename-input"
+                  value={renameDraft}
+                  autoFocus
+                  spellCheck={false}
+                  maxLength={80}
+                  onChange={(e) => setRenameDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') { e.preventDefault(); void handleCommitRename(); }
+                    else if (e.key === 'Escape') { e.preventDefault(); setRenameMacro(null); }
+                  }}
+                  onBlur={() => void handleCommitRename()}
+                  onClick={(e) => e.stopPropagation()}
+                />
+              ) : (
+                <span className="shortcut-name">{displayMacroName(macro.name)}</span>
+              )}
             </div>
             <div className="shortcut-binding" onClick={(event) => event.stopPropagation()}>
               <span className="shortcut-prefix">Ctrl +</span>
@@ -169,6 +240,7 @@ function ShortcutGrid({
           hasIcon={Boolean(getMacroIcon(contextMenu.macroId))}
           onAssignIcon={handleAssignIcon}
           onRemoveIcon={handleRemoveIcon}
+          onRename={handleStartRename}
           onEdit={onEditMacro ? handleEditMacro : undefined}
           onClose={() => setContextMenu(null)}
         />

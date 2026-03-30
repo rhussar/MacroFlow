@@ -1103,6 +1103,19 @@ body {
   text-overflow: ellipsis;
 }
 
+.shortcut-rename-input {
+  font-size: 13px;
+  font-family: inherit;
+  color: var(--text-primary);
+  background: var(--bg-surface);
+  border: 1px solid var(--accent-blue);
+  border-radius: 4px;
+  padding: 1px 4px;
+  outline: none;
+  min-width: 0;
+  flex: 1;
+}
+
 .shortcut-run-target {
   flex: 1;
   min-width: 40px;
@@ -1764,7 +1777,7 @@ body {
   max-height: 80%;
   min-height: 340px;
   background: var(--bg-surface);
-  border: none;
+  border: 1px solid var(--border-subtle);
   border-radius: var(--border-radius);
   box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
   z-index: 201;
@@ -2158,8 +2171,8 @@ body {
 .tree-node {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 6px 8px;
+  gap: 8px;
+  padding: 7px 10px;
   margin-bottom: 2px;
   border-radius: var(--border-radius-xs);
   cursor: pointer;
@@ -2182,7 +2195,7 @@ body {
 }
 
 .tree-node__chevron {
-  width: 20px;
+  width: 12px;
   height: 20px;
   display: flex;
   align-items: center;
@@ -2190,6 +2203,7 @@ body {
   flex-shrink: 0;
   cursor: pointer;
   border-radius: var(--border-radius-xs);
+  margin-right: -2px;
 }
 
 .tree-node__chevron:hover .tree-chevron-icon {
@@ -2211,8 +2225,8 @@ body {
 }
 
 .tree-node__icon {
-  width: 18px;
-  height: 18px;
+  width: 20px;
+  height: 20px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2224,7 +2238,7 @@ body {
 }
 
 .tree-node__label {
-  font-size: 13px;
+  font-size: 13.5px;
   font-weight: 400;
   color: var(--text-primary);
   white-space: nowrap;
@@ -2505,7 +2519,7 @@ body {
   flex: 1;
   display: flex;
   flex-direction: column;
-  padding: 0 8px 8px;
+  padding: 0 8px 18px;
   overflow-y: auto;
   overflow-x: hidden;
   -webkit-app-region: no-drag;
@@ -2515,15 +2529,9 @@ body {
   flex: 1;
 }
 
-.build-code-fullwidth .build-chat-icon-btn {
-  margin-left: auto;
-}
-
-.build-code-fullwidth .build-run-action {
-  margin-left: 4px;
-}
-
 .build-code-fullwidth .build-code-bar {
+  justify-content: flex-end;
+  gap: 4px;
   padding: 10px 4px;
 }
 
@@ -2590,15 +2598,106 @@ body {
   flex-shrink: 0;
 }
 
+.build-prompt-input-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+}
+
+.build-prompt-workbook-picker {
+  position: relative;
+}
+
+.build-prompt-workbook-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10.5px;
+  color: var(--text-tertiary);
+  background: none;
+  border: none;
+  padding: 2px 4px;
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.build-prompt-workbook-btn:hover {
+  color: var(--text-secondary);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.build-prompt-workbook-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.build-prompt-workbook-dropdown {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  min-width: 180px;
+  max-width: 260px;
+  max-height: 160px;
+  overflow-y: auto;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  z-index: 20;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.build-prompt-workbook-option {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  background: none;
+  border: none;
+  padding: 6px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.build-prompt-workbook-option:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-primary);
+}
+
+.build-prompt-workbook-option.active {
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.build-prompt-workbook-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 19;
+}
+
 .build-prompt-input-box {
   display: flex;
+  flex-wrap: wrap;
   align-items: stretch;
-  gap: 12px;
+  gap: 8px 12px;
   padding: 8px;
   background: var(--bg-surface);
   border: 0.75px solid var(--border-subtle);
   border-radius: 8px;
-  height: 85px;
+  min-height: 85px;
 }
 
 .build-prompt-input {
@@ -2837,8 +2936,7 @@ body {
 }
 
 .build-session-history-item:hover {
-  background: var(--bg-hover);
-  border-color: var(--border-subtle);
+  background: var(--bg-base);
 }
 
 .build-session-history-module {

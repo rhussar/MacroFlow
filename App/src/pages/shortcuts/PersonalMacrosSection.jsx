@@ -30,7 +30,10 @@ function PersonalMacrosSection({
   shortcutState,
   selectedMacroId,
   onRunMacro,
-  onEditMacro
+  onEditMacro,
+  onActionStatus,
+  onRenameComplete,
+  workbook
 }) {
   if (sectionModel.hidden) {
     return null;
@@ -154,6 +157,9 @@ function PersonalMacrosSection({
           selectedMacroId={selectedMacroId}
           onRunMacro={onRunMacro}
           onEditMacro={onEditMacro}
+          onActionStatus={onActionStatus}
+          onRenameComplete={onRenameComplete}
+          workbook={workbook}
         />
       )}
     </section>

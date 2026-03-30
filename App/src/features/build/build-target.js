@@ -30,11 +30,14 @@ export function toWorkbookRequest(workbook) {
 
 export function resolveBuildLaunchMode(mode) {
   const normalized = String(mode || '').trim().toLowerCase();
-  return normalized === 'existing_module' ? 'existing_module' : 'new_module';
+  if (normalized === 'existing_module') return 'existing_module';
+  if (normalized === 'new_module_immediate') return 'new_module_immediate';
+  return 'new_module';
 }
 
 export function shouldUseStrictWorkbook(launchMode) {
-  return resolveBuildLaunchMode(launchMode) === 'existing_module';
+  const resolved = resolveBuildLaunchMode(launchMode);
+  return resolved === 'existing_module' || resolved === 'new_module_immediate';
 }
 
 export function resolveExistingModuleName(modules = [], requestedName = '') {

@@ -23,6 +23,17 @@ function setTheme(theme) {
   localStorage.setItem('macroflow-theme', theme);
 }
 
+const SHOW_MODULES_KEY = 'macroflow-show-modules';
+
+export function getShowModules() {
+  const val = localStorage.getItem(SHOW_MODULES_KEY);
+  return val === null ? true : val === 'true';
+}
+
+function setShowModules(value) {
+  localStorage.setItem(SHOW_MODULES_KEY, String(Boolean(value)));
+}
+
 const NAV_GROUPS = [
   {
     label: 'SETTINGS',
@@ -40,7 +51,7 @@ const NAV_GROUPS = [
   },
 ];
 
-function GeneralContent({ theme, toggleTheme }) {
+function GeneralContent({ theme, toggleTheme, showModules, onToggleShowModules }) {
   const [chatCleared, setChatCleared] = useState(false);
 
   const handleClearChats = () => {
@@ -75,6 +86,19 @@ function GeneralContent({ theme, toggleTheme }) {
         </div>
         <button className="settings-action-btn danger" onClick={handleClearChats} disabled={chatCleared}>
           {chatCleared ? 'Cleared' : 'Clear All'}
+        </button>
+      </div>
+      <div className="settings-item">
+        <div className="settings-item-info">
+          <div className="settings-item-title">Show Modules</div>
+          <div className="settings-item-desc">Show VBA modules in the Files explorer</div>
+        </div>
+        <button
+          type="button"
+          className={`personal-visibility-switch ${showModules ? 'on' : ''}`}
+          onClick={onToggleShowModules}
+        >
+          <span className="personal-visibility-thumb" />
         </button>
       </div>
     </div>
@@ -206,9 +230,10 @@ function LocalAiContent({
   );
 }
 
-function SettingsPanel({ onClose }) {
+function SettingsPanel({ onClose, onShowModulesChange }) {
   const [activeTab, setActiveTab] = useState('general');
   const [theme, setThemeState] = useState(getTheme);
+  const [showModulesState, setShowModulesState] = useState(getShowModules);
   const [licenseInfo, setLicenseInfo] = useState(null);
   const [updateStatus, setUpdateStatus] = useState('Up to date');
   const [aiStatus, setAiStatus] = useState(null);
@@ -279,6 +304,13 @@ function SettingsPanel({ onClose }) {
     return undefined;
   }, [aiStatus]);
 
+  const toggleShowModules = () => {
+    const next = !showModulesState;
+    setShowModules(next);
+    setShowModulesState(next);
+    onShowModulesChange?.(next);
+  };
+
   const toggleTheme = () => {
     const next = theme === 'dark' ? 'light' : 'dark';
     setTheme(next);
@@ -338,7 +370,7 @@ function SettingsPanel({ onClose }) {
           </div>
           <div className="settings-panel-content">
             {activeTab === 'general' && (
-              <GeneralContent theme={theme} toggleTheme={toggleTheme} />
+              <GeneralContent theme={theme} toggleTheme={toggleTheme} showModules={showModulesState} onToggleShowModules={toggleShowModules} />
             )}
             {activeTab === 'account' && (
               <AccountContent licenseInfo={licenseInfo} handleSignOut={handleSignOut} />
@@ -363,7 +395,7 @@ function SettingsPanel({ onClose }) {
   );
 }
 
-const SettingsMenu = ({ isOpen, onClose, onQuit }) => {
+const SettingsMenu = ({ isOpen, onClose, onQuit, onShowModulesChange }) => {
   const [panelOpen, setPanelOpen] = useState(false);
   const stats = isOpen ? getMacroStats() : null;
 
@@ -374,6 +406,7 @@ const SettingsMenu = ({ isOpen, onClose, onQuit }) => {
           setPanelOpen(false);
           onClose();
         }}
+        onShowModulesChange={onShowModulesChange}
       />
     );
   }

@@ -36,13 +36,16 @@ import {
 } from '../features/search/search-invalidation';
 import { PERSONAL_WORKBOOK_NAME } from '../features/search/usePersonalMacros';
 import { useSessionHistory } from '../features/build/useSessionHistory';
+import { useModuleRename } from '../features/build/useModuleRename';
+import { useMacroExecution } from '../features/build/useMacroExecution';
+import { useCodeEditing } from '../features/build/useCodeEditing';
 import ImageMsoIcon, { isSpriteReady } from '../components/ImageMsoIcon';
 import IconPicker from '../components/IconPicker';
-import { getMacroIcon, setMacroIcon } from '../features/icons/macroIconStore';
-import { ReturnIcon } from '../components/icons';
+import { getMacroIcon, setMacroIcon, renameMacroIcon } from '../features/icons/macroIconStore';
+import { ReturnIcon, WorkbookIcon } from '../components/icons';
 
 const DEFAULT_MODULE_LABEL = 'New Module';
-const MODULE_PREFIX = 'MacroFlowModule';
+const MODULE_PREFIX = 'Module_';
 const RESTART_REQUIRED_MESSAGE =
   'Restart required: Close and reopen MacroFlow to enable workbook-scoped VBA sync APIs.';
 
@@ -188,12 +191,12 @@ const CreatePage = ({
   const setChatOpen = onChatToggle
     ? () => onChatToggle()
     : setChatOpenInternal;
-  const [editedCode, setEditedCode] = useState(BUILD_MODE_SEED_CODE);
   const [isBusy, setIsBusy] = useState(false);
   const [location, setLocation] = useState(buildLocation(targetWorkbook?.name, DEFAULT_MODULE_LABEL));
   const [sessionContext, setSessionContext] = useState(null);
-  const [runOutcome, setRunOutcome] = useState('idle');
-  const [savedMacroName, setSavedMacroName] = useState('');
+  const [createWorkbook, setCreateWorkbook] = useState({ name: PERSONAL_WORKBOOK_NAME, path: '' });
+  const [createWorkbookList, setCreateWorkbookList] = useState([]);
+  const [createWorkbookOpen, setCreateWorkbookOpen] = useState(false);
   const [messages, setMessages] = useState([]);
   const [splitPct, setSplitPct] = useState(35);
   const [exitDialog, setExitDialog] = useState(null);
@@ -201,12 +204,9 @@ const CreatePage = ({
   const [draftShortcutLetter, setDraftShortcutLetter] = useState('');
   const [shortcutInputError, setShortcutInputError] = useState(false);
   const [shortcutSaving, setShortcutSaving] = useState(false);
-  const [hasPendingChanges, setHasPendingChanges] = useState(false);
-  const [moduleRenameDraft, setModuleRenameDraft] = useState('');
   const [showIconPicker, setShowIconPicker] = useState(false);
   const [sessionContextMenu, setSessionContextMenu] = useState(null);
   const [iconVersion, setIconVersion] = useState(0);
-  const [moduleRenameActive, setModuleRenameActive] = useState(false);
 
   // Sync icon changes from other tabs (Shortcuts, Files)
   useEffect(() => {
@@ -233,7 +233,6 @@ const CreatePage = ({
   const buildStateRef = useRef(buildState);
   const promptRef = useRef(prompt);
   const chatOpenRef = useRef(chatOpen);
-  const editedCodeRef = useRef(editedCode);
   const isBusyRef = useRef(isBusy);
   const sessionContextRef = useRef(sessionContext);
   const savedShortcutLetterRef = useRef(savedShortcutLetter);
@@ -243,23 +242,29 @@ const CreatePage = ({
   const attemptExitRef = useRef(() => Promise.resolve());
   const activeBootstrapIdRef = useRef(0);
   const activeShortcutHydrationIdRef = useRef(0);
-  const dirtyLocalRef = useRef(false);
   const exitInFlightRef = useRef(false);
-  const moduleRenameInputRef = useRef(null);
-  const moduleRenameCommitInFlightRef = useRef(false);
   const messagesRef = useRef(messages);
   const activeSessionIdRef = useRef(null);
-  const moduleRenameRestoreValueRef = useRef('');
   buildStateRef.current = buildState;
   promptRef.current = prompt;
   chatOpenRef.current = chatOpen;
-  editedCodeRef.current = editedCode;
   isBusyRef.current = isBusy;
   sessionContextRef.current = sessionContext;
   savedShortcutLetterRef.current = savedShortcutLetter;
   draftShortcutLetterRef.current = draftShortcutLetter;
   shortcutSavingRef.current = shortcutSaving;
   messagesRef.current = messages;
+
+  // --- Extracted hooks ---
+  const {
+    editedCode, setEditedCode, editedCodeRef, hasPendingChanges,
+    dirtyLocalRef, setDirtyState, markLocalDirty
+  } = useCodeEditing();
+
+  const {
+    runOutcome, setRunOutcome, savedMacroName, setSavedMacroName,
+    sessionMacroName, sessionMacroTarget, handleRunMacro
+  } = useMacroExecution({ sessionContextRef, editedCodeRef, editedCode, sessionContext, isBusyRef, setErrorInfo, setIsBusy });
   const handleLocalAiSetup = useCallback(async () => {
     if (typeof onRequestAiSetup !== 'function') {
       setErrorInfo({
@@ -298,11 +303,6 @@ const CreatePage = ({
     }
   }, [aiStatus?.runtimeInstalled, aiStatus?.serverReachable, aiStatus?.setupInProgress, aiStatus?.removeInProgress]);
 
-  const setDirtyState = useCallback((value) => {
-    const nextValue = Boolean(value);
-    dirtyLocalRef.current = nextValue;
-    setHasPendingChanges(nextValue);
-  }, []);
 
   const setStepStatus = useCallback((stepKey, status, textOverride = null) => {
     setSteps((previous) =>
@@ -467,6 +467,30 @@ const CreatePage = ({
       includeWorkbookScopedData: true
     });
   }, [invalidateWorkbookMutation, setDirtyState]);
+
+  const cleanupEmptyModule = useCallback(() => {
+    const session = sessionContextRef.current;
+    if (!session) return;
+    const deleteApi = window.excel?.vba?.deleteModuleByWorkbook;
+    if (typeof deleteApi !== 'function') return;
+    const moduleName = session.moduleName;
+    if (!moduleName) return;
+    // Only clean up if the module has no real macro (no Sub/Function saved)
+    const hasMacro = Boolean(extractPrimaryMacroName(editedCodeRef.current));
+    if (hasMacro) return;
+    void deleteApi({
+      workbookName: session.workbook.name,
+      workbookPath: session.workbook.path,
+      moduleName
+    }).then(() => {
+      invalidateWorkbookMutation(session.workbook, {
+        includeActiveWorkbook: true,
+        includeExplorerAllFiles: true,
+        includePersonalMacros: true,
+        includeWorkbookScopedData: true
+      });
+    }).catch(() => {});
+  }, [invalidateWorkbookMutation]);
 
   const pendingInternalActionHandlerRef = useRef(null);
 
@@ -650,7 +674,7 @@ const CreatePage = ({
         };
       }
 
-      if (strictWorkbookMode) {
+      if (strictWorkbookMode && normalizedLaunchMode === 'existing_module') {
         if (!selectedCandidate) {
           throw new Error('No workbook was provided for the selected module.');
         }
@@ -663,7 +687,7 @@ const CreatePage = ({
         }
       }
 
-      const resolvedWorkbook = strictWorkbookMode
+      const resolvedWorkbook = (strictWorkbookMode && normalizedLaunchMode === 'existing_module')
         ? normalizeBuildWorkbook(selectedResolution?.workbook || selectedCandidate)
         : resolveBuildWorkbookTarget({
             selectedWorkbook: selectedResolution?.workbook,
@@ -672,6 +696,15 @@ const CreatePage = ({
           });
       if (!resolvedWorkbook) {
         throw new Error('No valid workbook is available for Build Mode.');
+      }
+
+      // Set security boundary before any high-risk operations (inject/code write)
+      const setSelectedWorkbookApi = window.excel?.security?.setSelectedWorkbook;
+      if (typeof setSelectedWorkbookApi === 'function') {
+        await setSelectedWorkbookApi({
+          workbookName: resolvedWorkbook.name,
+          workbookPath: resolvedWorkbook.path
+        });
       }
 
       const resolvedModules = selectedResolution?.modules || activeResolution?.modules || [];
@@ -686,7 +719,7 @@ const CreatePage = ({
       let sessionModuleName = '';
       let pulledCode = BUILD_MODE_SEED_CODE;
 
-      if (strictWorkbookMode) {
+      if (strictWorkbookMode && normalizedLaunchMode === 'existing_module' && requestedModuleName) {
         setStepStatus('create', 'loading', `Locating module: ${requestedModuleName}`);
 
         const existingModuleName = resolveExistingModuleName(resolvedModules, requestedModuleName);
@@ -786,6 +819,9 @@ const CreatePage = ({
       setLocation(buildLocation(sessionWorkbook.name, sessionModuleName));
       setBuildState('ready');
       setIsBusy(false);
+      if (normalizedLaunchMode === 'new_module_immediate') {
+        setChatOpen(true);
+      }
     } catch (error) {
       if (activeBootstrapIdRef.current !== bootstrapId) {
         return;
@@ -810,17 +846,18 @@ const CreatePage = ({
 
   bootstrapSessionRef.current = bootstrapSession;
 
-  const markLocalDirty = useCallback(() => {
-    setDirtyState(true);
+  // Wrap hook's markLocalDirty to also reset runOutcome
+  const markLocalDirtyFull = useCallback(() => {
+    markLocalDirty();
     setRunOutcome('idle');
-  }, [setDirtyState]);
+  }, [markLocalDirty, setRunOutcome]);
 
   const handleCodeChange = useCallback((newCode) => {
     const nextCode = String(newCode || '');
     setEditedCode(nextCode);
     setShortcutInputError(false);
-    markLocalDirty();
-  }, [markLocalDirty]);
+    markLocalDirtyFull();
+  }, [markLocalDirtyFull, setEditedCode]);
 
   const handleSave = useCallback(async () => {
     if (isBusyRef.current || !dirtyLocalRef.current) {
@@ -1069,7 +1106,7 @@ const CreatePage = ({
       setEditedCode(generatedCode);
       setSavedMacroName(extractPrimaryMacroName(generatedCode));
       setMessages((prev) => [...prev, { role: 'assistant', kind: 'text', content: 'Done — code updated in the editor.', timestamp: Date.now() }]);
-      markLocalDirty();
+      markLocalDirtyFull();
     } catch (error) {
       const message = mapAiGenerationMessage(null, String(error?.message || 'Unable to generate VBA.'));
       setMessages((prev) => [...prev, { role: 'assistant', kind: 'text', content: `Error: ${message}`, timestamp: Date.now() }]);
@@ -1081,7 +1118,7 @@ const CreatePage = ({
       setIsBusy(false);
       isBusyRef.current = false;
     }
-  }, [markLocalDirty]);
+  }, [markLocalDirtyFull]);
 
   const openSidebar = useCallback(() => {
     if (!chatOpenRef.current) {
@@ -1132,11 +1169,11 @@ const CreatePage = ({
         workbookInfo: workbookInfoApi
       } = apiCheck.apis;
 
-      // Phase 1: Resolve workbook
+      // Phase 1: Resolve workbook (use dropdown selection if available)
       let selectedResolution = null;
       let activeResolution = null;
 
-      const selectedCandidate = normalizeBuildWorkbook(normalizedWorkbook);
+      const selectedCandidate = normalizeBuildWorkbook(createWorkbook || normalizedWorkbook);
       if (selectedCandidate) {
         const selectedModulesResult = await modulesByWorkbookApi(toWorkbookRequest(selectedCandidate));
         if (!selectedModulesResult?.success) {
@@ -1244,7 +1281,7 @@ const CreatePage = ({
         setSavedMacroName(extractPrimaryMacroName(generatedCode));
         setMessages((prev) => [...prev, { role: 'assistant', kind: 'text', content: 'Done — macro generated in the editor.', timestamp: Date.now() }]);
         setBuildState('ready');
-        markLocalDirty();
+        markLocalDirtyFull();
       } catch (streamError) {
         throw streamError;
       }
@@ -1257,7 +1294,7 @@ const CreatePage = ({
       setIsBusy(false);
       isBusyRef.current = false;
     }
-  }, [ensureBuildApis, invalidateWorkbookMutation, normalizedWorkbook, markLocalDirty, stopWithError, openSidebar]);
+  }, [ensureBuildApis, invalidateWorkbookMutation, normalizedWorkbook, markLocalDirtyFull, stopWithError, openSidebar]);
 
   const dispatchSubmit = useCallback(() => {
     if (sessionContextRef.current) {
@@ -1355,182 +1392,14 @@ const CreatePage = ({
     doBackToHistory();
   }, [doBackToHistory]);
 
-  const cancelModuleRename = useCallback(() => {
-    const restoreName = String(
-      moduleRenameRestoreValueRef.current || sessionContextRef.current?.moduleName || location.module || ''
-    ).trim();
-    setModuleRenameDraft(restoreName);
-    setModuleRenameActive(false);
-  }, [location.module]);
+  // --- Module rename hook (needs invalidateWorkbookMutation defined above) ---
+  const {
+    moduleRenameActive, setModuleRenameActive, moduleRenameDraft, setModuleRenameDraft,
+    moduleRenameInputRef, moduleRenameRestoreValueRef, cancelModuleRename, commitModuleRename
+  } = useModuleRename({ sessionContextRef, location, buildLocationFn: buildLocation, invalidateWorkbookMutation, setSessionContext, setLocation, setErrorInfo, setIsBusy });
 
-  const commitModuleRename = useCallback(async (nextModuleNameOverride = null) => {
-    if (moduleRenameCommitInFlightRef.current) {
-      return;
-    }
 
-    const renameApi = window.excel?.vba?.renameModuleByWorkbook;
-    if (typeof renameApi !== 'function') {
-      setErrorInfo({
-        title: 'Rename failed: workbook module rename API is unavailable.',
-        line: null
-      });
-      setModuleRenameActive(false);
-      return;
-    }
 
-    const session = sessionContextRef.current;
-    if (!session) {
-      setModuleRenameActive(false);
-      return;
-    }
-
-    const currentModuleName = String(session.moduleName || '').trim();
-    const nextModuleName = encodeMacroName(String(
-      nextModuleNameOverride ??
-      moduleRenameInputRef.current?.textContent ??
-      moduleRenameDraft
-    ).trim());
-
-    if (!shouldCommitModuleRename({ currentName: currentModuleName, nextName: nextModuleName })) {
-      setModuleRenameDraft(currentModuleName);
-      setModuleRenameActive(false);
-      return;
-    }
-
-    if (!isValidVbaModuleName(nextModuleName)) {
-      setErrorInfo({
-        title: 'Rename failed: module names must start with a letter and use only letters, numbers, or underscores.',
-        line: null
-      });
-      return;
-    }
-
-    moduleRenameCommitInFlightRef.current = true;
-    setIsBusy(true);
-
-    try {
-      const result = await renameApi({
-        workbookName: session.workbook.name,
-        workbookPath: session.workbook.path,
-        moduleName: currentModuleName,
-        nextModuleName
-      });
-
-      if (!result?.success || result?.workbookFound === false || result?.moduleFound === false || result?.renamed === false) {
-        throw new Error(result?.message || 'Unable to rename module.');
-      }
-
-      const updatedWorkbook =
-        normalizeBuildWorkbook(result?.workbook || session.workbook) || session.workbook;
-      const updatedModuleName = String(result?.moduleName || nextModuleName).trim() || nextModuleName;
-      const updatedSession = {
-        ...session,
-        workbook: updatedWorkbook,
-        moduleName: updatedModuleName
-      };
-
-      sessionContextRef.current = updatedSession;
-      setSessionContext(updatedSession);
-      setLocation(buildLocation(updatedWorkbook.name, updatedModuleName));
-      setModuleRenameDraft(updatedModuleName);
-      setModuleRenameActive(false);
-      setErrorInfo(null);
-      invalidateWorkbookMutation(updatedWorkbook, {
-        includeActiveWorkbook: true,
-        includeExplorerAllFiles: true,
-        includePersonalMacros: true,
-        includeShortcutAudit: true,
-        includeWorkbookScopedData: true
-      });
-    } catch (error) {
-      const message = String(error?.message || 'Unable to rename module.');
-      setErrorInfo({
-        title: `Rename failed: ${message}`,
-        line: null
-      });
-    } finally {
-      moduleRenameCommitInFlightRef.current = false;
-      setIsBusy(false);
-    }
-  }, [invalidateWorkbookMutation, moduleRenameDraft]);
-
-  const handleRunMacro = useCallback(async () => {
-    if (isBusyRef.current) {
-      return;
-    }
-
-    const runApi = window.excel?.vba?.run;
-    if (typeof runApi !== 'function') {
-      setRunOutcome('error');
-      setErrorInfo({
-        title: 'Run failed: VBA run API is unavailable.',
-        line: null
-      });
-      return;
-    }
-
-    const session = sessionContextRef.current;
-    if (!session) {
-      setRunOutcome('error');
-      setErrorInfo({
-        title: 'Run failed: Build session is not ready.',
-        line: null
-      });
-      return;
-    }
-
-    const moduleName = String(session?.moduleName || '').trim();
-    const workbookName = String(session?.workbook?.name || '').trim();
-    const codeText = String(editedCodeRef.current || '');
-    const macroName = String(extractPrimaryMacroName(codeText) || savedMacroName).trim();
-
-    if (!moduleName || !macroName) {
-      setRunOutcome('error');
-      setErrorInfo({
-        title: 'Run failed: Add a Sub procedure before running.',
-        line: null
-      });
-      return;
-    }
-
-    const runTarget = buildWorkbookQualifiedRunTarget(workbookName, moduleName, macroName);
-    if (!runTarget) {
-      setRunOutcome('error');
-      setErrorInfo({
-        title: 'Run failed: Unable to resolve macro target.',
-        line: null
-      });
-      return;
-    }
-
-    setErrorInfo(null);
-    setIsBusy(true);
-    isBusyRef.current = true;
-
-    try {
-      const result = await runApi({ macroName: runTarget });
-      if (!result?.success) {
-        throw new Error(result?.message || 'Macro execution failed.');
-      }
-      setRunOutcome('success');
-    } catch (error) {
-      const message = error?.message ? String(error.message) : 'Macro execution failed.';
-      setRunOutcome('error');
-      setErrorInfo({
-        title: `Run failed: ${message}`,
-        line: null
-      });
-    } finally {
-      setIsBusy(false);
-      isBusyRef.current = false;
-    }
-  }, [savedMacroName]);
-
-  const sessionMacroName = useMemo(() => extractPrimaryMacroName(editedCode), [editedCode]);
-  const sessionMacroTarget = useMemo(
-    () => buildSessionMacroTarget(sessionContext?.moduleName, sessionMacroName),
-    [sessionContext?.moduleName, sessionMacroName]
-  );
   const shortcutPrefix = formatShortcutPrefix(draftShortcutLetter);
 
   // Build macro ID for icon lookup — the store normalizes keys so kind/scope suffix doesn't matter
@@ -1545,6 +1414,15 @@ const CreatePage = ({
   }, [sessionContext?.moduleName, sessionMacroName, sessionContext?.workbook?.path, sessionContext?.workbook?.name]);
 
   const currentMacroIcon = currentMacroId ? getMacroIcon(currentMacroId) : null;
+
+  const prevMacroIdRef = useRef(currentMacroId);
+  useEffect(() => {
+    const prevId = prevMacroIdRef.current;
+    prevMacroIdRef.current = currentMacroId;
+    if (prevId && currentMacroId && prevId !== currentMacroId) {
+      renameMacroIcon(prevId, currentMacroId);
+    }
+  }, [currentMacroId]);
 
   useEffect(() => {
     if (!sessionContext || !sessionMacroTarget) {
@@ -1682,13 +1560,17 @@ const CreatePage = ({
       }
 
       if (!event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey && event.key === 'Tab') {
+        // Don't intercept Tab when user is in the code editor — let it indent
+        if (event.target?.isContentEditable) return;
         event.preventDefault();
         void attemptExitRef.current('back');
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+    };
   }, [handleSave]);
 
   const getFooterContent = () => {
@@ -1727,7 +1609,7 @@ const CreatePage = ({
   const currentCode = String(editedCode || BUILD_MODE_SEED_CODE);
   const renderModuleBreadcrumb = () => {
     if (!showCodePanel) {
-      return location.module;
+      return displayMacroName(location.module);
     }
 
     if (moduleRenameActive) {
@@ -1757,6 +1639,11 @@ const CreatePage = ({
               }
               cancelModuleRename();
             }
+          }}
+          onPaste={(e) => {
+            e.preventDefault();
+            const text = e.clipboardData.getData('text/plain');
+            document.execCommand('insertText', false, text);
           }}
         >
           {moduleRenameDraft}
@@ -2010,18 +1897,73 @@ const CreatePage = ({
                   }
                 }}
               />
-              <button
-                type="button"
-                className="build-prompt-send-btn"
-                onClick={() => { if (prompt.trim()) void dispatchSubmit(); }}
-                disabled={isBusy || !prompt.trim()}
-                title="Send"
-              >
-                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                  <line x1="12" y1="19" x2="12" y2="5" />
-                  <polyline points="5,12 12,5 19,12" />
-                </svg>
-              </button>
+            <div className="build-prompt-input-footer">
+                <div className="build-prompt-workbook-picker">
+                  <button
+                    type="button"
+                    className="build-prompt-workbook-btn"
+                    onClick={async () => {
+                      if (createWorkbookOpen) {
+                        setCreateWorkbookOpen(false);
+                        return;
+                      }
+                      try {
+                        const listApi = window.excel?.workbook?.list || window.excel?.workbook?.listContext;
+                        if (typeof listApi === 'function') {
+                          const result = await listApi();
+                          if (result?.success && Array.isArray(result.workbooks)) {
+                            setCreateWorkbookList(result.workbooks);
+                          }
+                        }
+                      } catch { /* ignore */ }
+                      setCreateWorkbookOpen(true);
+                    }}
+                    disabled={isBusy}
+                  >
+                    <WorkbookIcon size={11} />
+                    <span>{createWorkbook?.name || PERSONAL_WORKBOOK_NAME}</span>
+                    <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                      <polyline points="6,9 12,15 18,9" />
+                    </svg>
+                  </button>
+                  {createWorkbookOpen && (
+                    <>
+                      <div className="build-prompt-workbook-backdrop" onClick={() => setCreateWorkbookOpen(false)} />
+                      <div className="build-prompt-workbook-dropdown">
+                        {[{ name: PERSONAL_WORKBOOK_NAME, path: '' }, ...createWorkbookList.filter(
+                          (wb) => wb.name?.toUpperCase() !== PERSONAL_WORKBOOK_NAME
+                        )].map((wb) => (
+                          <button
+                            key={wb.path || wb.name}
+                            type="button"
+                            className={`build-prompt-workbook-option${(createWorkbook?.name || '') === wb.name ? ' active' : ''}`}
+                            onClick={() => {
+                              setCreateWorkbook({ name: wb.name, path: wb.path || '' });
+                              setLocation(buildLocation(wb.name, DEFAULT_MODULE_LABEL));
+                              setCreateWorkbookOpen(false);
+                            }}
+                          >
+                            <WorkbookIcon size={11} />
+                            <span>{wb.name}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  className="build-prompt-send-btn"
+                  onClick={() => { if (prompt.trim()) void dispatchSubmit(); }}
+                  disabled={isBusy || !prompt.trim()}
+                  title="Send"
+                >
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <line x1="12" y1="19" x2="12" y2="5" />
+                    <polyline points="5,12 12,5 19,12" />
+                  </svg>
+                </button>
+              </div>
             </div>
           </div>
       </div>
@@ -2044,11 +1986,11 @@ const CreatePage = ({
           <button
             type="button"
             className="build-chat-icon-btn"
-            title={currentMacroIcon ? `Icon: ${currentMacroIcon} (click to change)` : 'Assign icon'}
+            title="Change icon"
             onClick={() => setShowIconPicker(true)}
           >
             {isSpriteReady() ? (
-              <ImageMsoIcon name={currentMacroIcon || 'MacroRecord'} size={22} />
+              <ImageMsoIcon name={currentMacroIcon || 'FileSaveAs'} size={22} title="" />
             ) : (
               <ReturnIcon size={22} />
             )}
@@ -2067,7 +2009,7 @@ const CreatePage = ({
                 void handleRunMacro();
               }
             }}
-            disabled={isBusy}
+            disabled={isBusy || (!hasPendingChanges && !sessionMacroName)}
           >
             {primaryActionLabel}
           </button>
@@ -2098,19 +2040,15 @@ const CreatePage = ({
     <>
       <main className="main-content">
         <div className={!aiReady ? 'ai-gate-bg-blur' : undefined} style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-          {chatOpen ? (
-            <div className="split-view">
-              <div className="split-left build-chat-panel" style={{ width: `${splitPct}%` }}>
-                {sidebarContent}
-              </div>
-              <SplitDivider onResize={setSplitPct} />
-              <div className="split-right">
-                {mainContent}
-              </div>
+          <div className="split-view">
+            <div className="split-left build-chat-panel" style={{ width: chatOpen ? `${splitPct}%` : '0%', display: chatOpen ? undefined : 'none' }}>
+              {sidebarContent}
             </div>
-          ) : (
-            mainContent
-          )}
+            {chatOpen && <SplitDivider onResize={setSplitPct} />}
+            <div className={chatOpen ? 'split-right' : 'split-right split-right--full'}>
+              {mainContent}
+            </div>
+          </div>
         </div>
         {aiGateOverlay}
       </main>
@@ -2132,6 +2070,7 @@ const CreatePage = ({
                 type="button"
                 className="build-exit-btn danger"
                 onClick={() => {
+                  cleanupEmptyModule();
                   setDirtyState(false);
                   setExitDialog(null);
                   if (!runPendingInternalAction()) {
@@ -2173,6 +2112,7 @@ const CreatePage = ({
                 type="button"
                 className="build-exit-btn danger"
                 onClick={() => {
+                  cleanupEmptyModule();
                   setDirtyState(false);
                   setExitDialog(null);
                   if (!runPendingInternalAction()) {

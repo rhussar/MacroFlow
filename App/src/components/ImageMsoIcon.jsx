@@ -10,7 +10,7 @@ import spriteMeta from '../features/icons/imagemso-meta.json';
  * @param {number} size - Display size in CSS pixels (default 16)
  * @param {string} className - Optional CSS class
  */
-export default function ImageMsoIcon({ name, size = 16, className = '' }) {
+export default function ImageMsoIcon({ name, size = 16, className = '', title }) {
   const style = useMemo(() => {
     if (!manifest[name]) return null;
 
@@ -44,7 +44,7 @@ export default function ImageMsoIcon({ name, size = 16, className = '' }) {
           background: 'var(--bg-elevated)',
           border: '1px solid var(--border-subtle)',
         }}
-        title={name}
+        title={title !== undefined ? (title || undefined) : name}
       />
     );
   }
@@ -53,7 +53,7 @@ export default function ImageMsoIcon({ name, size = 16, className = '' }) {
     <div
       className={`imagemso-icon ${className}`}
       style={style}
-      title={name}
+      title={title !== undefined ? (title || undefined) : name}
     />
   );
 }

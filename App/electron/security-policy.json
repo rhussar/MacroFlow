@@ -8,11 +8,13 @@
   "allowlists": {
     "modulesExact": [],
     "modulesRegex": [
-      "^MacroFlowModule[0-9]+$"
+      "^MacroFlowModule[0-9]+$",
+      "^Module_[0-9]+$"
     ],
     "macrosExact": [],
     "macrosRegex": [
-      "^MacroFlowModule[0-9]+\\.[A-Za-z_][A-Za-z0-9_]*$"
+      "^MacroFlowModule[0-9]+\\.[A-Za-z_][A-Za-z0-9_]*$",
+      "^Module_[0-9]+\\.[A-Za-z_][A-Za-z0-9_]*$"
     ]
   },
   "enforcement": {

@@ -1883,21 +1883,7 @@ const CreatePage = ({
         {errorInfo && <div className="error-title">{errorInfo.title}</div>}
         <div className="build-prompt-input-wrap">
             <div className="build-prompt-input-box">
-              <textarea
-                className="build-prompt-input"
-                placeholder="Describe the macro you want"
-                rows={2}
-                value={prompt}
-                onChange={(event) => setPrompt(event.target.value)}
-                disabled={isBusy}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter' && !event.shiftKey && prompt.trim()) {
-                    event.preventDefault();
-                    void dispatchSubmit();
-                  }
-                }}
-              />
-            <div className="build-prompt-input-footer">
+              <div className="build-prompt-context-bar">
                 <div className="build-prompt-workbook-picker">
                   <button
                     type="button"
@@ -1951,6 +1937,23 @@ const CreatePage = ({
                     </>
                   )}
                 </div>
+              </div>
+              <textarea
+                className="build-prompt-input"
+                placeholder="Describe the macro you want"
+                rows={2}
+                value={prompt}
+                onChange={(event) => setPrompt(event.target.value)}
+                disabled={isBusy}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' && !event.shiftKey && prompt.trim()) {
+                    event.preventDefault();
+                    void dispatchSubmit();
+                  }
+                }}
+              />
+              <div className="build-prompt-input-footer">
+                <div />
                 <button
                   type="button"
                   className="build-prompt-send-btn"

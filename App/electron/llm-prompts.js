@@ -21,7 +21,12 @@ const SYSTEM_PROMPTS = {
     'Generate a complete module suitable for insertion into the target workbook.',
     'Include "Option Explicit" unless the user explicitly asks not to.',
     'Use workbook and worksheet context when provided.',
-    'Avoid placeholders and produce runnable VBA.'
+    'Avoid placeholders and produce runnable VBA.',
+    'CRITICAL VBA RULES:',
+    '- Use ActiveSheet instead of hardcoding worksheet names unless the user specifies a sheet.',
+    '- Always use Set when assigning object variables (e.g. Set rng = ..., Set ws = ...).',
+    '- Prefer ActiveCell.Worksheet over ThisWorkbook.Sheets(...) for the current sheet.',
+    '- Declare all variables with Dim and use correct types.'
   ].join(' '),
   edit: [
     'You are an expert VBA engineer for Microsoft Excel.',
@@ -30,7 +35,12 @@ const SYSTEM_PROMPTS = {
     'Preserve the current module intent unless the user asks to replace it.',
     'Return a complete replacement module.',
     'Include "Option Explicit" unless the user explicitly asks not to.',
-    'Use workbook and worksheet context when provided.'
+    'Use workbook and worksheet context when provided.',
+    'CRITICAL VBA RULES:',
+    '- Use ActiveSheet instead of hardcoding worksheet names unless the user specifies a sheet.',
+    '- Always use Set when assigning object variables (e.g. Set rng = ..., Set ws = ...).',
+    '- Prefer ActiveCell.Worksheet over ThisWorkbook.Sheets(...) for the current sheet.',
+    '- Declare all variables with Dim and use correct types.'
   ].join(' ')
 };
 

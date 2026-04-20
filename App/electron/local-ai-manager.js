@@ -2,7 +2,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const http = require('node:http');
 const https = require('node:https');
-const { spawn } = require('node:child_process');
+const { spawn, execSync } = require('node:child_process');
 
 const logger = require('./logger');
 const { requestJson } = require('./http-client');
@@ -45,11 +45,67 @@ const state = {
   setupPromise: null,
   removePromise: null,
   listeners: new Set(),
-  ollamaProcess: null
+  ollamaProcess: null,
+  startupCleanupDone: false
 };
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Kill any orphaned Ollama processes listening on our managed port.
+ * This handles the case where a previous app session spawned Ollama with
+ * detached: true but the app crashed or was force-closed before shutdown().
+ */
+function killStaleOllamaProcesses() {
+  const ollamaPort = (() => {
+    try {
+      return new URL(LOCAL_AI_BASE_URL).port || '11544';
+    } catch {
+      return '11544';
+    }
+  })();
+
+  try {
+    // Find PIDs listening on our managed port.
+    const netstatOutput = execSync(
+      `netstat -ano | findstr ":${ollamaPort}" | findstr "LISTENING"`,
+      { windowsHide: true, timeout: 5000, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }
+    ).trim();
+
+    if (!netstatOutput) return false;
+
+    const pids = new Set();
+    for (const line of netstatOutput.split(/\r?\n/)) {
+      const match = line.trim().match(/\s(\d+)\s*$/);
+      if (match) pids.add(match[1]);
+    }
+
+    // Only kill if the PID is actually an ollama.exe process (safety check).
+    let killed = false;
+    for (const pid of pids) {
+      try {
+        const taskInfo = execSync(
+          `tasklist /FI "PID eq ${pid}" /FO CSV /NH`,
+          { windowsHide: true, timeout: 5000, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }
+        ).trim().toLowerCase();
+        if (taskInfo.includes('ollama')) {
+          // Skip if this is our own managed child process.
+          if (state.ollamaProcess && state.ollamaProcess.pid === Number(pid)) continue;
+          execSync(`taskkill /F /PID ${pid}`, { windowsHide: true, timeout: 5000, stdio: 'ignore' });
+          logger.info('[LocalAI] killed stale Ollama process', { pid });
+          killed = true;
+        }
+      } catch {
+        // Process may have exited between detection and kill; ignore.
+      }
+    }
+    return killed;
+  } catch {
+    // netstat found nothing or command failed; no stale processes.
+    return false;
+  }
 }
 
 function ensureManagedDirectories() {
@@ -245,6 +301,15 @@ async function getStatus() {
     return buildSnapshot();
   }
 
+  // On first status check after app launch, kill any orphaned Ollama from a
+  // previous session so we start with a clean slate.
+  if (!state.startupCleanupDone) {
+    state.startupCleanupDone = true;
+    killStaleOllamaProcesses();
+    // Brief wait for the port to be released before probing.
+    await delay(800);
+  }
+
   const runtime = findOllamaRuntime();
   const serverReachable = runtime.installed ? await pingOllamaServer() : false;
   const models = serverReachable ? await listInstalledModels() : [];
@@ -284,6 +349,19 @@ async function ensureReady() {
       serverReachable = await pingOllamaServer();
     } catch (error) {
       logger.warn('[LocalAI] ensureReady auto-start failed', { error: error.message });
+    }
+  } else {
+    // Server responds, but make sure it has our model.  If a stale process
+    // from a previous session is running with a different OLLAMA_MODELS dir,
+    // ensureServer will kill it and start a fresh one.
+    const models = await listInstalledModels();
+    if (!isModelInstalled(models, getSelectedModel())) {
+      try {
+        await ensureServer(runtime);
+        serverReachable = await pingOllamaServer();
+      } catch (error) {
+        logger.warn('[LocalAI] ensureReady restart for model failed', { error: error.message });
+      }
     }
   }
 
@@ -448,7 +526,8 @@ function getManagedOllamaEnv() {
     env.OLLAMA_NUM_THREADS = String(performanceProfile.ollamaNumThreads);
   }
 
-  // Force CPU-only on low/balanced tiers to avoid GPU memory exhaustion.
+  // Force CPU-only on low/balanced tiers (e.g. VMs without real GPU access).
+  // Standard tier uses -1 to let Ollama auto-detect and offload to GPU.
   if (performanceProfile.ollamaGpuLayers === 0) {
     env.OLLAMA_GPU_LAYERS = '0';
   }
@@ -457,13 +536,33 @@ function getManagedOllamaEnv() {
 }
 
 async function ensureServer(runtime) {
+  // First check: if the server responds AND serves our model, we can reuse it.
   if (await pingOllamaServer()) {
-    return;
+    const models = await listInstalledModels();
+    if (isModelInstalled(models, getSelectedModel())) {
+      return;
+    }
+    // Server is up but our model isn't loaded — it may be a stale process
+    // from a previous session with a different model directory. Kill it so
+    // we can start a fresh one with the correct OLLAMA_MODELS env.
+    logger.info('[LocalAI] server responds but model missing; restarting with correct config');
+    killStaleOllamaProcesses();
+    if (state.ollamaProcess) {
+      try { state.ollamaProcess.kill(); } catch { /* ignore */ }
+      state.ollamaProcess = null;
+    }
+    // Give the OS a moment to release the port.
+    await delay(1500);
   }
 
   if (!runtime?.commandPath) {
     throw new Error('The local AI runtime is not installed.');
   }
+
+  // Kill any orphaned Ollama that might be holding the port but didn't
+  // respond to ping (e.g. hung process).
+  killStaleOllamaProcesses();
+  await delay(500);
 
   try {
     const child = spawn(runtime.commandPath, ['serve'], {
@@ -764,6 +863,8 @@ function shutdown() {
     }
     state.ollamaProcess = null;
   }
+  // Also kill any orphaned Ollama on our port (e.g. from a prior crashed session).
+  killStaleOllamaProcesses();
 }
 
 module.exports = {

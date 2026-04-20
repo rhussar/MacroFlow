@@ -174,7 +174,7 @@ const ShortcutsPage = ({
     visibilityRefreshPolicy: 'always',
     foregroundQuietWindowMs: PERSONAL_FOREGROUND_QUIET_MS
   });
-  const personalSectionVisible = String(selectedWorkbook?.name || '').trim().toUpperCase() !== PERSONAL_WORKBOOK_NAME;
+  const personalSectionVisible = true;
   const personalShortcutState = useShortcutState({
     scope: 'workbook',
     enabled: status === 'ready'
@@ -557,19 +557,15 @@ const ShortcutsPage = ({
         ? (searchData?.vbaLocked ? 'This workbook\'s VBA project is locked.' : 'This workbook has no macros.')
         : 'No macros match this search.';
 
+  const nonPersonalWorkbooks = workbookPickerState.workbooks.filter(wb => String(wb.name || '').trim().toUpperCase() !== PERSONAL_WORKBOOK_NAME);
+  const hasActiveWorkbook = nonPersonalWorkbooks.length > 0 || (selectedWorkbook && String(selectedWorkbook.name || '').trim().toUpperCase() !== PERSONAL_WORKBOOK_NAME);
+
   return (
     <main className="main-content">
       {status !== 'ready' ? renderNonReadyState() : (
         <>
           <PersonalMacrosSection
             sectionModel={personalSectionModel}
-            infoRef={personalInfoRef}
-            showInfo={showPersonalInfo}
-            onInfoHoverChange={handlePersonalInfoHoverChange}
-            onInfoToggle={() => setPersonalInfoPinned((previous) => !previous)}
-            visibilityControl={personalVisibilityControl}
-            onToggleVisibility={handlePersonalVisibilityToggle}
-            onOpenFolder={handleOpenPersonalFolder}
             actionInFlight={personalActionInFlight}
             onAction={handlePersonalAction}
             rows={personalMacroRows}
@@ -582,33 +578,35 @@ const ShortcutsPage = ({
             workbook={personalMacrosState.workbook}
           />
 
-          <section className="search-ready-section">
-            <WorkbookPicker
-              menuRef={workbookMenuRef}
-              isOpen={isWorkbookMenuOpen}
-              selectedWorkbookLabel={selectedWorkbookLabel}
-              pickerStatus={workbookPickerState.pickerStatus}
-              pickerError={workbookPickerState.pickerError}
-              workbooks={workbookPickerState.workbooks.filter(wb => String(wb.name || '').trim().toUpperCase() !== PERSONAL_WORKBOOK_NAME)}
-              selectedWorkbookKey={workbookPickerState.selectedWorkbookKey}
-              onToggle={toggleWorkbookMenu}
-              onSelectWorkbook={handleWorkbookSelection}
-            />
+          {hasActiveWorkbook && (
+            <section className="search-ready-section">
+              <WorkbookPicker
+                menuRef={workbookMenuRef}
+                isOpen={isWorkbookMenuOpen}
+                selectedWorkbookLabel={selectedWorkbookLabel}
+                pickerStatus={workbookPickerState.pickerStatus}
+                pickerError={workbookPickerState.pickerError}
+                workbooks={nonPersonalWorkbooks}
+                selectedWorkbookKey={workbookPickerState.selectedWorkbookKey}
+                onToggle={toggleWorkbookMenu}
+                onSelectWorkbook={handleWorkbookSelection}
+              />
 
-            <ShortcutGrid
-              rows={canRenderMacroRows ? activeMacroRows : []}
-              shortcutState={effectiveShortcutState}
-              selectedMacroId={usingActiveWorkbookShortcuts ? selectedMacroId : null}
-              onRunMacro={onRunMacro}
-              onEditMacro={onEditMacro}
-              onActionStatus={onActionStatus}
-              onRenameComplete={handleRenameComplete}
-              workbook={displayedWorkbookData.workbook || selectedWorkbook}
-              emptyMessage={macrosEmptyMessage}
-              showEmptyState={workbookDataHasError || activeMacroRows.length === 0}
-              isLoading={workbookDataIsLoading && activeMacroRows.length === 0}
-            />
-          </section>
+              <ShortcutGrid
+                rows={canRenderMacroRows ? activeMacroRows : []}
+                shortcutState={effectiveShortcutState}
+                selectedMacroId={usingActiveWorkbookShortcuts ? selectedMacroId : null}
+                onRunMacro={onRunMacro}
+                onEditMacro={onEditMacro}
+                onActionStatus={onActionStatus}
+                onRenameComplete={handleRenameComplete}
+                workbook={displayedWorkbookData.workbook || selectedWorkbook}
+                emptyMessage={macrosEmptyMessage}
+                showEmptyState={workbookDataHasError || activeMacroRows.length === 0}
+                isLoading={workbookDataIsLoading && activeMacroRows.length === 0}
+              />
+            </section>
+          )}
         </>
       )}
     </main>

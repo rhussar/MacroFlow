@@ -242,6 +242,7 @@ function ShortcutGrid({
           onRemoveIcon={handleRemoveIcon}
           onRename={handleStartRename}
           onEdit={onEditMacro ? handleEditMacro : undefined}
+          onRun={onRunMacro ? () => onRunMacro(contextMenu.macro) : undefined}
           onClose={() => setContextMenu(null)}
         />
       )}

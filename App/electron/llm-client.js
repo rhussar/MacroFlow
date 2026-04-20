@@ -11,6 +11,7 @@ const localAiManager = require('./local-ai-manager');
 const { normalizeAiIntent, buildUserPrompt, getSystemPrompt } = require('./llm-prompts');
 const { resolveWorkbookPromptContext } = require('./llm-context');
 const { resolveLlmPerformanceProfile } = require('./llm-performance');
+const { matchHardcodedResponse } = require('./llm-hardcoded');
 
 function toSafeString(value) {
   return String(value || '').trim();
@@ -267,6 +268,9 @@ function buildResult({ rawContent, normalizedIntent, selectedModel, requestId, p
 // --- Non-streaming generation (kept for backwards compatibility / tests) ---
 
 async function generateVba(params = {}, dependencies = {}) {
+  const hardcoded = await matchHardcodedResponse(params);
+  if (hardcoded) return hardcoded;
+
   const prep = await prepareGeneration(params, dependencies);
   if (prep.earlyReturn) return prep.earlyReturn;
 
@@ -314,6 +318,9 @@ async function generateVba(params = {}, dependencies = {}) {
 // --- Streaming generation ---
 
 async function generateVbaStream(params = {}, dependencies = {}, onToken) {
+  const hardcoded = await matchHardcodedResponse(params, onToken);
+  if (hardcoded) return hardcoded;
+
   const prep = await prepareGeneration(params, dependencies);
   if (prep.earlyReturn) return prep.earlyReturn;
 

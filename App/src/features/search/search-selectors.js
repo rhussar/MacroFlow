@@ -113,21 +113,9 @@ export function selectPersonalGlobalSectionModel({
   fileExists = false,
   error = null
 }) {
-  const normalizedActiveWorkbook = toWorkbookName(workbookName || activeWorkbookName);
-  const normalizedPersonalWorkbook = 'PERSONAL.XLSB';
-  const hidden = normalizedActiveWorkbook === normalizedPersonalWorkbook;
   const safeRows = Array.isArray(rows) ? rows : [];
   const count = safeRows.length;
   const isEmpty = count === 0;
-
-  if (hidden) {
-    return {
-      hidden: true,
-      count: 0,
-      isEmpty: false,
-      emptyMessage: ''
-    };
-  }
 
   let emptyMessage = '';
   let action = null;

@@ -51,7 +51,7 @@ const NAV_GROUPS = [
   },
 ];
 
-function GeneralContent({ theme, toggleTheme, showModules, onToggleShowModules }) {
+function GeneralContent({ theme, toggleTheme, showModules, onToggleShowModules, personalVisible, onTogglePersonalVisibility }) {
   const [chatCleared, setChatCleared] = useState(false);
 
   const handleClearChats = () => {
@@ -97,6 +97,19 @@ function GeneralContent({ theme, toggleTheme, showModules, onToggleShowModules }
           type="button"
           className={`personal-visibility-switch ${showModules ? 'on' : ''}`}
           onClick={onToggleShowModules}
+        >
+          <span className="personal-visibility-thumb" />
+        </button>
+      </div>
+      <div className="settings-item">
+        <div className="settings-item-info">
+          <div className="settings-item-title">Show PERSONAL.XLSB</div>
+          <div className="settings-item-desc">Show or hide the PERSONAL.XLSB workbook in Excel</div>
+        </div>
+        <button
+          type="button"
+          className={`personal-visibility-switch ${personalVisible ? 'on' : ''}`}
+          onClick={onTogglePersonalVisibility}
         >
           <span className="personal-visibility-thumb" />
         </button>
@@ -234,6 +247,7 @@ function SettingsPanel({ onClose, onShowModulesChange }) {
   const [activeTab, setActiveTab] = useState('general');
   const [theme, setThemeState] = useState(getTheme);
   const [showModulesState, setShowModulesState] = useState(getShowModules);
+  const [personalVisible, setPersonalVisible] = useState(false);
   const [licenseInfo, setLicenseInfo] = useState(null);
   const [updateStatus, setUpdateStatus] = useState('Up to date');
   const [aiStatus, setAiStatus] = useState(null);
@@ -274,6 +288,12 @@ function SettingsPanel({ onClose, onShowModulesChange }) {
       setAiStatus(status || null);
     }).catch(() => {});
 
+    window.excel?.personal?.getVisibility?.().then((result) => {
+      if (result?.success) {
+        setPersonalVisible(result.visible === true);
+      }
+    }).catch(() => {});
+
     return () => {
       unsubscribeAi();
     };
@@ -309,6 +329,16 @@ function SettingsPanel({ onClose, onShowModulesChange }) {
     setShowModules(next);
     setShowModulesState(next);
     onShowModulesChange?.(next);
+  };
+
+  const togglePersonalVisibility = async () => {
+    const next = !personalVisible;
+    try {
+      const result = await window.excel?.personal?.setVisibility?.({ visible: next });
+      if (result?.success) {
+        setPersonalVisible(next);
+      }
+    } catch (_) { /* ignore */ }
   };
 
   const toggleTheme = () => {
@@ -370,7 +400,7 @@ function SettingsPanel({ onClose, onShowModulesChange }) {
           </div>
           <div className="settings-panel-content">
             {activeTab === 'general' && (
-              <GeneralContent theme={theme} toggleTheme={toggleTheme} showModules={showModulesState} onToggleShowModules={toggleShowModules} />
+              <GeneralContent theme={theme} toggleTheme={toggleTheme} showModules={showModulesState} onToggleShowModules={toggleShowModules} personalVisible={personalVisible} onTogglePersonalVisibility={togglePersonalVisibility} />
             )}
             {activeTab === 'account' && (
               <AccountContent licenseInfo={licenseInfo} handleSignOut={handleSignOut} />

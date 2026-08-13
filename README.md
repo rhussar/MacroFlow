@@ -21,6 +21,18 @@ Excel requirements:
 
 ## Publish a new installer
 
+### Via GitHub Actions (recommended)
+
+1. Add these repository secrets: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `S3_ENDPOINT`, `S3_BUCKET`.
+2. Push a tag (`v*`) or run **Build & Sign Windows** via workflow_dispatch.
+3. CI builds on `windows-2022`, uploads the `windows-installer` artifact, and (when secrets are set) publishes to R2 as `installer/MacroFlow-Setup.exe`.
+
+Public URL after publish:
+
+`https://pub-a7aa338dce944ce383fc182f58a87366.r2.dev/installer/MacroFlow-Setup.exe`
+
+### Locally
+
 On a Windows machine with signing credentials (optional) and R2 keys:
 
 ```bash

@@ -82,3 +82,38 @@ jobs:
           path: |
             App/out/installer/MacroFlow-Setup.exe
             App/out/make/squirrel.windows/**/*
+
+      - name: Detect R2 publish credentials
+        id: r2
+        shell: bash
+        run: |
+          if [ -n "${{ secrets.AWS_ACCESS_KEY_ID }}" ] && [ -n "${{ secrets.AWS_SECRET_ACCESS_KEY }}" ] && [ -n "${{ secrets.S3_ENDPOINT }}" ] && [ -n "${{ secrets.S3_BUCKET }}" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "R2 secrets not set; skipping public installer upload."
+          fi
+
+      - name: Install AWS CLI
+        if: steps.r2.outputs.enabled == 'true'
+        shell: powershell
+        run: |
+          if (Get-Command aws -ErrorAction SilentlyContinue) { aws --version; exit 0 }
+          msiexec.exe /i https://awscli.amazonaws.com/AWSCLIV2.msi /qn
+          $env:Path = "C:\Program Files\Amazon\AWSCLIV2;" + $env:Path
+          aws --version
+
+      - name: Publish installer to R2
+        if: steps.r2.outputs.enabled == 'true'
+        working-directory: App
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          S3_ENDPOINT: ${{ secrets.S3_ENDPOINT }}
+          S3_BUCKET: ${{ secrets.S3_BUCKET }}
+          MACROFLOW_PUBLIC_DOWNLOAD_BASE: ${{ secrets.MACROFLOW_PUBLIC_DOWNLOAD_BASE }}
+        shell: bash
+        run: |
+          export PATH="/c/Program Files/Amazon/AWSCLIV2:$PATH"
+          node scripts/publish-update.js --upload

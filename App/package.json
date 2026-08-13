@@ -1,7 +1,7 @@
 {
   "name": "macroflow",
   "productName": "MacroFlow",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Natural language Excel automation via COM",
   "main": "electron/main.js",
   "private": true,

@@ -1,38 +1,49 @@
 /**
- * Local AI configuration for VBA generation.
+ * Cloud AI configuration for VBA generation (Claude Sonnet 5 via Cloudflare Worker).
  */
 
-const LOCAL_AI_PROVIDER = 'ollama';
-const LOCAL_AI_MODEL = String(process.env.MACROFLOW_LLM_MODEL || 'qwen2.5-coder:3b').trim();
-const LOCAL_AI_BASE_URL = String(process.env.MACROFLOW_LLM_BASE_URL || 'http://127.0.0.1:11544').trim();
+const AI_PROVIDER = 'anthropic';
+const AI_MODEL = String(process.env.MACROFLOW_LLM_MODEL || 'claude-sonnet-5').trim();
+const AI_PROXY_URL = String(
+  process.env.MACROFLOW_AI_URL || 'https://macroflow-ai.rhussar.workers.dev'
+).trim().replace(/\/+$/, '');
 const LOCAL_AI_CONTEXT_LENGTH = 8192;
-const OLLAMA_RUNTIME_VERSION = String(process.env.MACROFLOW_OLLAMA_RUNTIME_VERSION || '0.18.2').trim();
-const OLLAMA_RELEASE_BASE_URL = `https://github.com/ollama/ollama/releases/download/v${OLLAMA_RUNTIME_VERSION}`;
-const OLLAMA_WINDOWS_ZIP_URL = String(
-  process.env.MACROFLOW_OLLAMA_WINDOWS_ZIP_URL || `${OLLAMA_RELEASE_BASE_URL}/ollama-windows-amd64.zip`
-).trim();
-const REQUEST_TIMEOUT_MS = 30000;
-const HEALTHCHECK_TIMEOUT_MS = 1500;
-const SETUP_SERVER_TIMEOUT_MS = 60 * 1000;
+const REQUEST_TIMEOUT_MS = 60000;
 const MAX_CURRENT_CODE_CHARS = 8000;
 const MAX_PROMPT_CHARS = 3000;
 const MAX_WORKBOOK_CONTEXT_CHARS = 2200;
-const MAX_COMPLETION_TOKENS = 900;
+const MAX_COMPLETION_TOKENS = 2048;
 const TEMPERATURE = 0.2;
 
+function getCloudAiStatus() {
+  return {
+    success: true,
+    provider: AI_PROVIDER,
+    model: AI_MODEL,
+    ready: true,
+    needsSetup: false,
+    setupInProgress: false,
+    removeInProgress: false,
+    runtimeInstalled: true,
+    serverReachable: true,
+    modelInstalled: true,
+    stage: 'ready',
+    statusText: 'Claude Sonnet 5 is ready.',
+    progress: null,
+    lastError: ''
+  };
+}
+
 module.exports = {
-  LOCAL_AI_PROVIDER,
-  LOCAL_AI_MODEL,
-  LOCAL_AI_BASE_URL,
+  AI_PROVIDER,
+  AI_MODEL,
+  AI_PROXY_URL,
   LOCAL_AI_CONTEXT_LENGTH,
-  OLLAMA_RUNTIME_VERSION,
-  OLLAMA_WINDOWS_ZIP_URL,
   REQUEST_TIMEOUT_MS,
-  HEALTHCHECK_TIMEOUT_MS,
-  SETUP_SERVER_TIMEOUT_MS,
   MAX_CURRENT_CODE_CHARS,
   MAX_PROMPT_CHARS,
   MAX_WORKBOOK_CONTEXT_CHARS,
   MAX_COMPLETION_TOKENS,
-  TEMPERATURE
+  TEMPERATURE,
+  getCloudAiStatus
 };

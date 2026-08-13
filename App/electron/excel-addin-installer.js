@@ -7,6 +7,19 @@ const execAsync = promisify(exec);
 
 const ADDIN_FILE_NAME = 'MacroFlow.xlam';
 
+function escapePowerShellSingleQuotedString(value) {
+  return String(value).replace(/'/g, "''");
+}
+
+function buildPowerShellEncodedCommand(script) {
+  return Buffer.from(String(script), 'utf16le').toString('base64');
+}
+
+async function runPowerShellEncoded(script) {
+  const encoded = buildPowerShellEncodedCommand(script);
+  return execAsync(`powershell.exe -NoProfile -NonInteractive -STA -ExecutionPolicy Bypass -EncodedCommand ${encoded}`);
+}
+
 // Lazy-loaded logger to avoid circular dependencies
 let _logger = null;
 function getLogger() {
@@ -139,6 +152,32 @@ async function copyAddinToXlstartFolder(sourcePath) {
   return { copied: true, path: destPath };
 }
 
+async function tryLoadAddinIntoRunningExcel(destinationPath) {
+  const escapedPath = escapePowerShellSingleQuotedString(destinationPath);
+  const escapedName = escapePowerShellSingleQuotedString(ADDIN_FILE_NAME);
+
+  const script = [
+    "$ErrorActionPreference = 'Stop'",
+    `$addinPath = '${escapedPath}'`,
+    `$addinName = '${escapedName}'`,
+    '$excel = $null',
+    "try { $excel = [Runtime.InteropServices.Marshal]::GetActiveObject('Excel.Application') } catch { exit 2 }",
+    '$addin = $excel.AddIns | Where-Object { $_.FullName -eq $addinPath -or $_.Name -eq $addinName } | Select-Object -First 1',
+    'if (-not $addin) { $addin = $excel.AddIns.Add($addinPath, $false) }',
+    '$addin.Installed = $true',
+  ].join('; ');
+
+  try {
+    await runPowerShellEncoded(script);
+    return { attempted: true, loaded: true };
+  } catch (error) {
+    if (typeof error?.code === 'number' && error.code === 2) {
+      return { attempted: true, loaded: false, reason: 'excel_not_running' };
+    }
+    return { attempted: true, loaded: false, reason: 'load_failed', error: error.message };
+  }
+}
+
 async function cleanupLegacyInstalls() {
   try {
     const appData = process.env.APPDATA;
@@ -208,17 +247,25 @@ async function installExcelAddin() {
     });
 
     const excelRunning = await isExcelRunning();
+    const liveLoadResult = excelRunning
+      ? await tryLoadAddinIntoRunningExcel(copyResult.path)
+      : { attempted: false, loaded: false, reason: 'excel_not_running' };
 
+    const loadedLive = Boolean(liveLoadResult.loaded);
     const result = {
       success: true,
       addinPath: copyResult.path,
       fileCopied: copyResult.copied,
-      restartRequired: excelRunning,
-      message: excelRunning ? 'Restart Excel to activate MacroFlow.' : undefined
+      liveLoadAttempted: Boolean(liveLoadResult.attempted),
+      liveLoadSucceeded: loadedLive,
+      liveLoadReason: liveLoadResult.reason,
+      restartRequired: excelRunning && !loadedLive,
+      message: excelRunning && !loadedLive ? 'Restart Excel to activate MacroFlow.' : undefined
     };
 
     log('info', 'Excel Add-in installation completed successfully', {
       fileCopied: result.fileCopied,
+      liveLoadSucceeded: result.liveLoadSucceeded,
       restartRequired: result.restartRequired
     });
 

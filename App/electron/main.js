@@ -1,15 +1,12 @@
-const { app, BrowserWindow, screen, ipcMain, shell } = require('electron');
+const { app, BrowserWindow, screen, ipcMain } = require('electron');
 const path = require('node:path');
 
 const iconPath = path.join(__dirname, '../assets', process.platform === 'win32' ? 'app-icon.ico' : 'app-icon.png');
 const { registerHandlers } = require('./ipc-handlers');
-const { installExcelAddin } = require('./excel-addin-installer');
+const { installExcelAddin, uninstallExcelAddin } = require('./excel-addin-installer');
 const excel = require('./excel-bridge');
 const logger = require('./logger');
 const { initAutoUpdater, stopAutoUpdater } = require('./auto-updater');
-const { checkCachedLicense, registerLicenseHandlers } = require('./license');
-const { handleCallback, registerAuthHandlers } = require('./auth');
-const localAiManager = require('./local-ai-manager');
 
 const WINDOW_STARTUP_BG = '#00000000';
 
@@ -28,7 +25,30 @@ const WINDOW_BASELINE = {
   minBottomMargin: 20
 };
 
-// CRITICAL: Handle Squirrel installer events FIRST (must be before any other code)
+const { spawn } = require('node:child_process');
+
+function runSquirrelUpdate(args, done) {
+  const updateExe = path.resolve(path.dirname(process.execPath), '..', 'Update.exe');
+  spawn(updateExe, args, { detached: true }).on('close', done);
+}
+
+const squirrelCommand = process.platform === 'win32' ? String(process.argv[1] || '') : '';
+if (squirrelCommand === '--squirrel-uninstall') {
+  uninstallExcelAddin()
+    .catch((error) => {
+      console.error('[AddinInstaller] uninstall during Squirrel uninstall failed', error?.message || error);
+    })
+    .finally(() => {
+      try {
+        runSquirrelUpdate([`--removeShortcut=${path.basename(process.execPath)}`], () => app.quit());
+      } catch {
+        app.quit();
+      }
+    });
+  return;
+}
+
+// CRITICAL: Handle remaining Squirrel installer events FIRST (must be before any other code)
 if (require('electron-squirrel-startup')) {
   app.quit();
   return;
@@ -37,14 +57,6 @@ if (require('electron-squirrel-startup')) {
 // Ensure Windows uses our app identity for taskbar grouping (helps avoid a stale pinned/shortcut icon).
 if (process.platform === 'win32') {
   app.setAppUserModelId('com.macroflow.desktop');
-}
-
-// Register macroflow:// as a custom protocol for Auth0 OAuth callback.
-if (process.defaultApp) {
-  // In dev, register with the path to the electron binary + script
-  app.setAsDefaultProtocolClient('macroflow', process.execPath, [path.resolve(process.argv[1])]);
-} else {
-  app.setAsDefaultProtocolClient('macroflow');
 }
 
 // Expose V8 garbage collection in the main process so we can force COM proxy
@@ -530,8 +542,7 @@ if (!gotLock) {
   // We have the lock - set up the single instance behavior
 
   // Handle second-instance attempts by focusing the existing window.
-  // On Windows, deep links (macroflow://...) arrive here as argv.
-  app.on('second-instance', (_event, argv) => {
+  app.on('second-instance', () => {
     const windows = BrowserWindow.getAllWindows();
     if (windows.length > 0) {
       const win = windows[0];
@@ -539,13 +550,6 @@ if (!gotLock) {
         win.restore();
       }
       win.focus();
-    }
-
-    // Check argv for a macroflow:// deep link (Auth0 callback).
-    const deepLink = argv.find((arg) => arg.startsWith('macroflow://'));
-    if (deepLink) {
-      logger.info('[Auth] deep link received', { url: deepLink });
-      handleCallback(deepLink);
     }
   });
 
@@ -612,16 +616,6 @@ if (!gotLock) {
 
     // Register window control handlers BEFORE creating window
     registerWindowHandlers();
-    registerLicenseHandlers();
-    registerAuthHandlers();
-
-    // Check cached license (non-blocking — renderer will gate UI).
-    // Store the promise so license:status can await it before responding.
-    const { setStartupCheckPromise } = require('./license');
-    const p = checkCachedLicense().catch((err) => {
-      logger.warn('[License] startup check failed', { error: err.message });
-    });
-    setStartupCheckPromise(p);
 
     registerHandlers();
     createWindow();
@@ -664,7 +658,6 @@ if (!gotLock) {
     }
     stopExcelWindowMonitor();
     stopAutoUpdater();
-    localAiManager.shutdown();
 
     // Force V8 GC to release any lingering COM proxy wrappers before exit.
     if (typeof global.gc === 'function') {

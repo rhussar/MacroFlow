@@ -1,27 +1,56 @@
 # MacroFlow
 
-MacroFlow generates VBA with a local on-device model. On first use of Create, the app will prompt the user to install the local AI runtime and download the configured model. App updates and licensing remain separate network-backed features.
+MacroFlow is a Windows Excel sidecar that generates, runs, and organizes VBA macros. Create uses Claude Sonnet 5 through a Cloudflare Worker that holds the Anthropic API key.
 
-## Install (Windows)
+## Download (Windows)
 
-1) Build the installer:
+Installer:
+
+[https://pub-a7aa338dce944ce383fc182f58a87366.r2.dev/installer/MacroFlow-Setup.exe](https://pub-a7aa338dce944ce383fc182f58a87366.r2.dev/installer/MacroFlow-Setup.exe)
+
+Paste that URL on macroflow.ai after you publish a build.
+
+1. Run `MacroFlow-Setup.exe`.
+2. The installer copies `MacroFlow.xlam` into Excel’s XLSTART folder and tries to load it into a running Excel instance.
+3. Open Excel (or restart it if the ribbon is missing) and click **Home → MacroFlow**.
+
+Excel requirements:
+
+- Excel must be running for MacroFlow to talk to workbooks.
+- Enable **Trust access to the VBA project object model**: File → Options → Trust Center → Trust Center Settings → Macro Settings.
+
+## Publish a new installer
+
+On a Windows machine with signing credentials (optional) and R2 keys:
 
 ```bash
 cd App
 npm install
 npm run make
+npm run upload:update
 ```
 
-2) Run the installer:
+`App/scripts/publish-update.js` uploads:
 
-- Open `App/out/make/squirrel.windows/x64/`
-- Double-click `MacroFlow-x.x.x Setup.exe`
+- `installer/MacroFlow-Setup.exe` — stable public download URL
+- `updates/RELEASES` and the `.nupkg` — Squirrel auto-update feed
 
-3) First use of Create:
+Required env vars: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `S3_ENDPOINT`, `S3_BUCKET`.
 
-- Open Create inside MacroFlow
-- If local AI is not installed yet, click `Install Local AI`
-- MacroFlow will download the local AI runtime and the configured local code model
+## AI proxy (Claude Sonnet 5)
+
+The desktop app never contains an Anthropic key. Deploy the Worker first:
+
+```bash
+cd worker
+npx wrangler login
+npx wrangler secret put ANTHROPIC_API_KEY
+npx wrangler deploy
+```
+
+Default app URL: `https://macroflow-ai.rhussar.workers.dev`
+
+Override with `MACROFLOW_AI_URL` if your Worker hostname differs. Details: [worker/README.md](worker/README.md).
 
 ## Development Mode
 
@@ -33,34 +62,12 @@ npm run dev
 
 This starts Vite on `http://localhost:5173` and launches the Electron app.
 
-## Local AI
-
-- Provider: `Ollama`
-- Default model: `qwen2.5-coder:3b`
-- Runtime status and setup are available in MacroFlow Settings
-- VBA generation stays on the local machine and talks only to a loopback Ollama API
-- Ollama cloud features are disabled for MacroFlow's managed runtime
-
-## Files 
-
+## Files
 
 - `docs/excel-bridge-api.md` documents the current `window.excel` API exposed to the UI.
 - `App/package.json` defines the app metadata, scripts, and dependencies.
-- `App/package-lock.json` locks dependency versions for deterministic installs.
-
-- `App/forge.config.js` configures Electron Forge packaging and makers.
-- `App/vite.config.js` configures the Vite build for the renderer.
-- `App/index.html` is the renderer HTML entry point.
-- `App/components.json` holds UI tooling configuration.
-- `App/test-connection.js` is a standalone winax/Excel COM smoke test (requires matching Node version; otherwise test from Electron).
-- `App/Resources/MacroFlowLoader.xlam` is the Excel add‑in loaded by the installer.
-
+- `App/Resources/MacroFlow.xlam` is the Excel add-in copied into XLSTART.
 - `App/electron/main.js` creates the Electron window and manages app lifecycle.
-- `App/electron/preload.js` exposes a safe IPC bridge to the renderer.
-- `App/electron/ipc-handlers.js` routes renderer IPC calls to backend logic.
-- `App/electron/excel-bridge.js` implements Excel COM automation and VBA helpers.
-- `App/electron/excel-addin-installer.js` installs and registers the Excel add‑in.
-
-- `App/src/main.jsx` boots the React app in the renderer.
-- `App/src/index.css` defines global styles and Tailwind base styles.
-- `App/src/App.jsx` is the current React UI entry component.
+- `App/electron/excel-addin-installer.js` installs and uninstalls the Excel add-in.
+- `App/electron/llm-client.js` calls the Cloudflare Worker for VBA generation.
+- `worker/` is the Anthropic proxy (Claude Sonnet 5).

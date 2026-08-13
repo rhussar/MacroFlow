@@ -188,7 +188,7 @@ function loadHandlers({
     generateVba: async () => ({
       success: true,
       code: 'Option Explicit\nSub RunA()\nEnd Sub',
-      model: 'qwen2.5-coder:3b'
+      model: 'claude-sonnet-5'
     }),
     generateVbaStream: async (args, deps, onToken) => {
       const result = await (openAiOverrides.generateVba || openAiStub.generateVba)(args);
@@ -1320,7 +1320,7 @@ test('ai:generate-vba forwards payload to the local AI client and returns succes
         return {
           success: true,
           code: 'Option Explicit\nPublic Sub RunA()\nEnd Sub',
-          model: 'qwen2.5-coder:3b',
+          model: 'claude-sonnet-5',
           usage: { promptTokens: 10, completionTokens: 12, totalTokens: 22 }
         };
       }
@@ -1340,7 +1340,7 @@ test('ai:generate-vba forwards payload to the local AI client and returns succes
   assert.equal(calls[0].moduleName, 'Module1');
   assert.equal(result.success, true);
   assert.match(result.code, /Sub RunA/i);
-  assert.equal(result.model, 'qwen2.5-coder:3b');
+  assert.equal(result.model, 'claude-sonnet-5');
   assert.equal(result.usage.totalTokens, 22);
 });
 
@@ -1350,7 +1350,7 @@ test('ai:generate-vba propagates failure reason and message', async () => {
       generateVba: async () => ({
         success: false,
         reason: 'AI_NOT_READY',
-        message: 'Local AI is not running yet. Finish setup and retry.'
+        message: 'Could not reach the AI service. Check your internet connection and try again.'
       })
     }
   });
@@ -1364,85 +1364,17 @@ test('ai:generate-vba propagates failure reason and message', async () => {
 
   assert.equal(result.success, false);
   assert.equal(result.reason, 'AI_NOT_READY');
-  assert.match(result.message, /local ai/i);
+  assert.match(result.message, /could not reach the ai service/i);
 });
 
-test('ai:status returns local AI readiness snapshot', async () => {
-  const { handlers } = loadHandlers({
-    localAiOverrides: {
-      getStatus: async () => ({
-        success: true,
-        provider: 'ollama',
-        model: 'qwen2.5-coder:3b',
-        ready: false,
-        needsSetup: true,
-        setupInProgress: false,
-        runtimeInstalled: true,
-        serverReachable: true,
-        modelInstalled: false,
-        stage: 'model_missing',
-        statusText: 'The local AI model qwen2.5-coder:3b is not installed yet.'
-      })
-    }
-  });
+test('ai:status returns cloud AI readiness snapshot', async () => {
+  const { handlers } = loadHandlers();
 
   const result = await handlers['ai:status']();
   assert.equal(result.success, true);
-  assert.equal(result.provider, 'ollama');
-  assert.equal(result.ready, false);
-  assert.equal(result.stage, 'model_missing');
-});
-
-test('ai:setup forwards to local AI manager', async () => {
-  const { handlers } = loadHandlers({
-    localAiOverrides: {
-      setup: async () => ({
-        success: true,
-        started: true,
-        status: {
-          success: true,
-          provider: 'ollama',
-          model: 'qwen2.5-coder:3b',
-          ready: false,
-          needsSetup: true,
-          setupInProgress: true,
-          stage: 'checking',
-          statusText: 'Checking local AI runtime...'
-        }
-      })
-    }
-  });
-
-  const result = await handlers['ai:setup']();
-  assert.equal(result.success, true);
-  assert.equal(result.started, true);
-  assert.equal(result.status.stage, 'checking');
-});
-
-test('ai:remove-model forwards to local AI manager', async () => {
-  const { handlers } = loadHandlers({
-    localAiOverrides: {
-      removeModel: async () => ({
-        success: true,
-        started: true,
-        status: {
-          success: true,
-          provider: 'ollama',
-          model: 'qwen2.5-coder:3b',
-          ready: false,
-          needsSetup: true,
-          removeInProgress: true,
-          stage: 'removing_model',
-          statusText: 'Removing qwen2.5-coder:3b...'
-        }
-      })
-    }
-  });
-
-  const result = await handlers['ai:remove-model']();
-  assert.equal(result.success, true);
-  assert.equal(result.started, true);
-  assert.equal(result.status.stage, 'removing_model');
+  assert.equal(result.provider, 'anthropic');
+  assert.equal(result.ready, true);
+  assert.equal(result.model, 'claude-sonnet-5');
 });
 
 test('excel:resolveInstance dedupes concurrent requests and reuses one helper call', async () => {

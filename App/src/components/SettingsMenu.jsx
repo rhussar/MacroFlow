@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   MailIcon,
   SettingsIcon,
@@ -6,7 +6,6 @@ import {
   SunIcon,
   MoonIcon,
   InfoIcon,
-  UserIcon,
   SlidersIcon,
   SparkleIcon
 } from './icons';
@@ -39,14 +38,8 @@ const NAV_GROUPS = [
     label: 'SETTINGS',
     items: [
       { id: 'general', label: 'General', icon: <SlidersIcon size={15} /> },
-      { id: 'local-ai', label: 'Local AI', icon: <SparkleIcon size={15} /> },
+      { id: 'ai', label: 'AI', icon: <SparkleIcon size={15} /> },
       { id: 'about', label: 'About', icon: <InfoIcon size={15} /> },
-    ],
-  },
-  {
-    label: 'ACCOUNT',
-    items: [
-      { id: 'account', label: 'Account', icon: <UserIcon size={15} /> },
     ],
   },
 ];
@@ -118,24 +111,6 @@ function GeneralContent({ theme, toggleTheme, showModules, onToggleShowModules, 
   );
 }
 
-function AccountContent({ licenseInfo, handleSignOut }) {
-  const email = licenseInfo?.email;
-
-  return (
-    <div className="settings-section">
-      <div className="settings-item">
-        <div className="settings-item-info">
-          <div className="settings-item-title">{email || 'Not signed in'}</div>
-          {email && <div className="settings-item-desc">Signed in with this email</div>}
-        </div>
-        <button className="settings-action-btn danger" onClick={handleSignOut}>
-          Sign Out
-        </button>
-      </div>
-    </div>
-  );
-}
-
 function AboutContent({ updateStatus }) {
   return (
     <div className="settings-section">
@@ -155,21 +130,9 @@ function AboutContent({ updateStatus }) {
   );
 }
 
-function LocalAiContent({
-  aiStatus,
-  aiNotice,
-  aiProgressPercent,
-  showAiDetail,
-  handleAiSetup,
-  handleAiRemoveModel,
-}) {
-  const statusLabel = aiStatus?.ready
-    ? 'Ready'
-    : aiStatus?.removeInProgress
-      ? 'Removing'
-      : aiStatus?.setupInProgress
-        ? 'Setting up'
-        : 'Needs setup';
+function AiContent({ aiStatus }) {
+  const model = aiStatus?.model || 'claude-sonnet-5';
+  const statusLabel = aiStatus?.ready === false ? 'Unavailable' : 'Ready';
 
   return (
     <div className="settings-section">
@@ -178,67 +141,22 @@ function LocalAiContent({
           <div className="settings-item-title">Status</div>
           <div className="settings-item-desc">{statusLabel}</div>
         </div>
-        {!aiStatus?.ready && !aiStatus?.removeInProgress && (
-          <button
-            className="settings-action-btn"
-            onClick={handleAiSetup}
-            disabled={Boolean(aiStatus?.setupInProgress || aiStatus?.removeInProgress)}
-          >
-            {aiStatus?.setupInProgress ? 'Setting up...' : 'Install'}
-          </button>
-        )}
       </div>
-
-      {showAiDetail && (
-        <div className="settings-subcopy">
-          {aiStatus?.removeInProgress
-            ? aiStatus?.statusText || 'Removing local model...'
-            : aiStatus?.statusText || 'Checking local AI...'}
-        </div>
-      )}
-      {aiNotice && !showAiDetail && (
-        <div className="settings-subcopy success">{aiNotice}</div>
-      )}
-      {aiProgressPercent !== null && (
-        <div className="settings-progress">
-          <div className="settings-progress-track">
-            <div className="settings-progress-fill" style={{ width: `${aiProgressPercent}%` }} />
-          </div>
-          <div className="settings-progress-label">{aiProgressPercent}%</div>
-        </div>
-      )}
-
       <div className="settings-item">
         <div className="settings-item-info">
           <div className="settings-item-title">Model</div>
-          <div className="settings-item-desc">{aiStatus?.model || 'qwen2.5-coder:3b'}</div>
+          <div className="settings-item-desc">Claude Sonnet 5</div>
         </div>
       </div>
-
       <div className="settings-item">
         <div className="settings-item-info">
-          <div className="settings-item-title">Runtime</div>
-          <div className="settings-item-desc">
-            {aiStatus?.runtimeInstalled ? 'Installed' : 'Not installed'}
-          </div>
+          <div className="settings-item-title">Provider</div>
+          <div className="settings-item-desc">Anthropic via MacroFlow cloud proxy</div>
         </div>
       </div>
-
-      {(aiStatus?.modelInstalled || aiStatus?.removeInProgress) && (
-        <div className="settings-item">
-          <div className="settings-item-info">
-            <div className="settings-item-title">Remove model</div>
-            <div className="settings-item-desc">Free up disk space by removing the local model</div>
-          </div>
-          <button
-            className="settings-action-btn danger"
-            onClick={handleAiRemoveModel}
-            disabled={Boolean(aiStatus?.setupInProgress || aiStatus?.removeInProgress)}
-          >
-            {aiStatus?.removeInProgress ? 'Removing...' : 'Remove'}
-          </button>
-        </div>
-      )}
+      <div className="settings-subcopy">
+        Create uses `{model}`. No local model download is required.
+      </div>
     </div>
   );
 }
@@ -248,28 +166,10 @@ function SettingsPanel({ onClose, onShowModulesChange }) {
   const [theme, setThemeState] = useState(getTheme);
   const [showModulesState, setShowModulesState] = useState(getShowModules);
   const [personalVisible, setPersonalVisible] = useState(false);
-  const [licenseInfo, setLicenseInfo] = useState(null);
   const [updateStatus, setUpdateStatus] = useState('Up to date');
   const [aiStatus, setAiStatus] = useState(null);
-  const [aiNotice, setAiNotice] = useState('');
-  const previousRemoveInProgressRef = useRef(false);
-  const aiProgressPercent = typeof aiStatus?.progress === 'number'
-    ? Math.max(0, Math.min(100, Math.round(aiStatus.progress * 100)))
-    : null;
-  const showAiDetail = Boolean(
-    aiStatus?.setupInProgress ||
-    aiStatus?.removeInProgress ||
-    aiStatus?.stage === 'error' ||
-    aiStatus?.stage === 'runtime_conflict'
-  );
 
   useEffect(() => {
-    window.excel?.license?.getStatus?.().then((status) => {
-      if (status?.licenseData) {
-        setLicenseInfo(status.licenseData);
-      }
-    }).catch(() => {});
-
     window.excel?.updater?.checkNow?.().then((result) => {
       if (result?.success) {
         setUpdateStatus('Checking...');
@@ -280,10 +180,6 @@ function SettingsPanel({ onClose, onShowModulesChange }) {
       }
     }).catch(() => {});
 
-    const unsubscribeAi = window.excel?.ai?.onStatus?.((status) => {
-      setAiStatus(status || null);
-    }) || (() => {});
-
     window.excel?.ai?.getStatus?.().then((status) => {
       setAiStatus(status || null);
     }).catch(() => {});
@@ -293,36 +189,7 @@ function SettingsPanel({ onClose, onShowModulesChange }) {
         setPersonalVisible(result.visible === true);
       }
     }).catch(() => {});
-
-    return () => {
-      unsubscribeAi();
-    };
   }, []);
-
-  useEffect(() => {
-    const wasRemoving = previousRemoveInProgressRef.current;
-    const isRemoving = Boolean(aiStatus?.removeInProgress);
-
-    if (isRemoving) {
-      setAiNotice('');
-    } else if (
-      wasRemoving &&
-      aiStatus &&
-      !aiStatus.modelInstalled &&
-      aiStatus.runtimeInstalled &&
-      aiStatus.stage !== 'error'
-    ) {
-      setAiNotice('Local model removed.');
-      const timer = setTimeout(() => {
-        setAiNotice('');
-      }, 4000);
-      previousRemoveInProgressRef.current = isRemoving;
-      return () => clearTimeout(timer);
-    }
-
-    previousRemoveInProgressRef.current = isRemoving;
-    return undefined;
-  }, [aiStatus]);
 
   const toggleShowModules = () => {
     const next = !showModulesState;
@@ -345,28 +212,6 @@ function SettingsPanel({ onClose, onShowModulesChange }) {
     const next = theme === 'dark' ? 'light' : 'dark';
     setTheme(next);
     setThemeState(next);
-  };
-
-  const handleSignOut = async () => {
-    await window.excel?.license?.deactivate?.();
-    await window.excel?.auth?.logout?.();
-    window.location.reload();
-  };
-
-  const handleAiSetup = async () => {
-    await window.excel?.ai?.setup?.();
-  };
-
-  const handleAiRemoveModel = async () => {
-    const confirmed = window.confirm(
-      'Remove the local AI model from this device? You can install it again later from Settings or Create.'
-    );
-
-    if (!confirmed) {
-      return;
-    }
-
-    await window.excel?.ai?.removeModel?.();
   };
 
   const activeLabel = NAV_GROUPS.flatMap((g) => g.items).find((i) => i.id === activeTab)?.label;
@@ -402,21 +247,11 @@ function SettingsPanel({ onClose, onShowModulesChange }) {
             {activeTab === 'general' && (
               <GeneralContent theme={theme} toggleTheme={toggleTheme} showModules={showModulesState} onToggleShowModules={toggleShowModules} personalVisible={personalVisible} onTogglePersonalVisibility={togglePersonalVisibility} />
             )}
-            {activeTab === 'account' && (
-              <AccountContent licenseInfo={licenseInfo} handleSignOut={handleSignOut} />
-            )}
             {activeTab === 'about' && (
               <AboutContent updateStatus={updateStatus} />
             )}
-            {activeTab === 'local-ai' && (
-              <LocalAiContent
-                aiStatus={aiStatus}
-                aiNotice={aiNotice}
-                aiProgressPercent={aiProgressPercent}
-                showAiDetail={showAiDetail}
-                handleAiSetup={handleAiSetup}
-                handleAiRemoveModel={handleAiRemoveModel}
-              />
+            {activeTab === 'ai' && (
+              <AiContent aiStatus={aiStatus} />
             )}
           </div>
         </div>

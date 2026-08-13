@@ -1,0 +1,9 @@
+name = "macroflow-ai"
+main = "src/index.js"
+compatibility_date = "2026-08-01"
+
+[vars]
+ANTHROPIC_MODEL = "claude-sonnet-5"
+ANTHROPIC_VERSION = "2023-06-01"
+MAX_BODY_BYTES = "200000"
+RATE_LIMIT_PER_HOUR = "20"

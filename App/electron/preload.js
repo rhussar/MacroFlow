@@ -144,49 +144,13 @@ contextBridge.exposeInMainWorld('excel', {
   // ==========================================================================
   ai: {
     /**
-     * Get local AI runtime/model status.
-     * @returns {Promise<{ success: boolean, provider: string, model: string, ready: boolean, needsSetup: boolean, setupInProgress: boolean, runtimeInstalled: boolean, serverReachable: boolean, modelInstalled: boolean, stage: string, progress?: number | null, statusText: string, lastError?: string }>}
+     * Get cloud AI status (Claude Sonnet 5 via Cloudflare Worker).
+     * @returns {Promise<{ success: boolean, provider: string, model: string, ready: boolean, stage: string, statusText: string }>}
      */
     getStatus: () => ipcRenderer.invoke('ai:status'),
 
     /**
-     * Ensure local AI runtime is started and ready. Only starts Ollama if needed.
-     */
-    ensureReady: () => ipcRenderer.invoke('ai:ensure-ready'),
-
-    /**
-     * Start local AI setup. Progress arrives through `onStatus`.
-     * @returns {Promise<{ success: boolean, started: boolean, status: object }>}
-     */
-    setup: () => ipcRenderer.invoke('ai:setup'),
-
-    /**
-     * Remove the configured local AI model from the local runtime.
-     * @returns {Promise<{ success: boolean, started: boolean, status: object }>}
-     */
-    removeModel: () => ipcRenderer.invoke('ai:remove-model'),
-
-    /**
-     * Subscribe to local AI status/setup updates.
-     * @param {(payload: object) => void} callback
-     * @returns {() => void}
-     */
-    onStatus: (callback) => {
-      if (typeof callback !== 'function') {
-        return () => {};
-      }
-
-      const listener = (_event, payload) => {
-        callback(payload);
-      };
-      ipcRenderer.on('ai:status', listener);
-      return () => {
-        ipcRenderer.removeListener('ai:status', listener);
-      };
-    },
-
-    /**
-     * Generate VBA module code using the local AI runtime.
+     * Generate VBA module code using Claude Sonnet 5.
      * @param {{ prompt: string, intent?: string, workbookName?: string, workbookPath?: string, moduleName?: string, sheetName?: string, currentCode?: string, includeCurrentCode?: boolean }} args
      * @returns {Promise<{ success: boolean, code?: string, content?: string, intent?: string, model?: string, usage?: { promptTokens?: number, completionTokens?: number, totalTokens?: number }, reason?: string, message?: string }>}
      */
@@ -495,37 +459,6 @@ contextBridge.exposeInMainWorld('excel', {
 
     /** Get current updater state. */
     getStatus: () => ipcRenderer.invoke('updater:status'),
-  },
-
-  // ==========================================================================
-  // AUTH (Auth0 SSO)
-  // ==========================================================================
-  auth: {
-    /** Start Auth0 login flow (opens system browser). Returns auth result. */
-    login: () => ipcRenderer.invoke('auth:login'),
-
-    /** Start Auth0 logout flow. */
-    logout: () => ipcRenderer.invoke('auth:logout'),
-  },
-
-  // ==========================================================================
-  // LICENSE
-  // ==========================================================================
-  license: {
-    /** Get current license status. */
-    getStatus: () => ipcRenderer.invoke('license:status'),
-
-    /** Activate a license key. Returns { success, message?, licenseData? }. */
-    activate: (key) => ipcRenderer.invoke('license:activate', key),
-
-    /** Activate license from Auth0 login result. */
-    activateFromAuth: (authResult) => ipcRenderer.invoke('license:activate-from-auth', authResult),
-
-    /** Deactivate / remove the license from this machine. */
-    deactivate: () => ipcRenderer.invoke('license:deactivate'),
-
-    /** Re-check the cached license against Keygen. */
-    check: () => ipcRenderer.invoke('license:check'),
   },
 
   // ==========================================================================

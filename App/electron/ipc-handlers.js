@@ -16,7 +16,7 @@
 const { ipcMain, app, BrowserWindow, shell } = require('electron');
 const excel = require('./excel-bridge');
 const { generateVba, generateVbaStream } = require('./llm-client');
-const localAiManager = require('./local-ai-manager');
+const { getCloudAiStatus } = require('./llm-config');
 const {
   loadSecurityPolicy,
   isModuleAllowed,
@@ -43,17 +43,6 @@ const FOCUS_CONFIG = {
   // Delay between modal check attempts (ms)
   modalCheckInterval: 200
 };
-
-let aiStatusEventsRegistered = false;
-
-function sendToAllRenderers(channel, payload) {
-  const windows = BrowserWindow.getAllWindows();
-  for (const win of windows) {
-    if (win?.webContents && !win.webContents.isDestroyed()) {
-      win.webContents.send(channel, payload);
-    }
-  }
-}
 
 /**
  * Simple logger for IPC events (uses diagnostics logger)
@@ -234,15 +223,6 @@ async function withExcelFocus(fn, options = {}) {
 }
 
 function registerHandlers() {
-  if (!aiStatusEventsRegistered) {
-    aiStatusEventsRegistered = true;
-    localAiManager.subscribe((status) => {
-      sendToAllRenderers('ai:status', status);
-    });
-    // Pre-populate AI status cache in the background.
-    localAiManager.getStatus().catch(() => {});
-  }
-
   try {
     const auditInit = initializeAuditLog();
     logger.info('Audit', 'initialized', {
@@ -1462,66 +1442,22 @@ function registerHandlers() {
   });
 
   /**
-   * Get local AI runtime/model status.
+   * Get cloud AI status.
    * Channel: 'ai:status'
    */
   ipcMain.handle('ai:status', async () => {
     logIpc('ai:status', 'start');
-    const result = await localAiManager.getStatus();
+    const result = getCloudAiStatus();
     logIpc('ai:status', 'end', {
       ready: result.ready,
       stage: result.stage,
-      setupInProgress: result.setupInProgress
+      model: result.model
     });
     return result;
   });
 
   /**
-   * Ensure the local AI runtime is started and ready.
-   * Channel: 'ai:ensure-ready'
-   */
-  ipcMain.handle('ai:ensure-ready', async () => {
-    logIpc('ai:ensure-ready', 'start');
-    const result = await localAiManager.ensureReady();
-    logIpc('ai:ensure-ready', 'end', {
-      ready: result.ready,
-      stage: result.stage
-    });
-    return result;
-  });
-
-  /**
-   * Start local AI setup.
-   * Channel: 'ai:setup'
-   */
-  ipcMain.handle('ai:setup', async () => {
-    logIpc('ai:setup', 'start');
-    const result = await localAiManager.setup();
-    logIpc('ai:setup', 'end', {
-      success: result.success,
-      started: result.started,
-      stage: result.status?.stage
-    });
-    return result;
-  });
-
-  /**
-   * Remove the configured local AI model.
-   * Channel: 'ai:remove-model'
-   */
-  ipcMain.handle('ai:remove-model', async () => {
-    logIpc('ai:remove-model', 'start');
-    const result = await localAiManager.removeModel();
-    logIpc('ai:remove-model', 'end', {
-      success: result.success,
-      started: result.started,
-      stage: result.status?.stage
-    });
-    return result;
-  });
-
-  /**
-   * Generate VBA code from natural language prompt (local AI).
+   * Generate VBA code from natural language prompt (Claude Sonnet 5).
    * Channel: 'ai:generate-vba'
    * Args: { prompt: string, intent?: string, workbookName?: string, workbookPath?: string, moduleName?: string, sheetName?: string, currentCode?: string, includeCurrentCode?: boolean }
    */

@@ -14,9 +14,10 @@
  *   S3_BUCKET                — Bucket name, e.g. macroflow-releases
  *
  * What gets uploaded:
- *   out/make/squirrel.windows/x64/RELEASES                → s3://{bucket}/updates/RELEASES
- *   out/make/squirrel.windows/x64/<name>-<ver>-full.nupkg  → s3://{bucket}/updates/<name>-<ver>-full.nupkg
- *   out/make/squirrel.windows/x64/<name>Setup.exe          → s3://{bucket}/installer/<name>Setup.exe
+ *   out/make/squirrel.windows/x64/RELEASES                 → s3://{bucket}/updates/RELEASES
+ *   out/make/squirrel.windows/x64/<name>-<ver>-full.nupkg   → s3://{bucket}/updates/<name>-<ver>-full.nupkg
+ *   Setup.exe                                              → s3://{bucket}/installer/MacroFlow-Setup.exe
+ *   Setup.exe                                              → s3://{bucket}/installer/<versioned-name>
  */
 
 const { execSync } = require('child_process');
@@ -83,8 +84,12 @@ console.log(`  Files:`);
 console.log(`    RELEASES         → updates/RELEASES`);
 console.log(`    ${nupkgFile}     → updates/${nupkgFile}`);
 if (setupExe) {
-  console.log(`    ${setupExe}      → installer/${setupExe}`);
+  console.log(`    ${setupExe}      → installer/MacroFlow-Setup.exe`);
 }
+
+const PUBLIC_DOWNLOAD_BASE = String(
+  process.env.MACROFLOW_PUBLIC_DOWNLOAD_BASE || 'https://pub-a7aa338dce944ce383fc182f58a87366.r2.dev'
+).replace(/\/+$/, '');
 
 // 5. Upload using AWS CLI (s3-compatible)
 const s3Flags = `--endpoint-url ${endpoint}`;
@@ -93,13 +98,17 @@ run(`aws s3 cp "${path.join(squirrelOut, 'RELEASES')}" "s3://${bucket}/updates/R
 run(`aws s3 cp "${path.join(squirrelOut, nupkgFile)}" "s3://${bucket}/updates/${nupkgFile}" ${s3Flags}`);
 
 if (setupExe) {
-  // Rename to remove spaces — avoids URL encoding headaches for download links.
-  const safeSetupName = setupExe.replace(/\s+/g, '-');
-  run(`aws s3 cp "${path.join(squirrelOut, setupExe)}" "s3://${bucket}/installer/${safeSetupName}" ${s3Flags}`);
+  // Stable public name plus a versioned copy (spaces removed for URL safety).
+  const versionedName = setupExe.replace(/\s+/g, '-');
+  const stableName = 'MacroFlow-Setup.exe';
+  const localSetupPath = path.join(squirrelOut, setupExe);
+  run(`aws s3 cp "${localSetupPath}" "s3://${bucket}/installer/${versionedName}" ${s3Flags}`);
+  run(`aws s3 cp "${localSetupPath}" "s3://${bucket}/installer/${stableName}" ${s3Flags}`);
 }
 
 // 6. Read version from package.json for summary
 const pkg = JSON.parse(fs.readFileSync(path.join(appDir, 'package.json'), 'utf8'));
 console.log(`\n=== Done ===`);
 console.log(`  Version ${pkg.version} published.`);
+console.log(`  Public installer: ${PUBLIC_DOWNLOAD_BASE}/installer/MacroFlow-Setup.exe`);
 console.log(`  Users running MacroFlow will pick up this update automatically.\n`);

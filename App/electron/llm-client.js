@@ -2,12 +2,12 @@ const http = require('node:http');
 const https = require('node:https');
 const logger = require('./logger');
 const {
-  LOCAL_AI_MODEL,
-  LOCAL_AI_BASE_URL,
+  AI_MODEL,
+  AI_PROVIDER,
+  AI_PROXY_URL,
   TEMPERATURE
 } = require('./llm-config');
 const { requestText } = require('./http-client');
-const localAiManager = require('./local-ai-manager');
 const { normalizeAiIntent, buildUserPrompt, getSystemPrompt } = require('./llm-prompts');
 const { resolveWorkbookPromptContext } = require('./llm-context');
 const { resolveLlmPerformanceProfile } = require('./llm-performance');
@@ -49,6 +49,13 @@ function extractTextContent(content) {
   return '';
 }
 
+function extractAnthropicText(parsedBody) {
+  if (Array.isArray(parsedBody?.content)) {
+    return extractTextContent(parsedBody.content);
+  }
+  return extractTextContent(parsedBody?.choices?.[0]?.message?.content);
+}
+
 function extractCodeBlock(text) {
   const normalized = normalizeLineEndings(text);
   const fencedMatch = normalized.match(/```(?:vba|vb)?\s*([\s\S]*?)```/i);
@@ -63,7 +70,7 @@ function hasVbaProcedure(code) {
 }
 
 function getErrorMessageFromResponse(responseBody) {
-  const apiMessage = responseBody?.error?.message;
+  const apiMessage = responseBody?.error?.message || responseBody?.error?.type;
   if (apiMessage && typeof apiMessage === 'string') {
     return apiMessage.trim();
   }
@@ -74,22 +81,22 @@ function mapGenerateError(error, statusCode = 0) {
   const rawMessage = String(error?.message || '').trim();
   const messageLower = rawMessage.toLowerCase();
 
-  if (messageLower.includes('model') && messageLower.includes('not found')) {
-    return { reason: 'AI_MODEL_MISSING', message: 'The local AI model is not installed yet.' };
+  if (statusCode === 429 || messageLower.includes('rate limit')) {
+    return { reason: 'AI_RATE_LIMITED', message: 'AI rate limit reached. Please try again later.' };
   }
-  if (statusCode === 404) {
-    return { reason: 'AI_MODEL_MISSING', message: rawMessage || 'The local AI model is not installed yet.' };
+  if (statusCode === 401 || statusCode === 403) {
+    return { reason: 'AI_UNAUTHORIZED', message: 'AI proxy rejected the request. Check the Cloudflare Worker configuration.' };
   }
   if (messageLower.includes('timeout') || messageLower.includes('timed out') || error?.code === 'ETIMEDOUT') {
-    return { reason: 'AI_TIMEOUT', message: 'Local AI timed out. Please try again.' };
+    return { reason: 'AI_TIMEOUT', message: 'AI request timed out. Please try again.' };
   }
   if (error?.code === 'ENOTFOUND' || error?.code === 'ECONNRESET' || error?.code === 'ECONNREFUSED') {
-    return { reason: 'AI_NOT_READY', message: 'Local AI is not running yet. Finish setup and retry.' };
+    return { reason: 'AI_NOT_READY', message: 'Could not reach the AI service. Check your internet connection and try again.' };
   }
   if (statusCode >= 400) {
-    return { reason: 'AI_INVALID_RESPONSE', message: rawMessage || `Local AI request failed (HTTP ${statusCode}).` };
+    return { reason: 'AI_INVALID_RESPONSE', message: rawMessage || `AI request failed (HTTP ${statusCode}).` };
   }
-  return { reason: 'AI_INVALID_RESPONSE', message: rawMessage || 'Local AI returned an invalid response.' };
+  return { reason: 'AI_INVALID_RESPONSE', message: rawMessage || 'AI returned an invalid response.' };
 }
 
 function createRequestId() {
@@ -133,7 +140,20 @@ function buildDiagnostics({ performanceProfile, contextMeta, workbookContextChar
   };
 }
 
-// --- Shared preparation for both generateVba and generateVbaStream ---
+function extractUsage(parsedBody) {
+  const usage = parsedBody?.usage;
+  if (!usage || typeof usage !== 'object') {
+    return undefined;
+  }
+
+  const promptTokens = Number(usage.input_tokens ?? usage.prompt_tokens) || 0;
+  const completionTokens = Number(usage.output_tokens ?? usage.completion_tokens) || 0;
+  const totalTokens = Number(usage.total_tokens) || (promptTokens + completionTokens);
+  if (!promptTokens && !completionTokens && !totalTokens) {
+    return undefined;
+  }
+  return { promptTokens, completionTokens, totalTokens };
+}
 
 async function prepareGeneration(
   { prompt = '', intent = '', workbookName = '', workbookPath = '', moduleName = '', sheetName = '', currentCode = '', includeCurrentCode = false } = {},
@@ -156,35 +176,7 @@ async function prepareGeneration(
     return { earlyReturn: { success: false, reason: 'AI_INVALID_PROMPT', message: 'Prompt is required to generate VBA.' } };
   }
 
-  const statusImpl = typeof dependencies.statusImpl === 'function'
-    ? dependencies.statusImpl
-    : localAiManager.getStatus;
-  const aiStatus = await Promise.resolve(statusImpl());
-
-  if (!aiStatus?.runtimeInstalled) {
-    return { earlyReturn: { success: false, reason: 'AI_RUNTIME_MISSING', message: 'Local AI runtime is not installed yet.' } };
-  }
-
-  if (aiStatus?.runtimeInstalled && !aiStatus?.serverReachable) {
-    const ensureReadyImpl = typeof dependencies.ensureReadyImpl === 'function'
-      ? dependencies.ensureReadyImpl
-      : localAiManager.ensureReady;
-    const refreshed = await Promise.resolve(ensureReadyImpl());
-    if (!refreshed?.serverReachable) {
-      return { earlyReturn: { success: false, reason: 'AI_NOT_READY', message: 'Local AI is not running yet. Finish setup and retry.' } };
-    }
-    if (!refreshed?.modelInstalled) {
-      return { earlyReturn: { success: false, reason: 'AI_MODEL_MISSING', message: 'The local AI model is not installed yet.' } };
-    }
-  } else if (!aiStatus?.serverReachable) {
-    return { earlyReturn: { success: false, reason: 'AI_NOT_READY', message: 'Local AI is not running yet. Finish setup and retry.' } };
-  }
-
-  if (!aiStatus?.modelInstalled) {
-    return { earlyReturn: { success: false, reason: 'AI_MODEL_MISSING', message: 'The local AI model is not installed yet.' } };
-  }
-
-  const selectedModel = toSafeString(aiStatus?.model) || LOCAL_AI_MODEL;
+  const selectedModel = toSafeString(dependencies.model) || AI_MODEL;
   const contextImpl = typeof dependencies.contextImpl === 'function'
     ? dependencies.contextImpl
     : resolveWorkbookPromptContext;
@@ -206,21 +198,32 @@ async function prepareGeneration(
   }
 
   const payload = {
-    model: selectedModel,
-    temperature: TEMPERATURE,
+    system: getSystemPrompt(normalizedIntent, { includeCurrentCode: shouldIncludeCurrentCode }),
+    messages: [
+      {
+        role: 'user',
+        content: buildUserPrompt({
+          intent: normalizedIntent,
+          prompt: promptText,
+          workbookName,
+          moduleName,
+          workbookContext,
+          currentCode,
+          includeCurrentCode: shouldIncludeCurrentCode,
+          limits: performanceProfile
+        })
+      }
+    ],
     max_tokens: normalizedIntent === 'ask'
       ? Math.min(performanceProfile.maxCompletionTokens, 80)
       : performanceProfile.maxCompletionTokens,
-    messages: [
-      { role: 'system', content: getSystemPrompt(normalizedIntent, { includeCurrentCode: shouldIncludeCurrentCode }) },
-      { role: 'user', content: buildUserPrompt({ intent: normalizedIntent, prompt: promptText, workbookName, moduleName, workbookContext, currentCode, includeCurrentCode: shouldIncludeCurrentCode, limits: performanceProfile }) }
-    ]
+    temperature: TEMPERATURE
   };
 
-  const baseUrl = String(aiStatus?.baseUrl || LOCAL_AI_BASE_URL).trim().replace(/\/+$/, '');
+  const baseUrl = toSafeString(dependencies.baseUrl || AI_PROXY_URL).replace(/\/+$/, '');
 
   logger.debug('[AI] generate-vba request', {
-    requestId, provider: aiStatus?.provider || 'ollama', model: selectedModel,
+    requestId, provider: AI_PROVIDER, model: selectedModel,
     intent: normalizedIntent, promptChars: promptText.length,
     requestTimeoutMs: performanceProfile.requestTimeoutMs,
     maxCompletionTokens: performanceProfile.maxCompletionTokens,
@@ -237,9 +240,7 @@ async function prepareGeneration(
   };
 }
 
-// --- Build final result from raw content ---
-
-function buildResult({ rawContent, normalizedIntent, selectedModel, requestId, performanceProfile, contextMeta, workbookContext, startedAt, requestStartedAt }) {
+function buildResult({ rawContent, normalizedIntent, selectedModel, requestId, performanceProfile, contextMeta, workbookContext, startedAt, requestStartedAt, usage }) {
   const normalizedContent = normalizeLineEndings(rawContent).trim();
   const diagnostics = buildDiagnostics({
     performanceProfile, contextMeta,
@@ -250,22 +251,30 @@ function buildResult({ rawContent, normalizedIntent, selectedModel, requestId, p
 
   if (normalizedIntent === 'ask') {
     if (!normalizedContent) {
-      return { success: false, reason: 'AI_INVALID_RESPONSE', message: 'Local AI returned an empty answer.', diagnostics };
+      return { success: false, reason: 'AI_INVALID_RESPONSE', message: 'AI returned an empty answer.', diagnostics };
     }
     logger.info('[AI] generate-vba success', { requestId, model: selectedModel, intent: normalizedIntent, durationMs: diagnostics.timings.totalMs, diagnostics });
-    return { success: true, content: normalizedContent, intent: normalizedIntent, model: selectedModel, diagnostics };
+    return { success: true, content: normalizedContent, intent: normalizedIntent, model: selectedModel, usage, diagnostics };
   }
 
   const code = extractCodeBlock(rawContent);
   if (!code || !hasVbaProcedure(code)) {
-    return { success: false, reason: 'AI_INVALID_RESPONSE', message: 'Local AI did not return valid VBA code.', diagnostics };
+    return { success: false, reason: 'AI_INVALID_RESPONSE', message: 'AI did not return valid VBA code.', diagnostics };
   }
 
   logger.info('[AI] generate-vba success', { requestId, model: selectedModel, intent: normalizedIntent, durationMs: diagnostics.timings.totalMs, diagnostics });
-  return { success: true, code, intent: normalizedIntent, model: selectedModel, diagnostics };
+  return { success: true, code, intent: normalizedIntent, model: selectedModel, usage, diagnostics };
 }
 
-// --- Non-streaming generation (kept for backwards compatibility / tests) ---
+function extractStreamDelta(parsed) {
+  if (parsed?.type === 'content_block_delta' && parsed?.delta?.type === 'text_delta') {
+    return String(parsed.delta.text || '');
+  }
+  if (parsed?.delta?.text) {
+    return String(parsed.delta.text);
+  }
+  return String(parsed?.choices?.[0]?.delta?.content || '');
+}
 
 async function generateVba(params = {}, dependencies = {}) {
   const hardcoded = await matchHardcodedResponse(params);
@@ -279,7 +288,7 @@ async function generateVba(params = {}, dependencies = {}) {
   const requestStartedAt = Date.now();
 
   try {
-    const url = `${baseUrl}/v1/chat/completions`;
+    const url = `${baseUrl}/v1/messages`;
     const body = JSON.stringify(payload);
 
     const response = await requestImpl({
@@ -295,18 +304,29 @@ async function generateVba(params = {}, dependencies = {}) {
     try {
       parsedBody = bodyText ? JSON.parse(bodyText) : {};
     } catch {
-      throw new Error('AI_INVALID_RESPONSE: Local AI returned invalid JSON.');
+      throw new Error('AI_INVALID_RESPONSE: AI returned invalid JSON.');
     }
 
     if (statusCode >= 400) {
       const apiMessage = getErrorMessageFromResponse(parsedBody);
-      const mapped = mapGenerateError(new Error(apiMessage || `Local AI request failed (HTTP ${statusCode}).`), statusCode);
+      const mapped = mapGenerateError(new Error(apiMessage || `AI request failed (HTTP ${statusCode}).`), statusCode);
       const diagnostics = buildDiagnostics({ performanceProfile, contextMeta, workbookContextChars: String(workbookContext || '').length, requestDurationMs: Date.now() - requestStartedAt, totalDurationMs: Date.now() - startedAt });
       return { success: false, reason: mapped.reason, message: mapped.message, diagnostics };
     }
 
-    const rawContent = extractTextContent(parsedBody?.choices?.[0]?.message?.content);
-    return buildResult({ rawContent, normalizedIntent, selectedModel, requestId, performanceProfile, contextMeta, workbookContext, startedAt, requestStartedAt });
+    const rawContent = extractAnthropicText(parsedBody);
+    return buildResult({
+      rawContent,
+      normalizedIntent,
+      selectedModel,
+      requestId,
+      performanceProfile,
+      contextMeta,
+      workbookContext,
+      startedAt,
+      requestStartedAt,
+      usage: extractUsage(parsedBody)
+    });
   } catch (error) {
     const mapped = mapGenerateError(error);
     const diagnostics = buildDiagnostics({ performanceProfile, contextMeta, workbookContextChars: String(workbookContext || '').length, requestDurationMs: Date.now() - requestStartedAt, totalDurationMs: Date.now() - startedAt });
@@ -314,8 +334,6 @@ async function generateVba(params = {}, dependencies = {}) {
     return { success: false, reason: mapped.reason, message: mapped.message, diagnostics };
   }
 }
-
-// --- Streaming generation ---
 
 async function generateVbaStream(params = {}, dependencies = {}, onToken) {
   const hardcoded = await matchHardcodedResponse(params, onToken);
@@ -328,10 +346,11 @@ async function generateVbaStream(params = {}, dependencies = {}, onToken) {
   const requestStartedAt = Date.now();
 
   try {
-    const url = `${baseUrl}/v1/chat/completions`;
+    const url = `${baseUrl}/v1/messages`;
     const streamPayload = { ...payload, stream: true };
     const body = JSON.stringify(streamPayload);
     let fullContent = '';
+    let usage;
 
     await new Promise((resolve, reject) => {
       const transport = url.startsWith('https:') ? https : http;
@@ -344,7 +363,17 @@ async function generateVbaStream(params = {}, dependencies = {}, onToken) {
           let errorText = '';
           response.setEncoding('utf8');
           response.on('data', (chunk) => { errorText += chunk; });
-          response.on('end', () => reject(new Error(errorText || `HTTP ${statusCode}`)));
+          response.on('end', () => {
+            let parsed = {};
+            try {
+              parsed = errorText ? JSON.parse(errorText) : {};
+            } catch {
+              parsed = {};
+            }
+            const apiMessage = getErrorMessageFromResponse(parsed);
+            const mapped = mapGenerateError(new Error(apiMessage || errorText || `HTTP ${statusCode}`), statusCode);
+            reject(Object.assign(new Error(mapped.message), { mapped, statusCode }));
+          });
           return;
         }
 
@@ -358,14 +387,18 @@ async function generateVbaStream(params = {}, dependencies = {}, onToken) {
 
           for (const line of lines) {
             const trimmed = line.trim();
-            if (!trimmed || trimmed === 'data: [DONE]') continue;
+            if (!trimmed || trimmed === 'data: [DONE]' || trimmed.startsWith('event:')) continue;
             const jsonStr = trimmed.startsWith('data: ') ? trimmed.slice(6) : trimmed;
             try {
               const parsed = JSON.parse(jsonStr);
-              const delta = parsed?.choices?.[0]?.delta?.content || '';
+              const delta = extractStreamDelta(parsed);
               if (delta) {
                 fullContent += delta;
                 if (typeof onToken === 'function') onToken(delta);
+              }
+              const nextUsage = extractUsage(parsed);
+              if (nextUsage) {
+                usage = nextUsage;
               }
             } catch {
               // Ignore malformed SSE chunks.
@@ -384,9 +417,20 @@ async function generateVbaStream(params = {}, dependencies = {}, onToken) {
       request.end();
     });
 
-    return buildResult({ rawContent: fullContent, normalizedIntent, selectedModel, requestId, performanceProfile, contextMeta, workbookContext, startedAt, requestStartedAt });
+    return buildResult({
+      rawContent: fullContent,
+      normalizedIntent,
+      selectedModel,
+      requestId,
+      performanceProfile,
+      contextMeta,
+      workbookContext,
+      startedAt,
+      requestStartedAt,
+      usage
+    });
   } catch (error) {
-    const mapped = mapGenerateError(error);
+    const mapped = error?.mapped || mapGenerateError(error, error?.statusCode);
     const diagnostics = buildDiagnostics({ performanceProfile, contextMeta, workbookContextChars: String(workbookContext || '').length, requestDurationMs: Date.now() - requestStartedAt, totalDurationMs: Date.now() - startedAt });
     logger.warn('[AI] generate-vba-stream failed', { requestId, reason: mapped.reason, durationMs: diagnostics.timings.totalMs, message: mapped.message, diagnostics });
     return { success: false, reason: mapped.reason, message: mapped.message, diagnostics };

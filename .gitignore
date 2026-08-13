@@ -41,6 +41,7 @@ nul
 *.sublime-project
 *.sublime-workspace
 .claude/
+.wrangler/
 
 # ============================================================================
 # LOGS

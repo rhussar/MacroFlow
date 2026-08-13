@@ -88,18 +88,18 @@ function mapAiGenerationMessage(result, fallbackMessage = '') {
   }
 
   switch (reason) {
-    case 'AI_RUNTIME_MISSING':
-      return 'Local AI runtime is not installed yet.';
-    case 'AI_MODEL_MISSING':
-      return 'The local AI model is not installed yet.';
+    case 'AI_RATE_LIMITED':
+      return 'AI rate limit reached. Please try again later.';
+    case 'AI_UNAUTHORIZED':
+      return 'AI service rejected the request.';
     case 'AI_NOT_READY':
-      return 'Local AI is not ready yet. Finish setup and retry.';
+      return 'Could not reach the AI service. Check your internet connection and try again.';
     case 'AI_TIMEOUT':
-      return 'Local AI timed out. Please retry.';
+      return 'AI request timed out. Please retry.';
     case 'AI_INVALID_PROMPT':
       return 'Prompt is required to generate VBA.';
     case 'AI_INVALID_RESPONSE':
-      return 'Local AI returned invalid VBA output.';
+      return 'AI returned invalid VBA output.';
     default:
       return fallbackMessage || 'Unable to generate VBA.';
   }
@@ -171,10 +171,7 @@ const CreatePage = ({
   launchSource = '',
   chatOpen: chatOpenProp,
   onChatToggle,
-  searchData,
-  aiStatus,
-  onRequestAiSetup,
-  onRefreshAiStatus
+  searchData
 }) => {
   const [prompt, setPrompt] = useState('');
   const [buildState, setBuildState] = useState(() =>
@@ -265,44 +262,6 @@ const CreatePage = ({
     runOutcome, setRunOutcome, savedMacroName, setSavedMacroName,
     sessionMacroName, sessionMacroTarget, handleRunMacro
   } = useMacroExecution({ sessionContextRef, editedCodeRef, editedCode, sessionContext, isBusyRef, setErrorInfo, setIsBusy });
-  const handleLocalAiSetup = useCallback(async () => {
-    if (typeof onRequestAiSetup !== 'function') {
-      setErrorInfo({
-        title: 'Local AI setup API is unavailable. Restart MacroFlow dev mode to load the new preload bridge.',
-        line: null
-      });
-      return;
-    }
-
-    try {
-      await onRequestAiSetup();
-    } catch (error) {
-      const message = String(error?.message || 'Unable to start local AI setup.');
-      setErrorInfo({ title: message, line: null });
-    }
-  }, [onRequestAiSetup]);
-
-  const aiChecking = aiStatus == null;
-  const aiReady = Boolean(aiStatus?.ready);
-  const aiSetupInProgress = Boolean(aiStatus?.setupInProgress);
-  const aiRemoveInProgress = Boolean(aiStatus?.removeInProgress);
-  const aiOperationInProgress = aiChecking || aiSetupInProgress || aiRemoveInProgress;
-  const aiProgressPercent = typeof aiStatus?.progress === 'number'
-    ? Math.max(0, Math.min(100, Math.round(aiStatus.progress * 100)))
-    : null;
-
-  // Auto-start Ollama when Create page mounts and runtime is installed but not running.
-  useEffect(() => {
-    if (
-      aiStatus?.runtimeInstalled &&
-      !aiStatus?.serverReachable &&
-      !aiStatus?.setupInProgress &&
-      !aiStatus?.removeInProgress
-    ) {
-      window.excel?.ai?.ensureReady?.().catch(() => {});
-    }
-  }, [aiStatus?.runtimeInstalled, aiStatus?.serverReachable, aiStatus?.setupInProgress, aiStatus?.removeInProgress]);
-
 
   const setStepStatus = useCallback((stepKey, status, textOverride = null) => {
     setSteps((previous) =>
@@ -1021,14 +980,6 @@ const CreatePage = ({
       return;
     }
 
-    if (!aiStatus?.ready) {
-      setErrorInfo({
-        title: String(aiStatus?.statusText || 'Local AI setup is required before generating VBA.'),
-        line: null
-      });
-      return;
-    }
-
     const generateVbaApi = window.excel?.ai?.generateVba;
     if (typeof generateVbaApi !== 'function') {
       setErrorInfo({
@@ -1100,7 +1051,7 @@ const CreatePage = ({
       // Code intent: put clean extracted code into the editor
       const generatedCode = String(result?.code || '').trim();
       if (!generatedCode) {
-        throw new Error('Local AI returned empty VBA output.');
+        throw new Error('AI returned empty VBA output.');
       }
 
       setEditedCode(generatedCode);
@@ -1133,14 +1084,6 @@ const CreatePage = ({
   const handleFirstSubmit = useCallback(async () => {
     const submittedPrompt = String(promptRef.current || '').trim();
     if (isBusyRef.current || !submittedPrompt) return;
-
-    if (!aiStatus?.ready) {
-      setErrorInfo({
-        title: String(aiStatus?.statusText || 'Local AI setup is required before generating VBA.'),
-        line: null
-      });
-      return;
-    }
 
     const generateVbaApi = window.excel?.ai?.generateVba;
     if (typeof generateVbaApi !== 'function') {
@@ -1274,7 +1217,7 @@ const CreatePage = ({
         }
         const generatedCode = String(result?.code || '').trim();
         if (!generatedCode) {
-          throw new Error('Local AI returned empty VBA output.');
+          throw new Error('AI returned empty VBA output.');
         }
 
         setEditedCode(generatedCode);
@@ -1676,66 +1619,6 @@ const CreatePage = ({
     conversationEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages.length, isBusy]);
 
-  const aiGateOverlay = !aiReady ? (
-    <div className="ai-gate-overlay" role="dialog" aria-modal="true" aria-label="Local AI setup required">
-      <div className="ai-gate-card">
-        <div className="ai-gate-description">
-          {aiChecking
-            ? 'Checking local AI...'
-            : aiSetupInProgress
-              ? String(aiStatus?.statusText || 'Setting up local AI...')
-              : aiRemoveInProgress
-                ? String(aiStatus?.statusText || 'Removing local AI...')
-                : 'Create runs entirely on-device. Install the local AI model to get started.'}
-        </div>
-
-        {aiProgressPercent !== null && (
-          <div className="ai-gate-progress-section">
-            <div className="ai-gate-progress-label">
-              <span>{aiSetupInProgress ? 'Installing' : 'Working'}</span>
-              <span>{aiProgressPercent}%</span>
-            </div>
-            <div className="ai-gate-progress">
-              <div className="ai-gate-progress-bar" style={{ width: `${aiProgressPercent}%` }} />
-            </div>
-          </div>
-        )}
-
-        {aiChecking && aiProgressPercent === null && (
-          <div className="ai-gate-progress">
-            <div className="ai-gate-progress-bar ai-gate-progress-indeterminate" />
-          </div>
-        )}
-
-        {aiStatus?.lastError && (
-          <div className="ai-gate-error">{aiStatus.lastError}</div>
-        )}
-
-        {!aiOperationInProgress && (
-          <button
-            type="button"
-            className="ai-gate-download-btn"
-            onClick={() => { void handleLocalAiSetup(); }}
-          >
-            Install Local AI
-          </button>
-        )}
-
-        <div className="ai-gate-badges">
-          <span className="ai-gate-badge">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="11" width="18" height="11" rx="2" /><path d="M7 11V7a5 5 0 0110 0v4" /></svg>
-            Private
-          </span>
-          <span className="ai-gate-badge">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="2" y="2" width="20" height="20" rx="2" /><path d="M7 12h10M12 7v10" /></svg>
-            On-device
-          </span>
-        </div>
-      </div>
-    </div>
-  ) : null;
-
-
   const conversationPanel = (
     <div className="conversation-panel">
       {messages.map((msg, i) => (
@@ -1794,7 +1677,7 @@ const CreatePage = ({
             rows={2}
             value={prompt}
             onChange={(event) => setPrompt(event.target.value)}
-            disabled={isBusy || buildState === 'initializing' || Boolean(errorInfo?.restartRequired) || !aiReady}
+            disabled={isBusy || buildState === 'initializing' || Boolean(errorInfo?.restartRequired)}
             onKeyDown={(event) => {
               if (event.key === 'Enter' && !event.shiftKey && prompt.trim()) {
                 event.preventDefault();
@@ -1806,7 +1689,7 @@ const CreatePage = ({
             type="button"
             className="build-prompt-send-btn"
             onClick={() => { if (prompt.trim()) void dispatchSubmit(); }}
-            disabled={isBusy || !prompt.trim() || buildState === 'initializing' || !aiReady}
+            disabled={isBusy || !prompt.trim() || buildState === 'initializing'}
             title="Send"
           >
             <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
@@ -1878,7 +1761,7 @@ const CreatePage = ({
       <div className="build-empty-state build-idle-state">
         <h1 className="build-empty-title">Create a Macro</h1>
         <p className="build-empty-subtitle">
-          Describe what you want your macro to do and MacroFlow will generate the VBA locally.
+          Describe what you want your macro to do and MacroFlow will generate the VBA.
         </p>
         {errorInfo && <div className="error-title">{errorInfo.title}</div>}
         <div className="build-prompt-input-wrap">
@@ -2042,7 +1925,7 @@ const CreatePage = ({
   return (
     <>
       <main className="main-content">
-        <div className={!aiReady ? 'ai-gate-bg-blur' : undefined} style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
           <div className="split-view">
             <div className="split-left build-chat-panel" style={{ width: chatOpen ? `${splitPct}%` : '0%', display: chatOpen ? undefined : 'none' }}>
               {sidebarContent}
@@ -2053,7 +1936,6 @@ const CreatePage = ({
             </div>
           </div>
         </div>
-        {aiGateOverlay}
       </main>
 
       {exitDialog && exitDialog.type === 'confirm' && (

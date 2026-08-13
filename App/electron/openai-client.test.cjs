@@ -9,26 +9,18 @@ const TEST_PERFORMANCE_PROFILE = resolveLlmPerformanceProfile({
   cpuCount: 12
 });
 
-function readyStatus(overrides = {}) {
-  return {
-    success: true,
-    provider: 'ollama',
-    model: 'qwen2.5-coder:3b',
-    ready: true,
-    needsSetup: false,
-    setupInProgress: false,
-    runtimeInstalled: true,
-    serverReachable: true,
-    modelInstalled: true,
-    stage: 'ready',
-    statusText: 'Local AI is ready.',
-    ...overrides
-  };
+function anthropicBody(text, usage) {
+  return JSON.stringify({
+    content: [{ type: 'text', text }],
+    usage: usage || {
+      input_tokens: 123,
+      output_tokens: 44
+    }
+  });
 }
 
 function createDeps(overrides = {}) {
   return {
-    statusImpl: async () => readyStatus(),
     contextImpl: async () => '',
     performanceProfile: TEST_PERFORMANCE_PROFILE,
     ...overrides
@@ -46,27 +38,14 @@ test('generateVba returns success for valid plain VBA output', async () => {
     createDeps({
       requestImpl: async () => ({
         statusCode: 200,
-        bodyText: JSON.stringify({
-          choices: [
-            {
-              message: {
-                content: 'Option Explicit\n\nPublic Sub Hello()\n    MsgBox "hi"\nEnd Sub'
-              }
-            }
-          ],
-          usage: {
-            prompt_tokens: 123,
-            completion_tokens: 44,
-            total_tokens: 167
-          }
-        })
+        bodyText: anthropicBody('Option Explicit\n\nPublic Sub Hello()\n    MsgBox "hi"\nEnd Sub')
       })
     })
   );
 
   assert.equal(result.success, true);
   assert.match(result.code, /Sub Hello/i);
-  assert.equal(result.model, 'qwen2.5-coder:3b');
+  assert.equal(result.model, 'claude-sonnet-5');
   assert.equal(result.usage?.totalTokens, 167);
   assert.equal(result.diagnostics?.profile, TEST_PERFORMANCE_PROFILE.name);
 });
@@ -77,15 +56,7 @@ test('generateVba extracts fenced VBA code blocks', async () => {
     createDeps({
       requestImpl: async () => ({
         statusCode: 200,
-        bodyText: JSON.stringify({
-          choices: [
-            {
-              message: {
-                content: '```vba\nOption Explicit\nSub RunA()\nEnd Sub\n```'
-              }
-            }
-          ]
-        })
+        bodyText: anthropicBody('```vba\nOption Explicit\nSub RunA()\nEnd Sub\n```')
       })
     })
   );
@@ -111,35 +82,13 @@ test('generateVba rejects empty prompt before request', async () => {
   assert.equal(requestCalls, 0);
 });
 
-test('generateVba rejects when local AI runtime or model is missing', async () => {
-  const runtimeMissing = await generateVba(
-    { prompt: 'x' },
-    createDeps({
-      statusImpl: async () => readyStatus({ runtimeInstalled: false, ready: false, needsSetup: true })
-    })
-  );
-  assert.equal(runtimeMissing.success, false);
-  assert.equal(runtimeMissing.reason, 'AI_RUNTIME_MISSING');
-
-  const modelMissing = await generateVba(
-    { prompt: 'x' },
-    createDeps({
-      statusImpl: async () => readyStatus({ ready: false, modelInstalled: false, needsSetup: true })
-    })
-  );
-  assert.equal(modelMissing.success, false);
-  assert.equal(modelMissing.reason, 'AI_MODEL_MISSING');
-});
-
 test('generateVba maps malformed content to AI_INVALID_RESPONSE', async () => {
   const result = await generateVba(
     { prompt: 'do stuff' },
     createDeps({
       requestImpl: async () => ({
         statusCode: 200,
-        bodyText: JSON.stringify({
-          choices: [{ message: { content: 'No procedures here' } }]
-        })
+        bodyText: anthropicBody('No procedures here')
       })
     })
   );
@@ -148,18 +97,18 @@ test('generateVba maps malformed content to AI_INVALID_RESPONSE', async () => {
   assert.equal(result.reason, 'AI_INVALID_RESPONSE');
 });
 
-test('generateVba maps model-missing, timeout, and connection failures', async () => {
-  const missing = await generateVba(
+test('generateVba maps rate-limit, timeout, and connection failures', async () => {
+  const limited = await generateVba(
     { prompt: 'x' },
     createDeps({
       requestImpl: async () => ({
-        statusCode: 404,
-        bodyText: JSON.stringify({ error: { message: 'model not found' } })
+        statusCode: 429,
+        bodyText: JSON.stringify({ error: { message: 'Rate limit exceeded. Try again later.' } })
       })
     })
   );
-  assert.equal(missing.success, false);
-  assert.equal(missing.reason, 'AI_MODEL_MISSING');
+  assert.equal(limited.success, false);
+  assert.equal(limited.reason, 'AI_RATE_LIMITED');
 
   const timeout = await generateVba(
     { prompt: 'x' },
@@ -178,7 +127,7 @@ test('generateVba maps model-missing, timeout, and connection failures', async (
     { prompt: 'x' },
     createDeps({
       requestImpl: async () => {
-        const error = new Error('connect ECONNREFUSED 127.0.0.1:11434');
+        const error = new Error('connect ECONNREFUSED 127.0.0.1:8787');
         error.code = 'ECONNREFUSED';
         throw error;
       }
@@ -204,15 +153,13 @@ test('generateVba truncates prompt and omits current code by default', async () 
     createDeps({
       requestImpl: async ({ body }) => {
         const payload = JSON.parse(String(body || '{}'));
-        userContent = String(payload?.messages?.[1]?.content || '');
+        userContent = String(payload?.messages?.[0]?.content || '');
         const taskMatch = userContent.match(/Task:\n([\s\S]*)$/);
         taskText = taskMatch ? taskMatch[1] : '';
 
         return {
           statusCode: 200,
-          bodyText: JSON.stringify({
-            choices: [{ message: { content: 'Sub RunA()\nEnd Sub' } }]
-          })
+          bodyText: anthropicBody('Sub RunA()\nEnd Sub')
         };
       }
     })
@@ -238,15 +185,13 @@ test('generateVba includes and truncates current code when opted in', async () =
     createDeps({
       requestImpl: async ({ body }) => {
         const payload = JSON.parse(String(body || '{}'));
-        const userContent = String(payload?.messages?.[1]?.content || '');
+        const userContent = String(payload?.messages?.[0]?.content || '');
         const codeMatch = userContent.match(/Current module code:\n([\s\S]*)$/);
         codeText = codeMatch ? codeMatch[1] : '';
 
         return {
           statusCode: 200,
-          bodyText: JSON.stringify({
-            choices: [{ message: { content: 'Sub RunA()\nEnd Sub' } }]
-          })
+          bodyText: anthropicBody('Sub RunA()\nEnd Sub')
         };
       }
     })
@@ -271,9 +216,7 @@ test('generateVba uses performance profile max token budget', async () => {
         observedMaxTokens = Number(payload?.max_tokens) || 0;
         return {
           statusCode: 200,
-          bodyText: JSON.stringify({
-            choices: [{ message: { content: 'Sub RunA()\nEnd Sub' } }]
-          })
+          bodyText: anthropicBody('Sub RunA()\nEnd Sub')
         };
       }
     })
@@ -298,12 +241,10 @@ test('generateVba includes workbook context when available', async () => {
       contextImpl: async () => 'Active sheet: Sales\nHeaders: A1=Region, B1=Amount',
       requestImpl: async ({ body }) => {
         const payload = JSON.parse(String(body || '{}'));
-        userContent = String(payload?.messages?.[1]?.content || '');
+        userContent = String(payload?.messages?.[0]?.content || '');
         return {
           statusCode: 200,
-          bodyText: JSON.stringify({
-            choices: [{ message: { content: 'Option Explicit\nSub RunA()\nEnd Sub' } }]
-          })
+          bodyText: anthropicBody('Option Explicit\nSub RunA()\nEnd Sub')
         };
       }
     })
@@ -325,9 +266,7 @@ test('generateVba returns prose content for ask intent', async () => {
     createDeps({
       requestImpl: async () => ({
         statusCode: 200,
-        bodyText: JSON.stringify({
-          choices: [{ message: { content: 'It forces variable declarations before use.' } }]
-        })
+        bodyText: anthropicBody('It forces variable declarations before use.')
       })
     })
   );

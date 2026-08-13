@@ -1,4 +1,4 @@
-import React, { startTransition, useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import React, { startTransition, useState, useEffect, useCallback, useRef } from 'react';
 import './App.css';
 
 // Import pages
@@ -6,7 +6,6 @@ import ShortcutsPage from './pages/ShortcutsPage';
 import CreatePage from './pages/CreatePage';
 import FilesPage from './pages/FilesPage';
 import SettingsMenu, { getShowModules } from './components/SettingsMenu';
-import LicenseGate from './components/LicenseGate';
 import { SettingsIcon, SidebarIcon, MinimizeIcon, CloseIcon } from './components/icons';
 import { useSearchData } from './features/search/useSearchData';
 import { useMacroRun } from './features/run/useMacroRun';
@@ -45,7 +44,6 @@ function AppInner() {
     originMode: 'shortcuts'
   }));
   const [buildChatOpen, setBuildChatOpen] = useState(false);
-  const [aiStatus, setAiStatus] = useState(null);
   const [filesSidebarOpen, setFilesSidebarOpen] = useState(true);
   const [showModules, setShowModules] = useState(getShowModules);
   const loadSearchDataRef = useRef(null);
@@ -152,93 +150,6 @@ function AppInner() {
       return matched || null;
     });
   }, [searchData.macros, searchData.status, setSelectedMacro]);
-
-  const refreshAiStatus = useCallback(async () => {
-    const getStatusApi = window.excel?.ai?.getStatus;
-    if (typeof getStatusApi !== 'function') {
-      setAiStatus({
-        ready: false,
-        needsSetup: true,
-        setupInProgress: false,
-        stage: 'error',
-        statusText: 'Local AI status API is unavailable. Restart MacroFlow dev mode to load the new preload bridge.'
-      });
-      return null;
-    }
-
-    try {
-      const status = await getStatusApi();
-      const nextStatus = status || null;
-      setAiStatus(nextStatus);
-      return nextStatus;
-    } catch (error) {
-      const failedStatus = {
-        ready: false,
-        needsSetup: true,
-        setupInProgress: false,
-        stage: 'error',
-        statusText: String(error?.message || 'Unable to read local AI status.')
-      };
-      setAiStatus(failedStatus);
-      return failedStatus;
-    }
-  }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-    const unsubscribe = window.excel?.ai?.onStatus?.((status) => {
-      if (!cancelled) {
-        setAiStatus(status || null);
-      }
-    }) || (() => {});
-
-    void refreshAiStatus();
-
-    return () => {
-      cancelled = true;
-      unsubscribe();
-    };
-  }, [refreshAiStatus]);
-
-  const handleLocalAiSetup = useCallback(async () => {
-    const setupApi = window.excel?.ai?.setup;
-    if (typeof setupApi !== 'function') {
-      const unavailableStatus = {
-        ready: false,
-        needsSetup: true,
-        setupInProgress: false,
-        stage: 'error',
-        statusText: 'Local AI setup API is unavailable. Restart MacroFlow dev mode to load the new preload bridge.'
-      };
-      setAiStatus(unavailableStatus);
-      return unavailableStatus;
-    }
-
-    try {
-      const result = await setupApi();
-      if (result?.status) {
-        setAiStatus(result.status);
-        return result.status;
-      }
-      return await refreshAiStatus();
-    } catch (error) {
-      const failedStatus = {
-        ...(aiStatus || {}),
-        ready: false,
-        needsSetup: true,
-        setupInProgress: false,
-        stage: 'error',
-        statusText: String(error?.message || 'Unable to start local AI setup.')
-      };
-      setAiStatus(failedStatus);
-      return failedStatus;
-    }
-  }, [aiStatus, refreshAiStatus]);
-
-  const aiSetupInProgress = useMemo(
-    () => Boolean(aiStatus?.setupInProgress || aiStatus?.removeInProgress),
-    [aiStatus?.removeInProgress, aiStatus?.setupInProgress]
-  );
 
   const {
     shortcutByMacroId,
@@ -490,9 +401,6 @@ function AppInner() {
             chatOpen={buildChatOpen}
             onChatToggle={toggleBuildChat}
             searchData={searchData}
-            aiStatus={aiStatus}
-            onRequestAiSetup={handleLocalAiSetup}
-            onRefreshAiStatus={refreshAiStatus}
           />
         );
 
@@ -524,7 +432,7 @@ function AppInner() {
       <header className="header">
         <div className="drag-region" />
         <div className="header-left">
-          {searchData?.status === 'ready' && ((mode === 'create' && aiStatus?.ready) || mode === 'files') && (
+          {searchData?.status === 'ready' && (mode === 'create' || mode === 'files') && (
             <button
               className="sidebar-toggle-btn"
               onClick={mode === 'create' ? toggleBuildChat : toggleFilesSidebar}
@@ -583,7 +491,7 @@ function AppInner() {
       )}
 
       {/* Update available banner */}
-      {updateReady && !aiSetupInProgress && (
+      {updateReady && (
         <div className="app-update-banner">
           <span className="app-update-banner-text">
             Update{updateVersion ? ` ${updateVersion}` : ''} ready
@@ -622,30 +530,4 @@ function AppInner() {
   );
 }
 
-function App() {
-  const [licensed, setLicensed] = useState(null);
-
-  useEffect(() => {
-    window.excel?.license?.getStatus?.().then((status) => {
-      setLicensed(status?.valid ? true : false);
-    }).catch(() => setLicensed(false));
-  }, []);
-
-  const handleLicensed = useCallback(() => {
-    setLicensed(true);
-  }, []);
-
-  // Show nothing while checking (avoids flash).
-  if (licensed === null) {
-    return <div className="app-container" />;
-  }
-
-  // Show activation screen if not licensed.
-  if (!licensed) {
-    return <LicenseGate onLicensed={handleLicensed} />;
-  }
-
-  return <AppInner />;
-}
-
-export default App;
+export default AppInner;

@@ -15,7 +15,8 @@ The Worker URL is typically:
 
 `https://macroflow-ai.<your-account>.workers.dev`
 
-Override the desktop app default with `MACROFLOW_AI_URL` if the deployed hostname differs from `https://macroflow-ai.rhussar.workers.dev`.
+Default desktop app URL: `https://macroflow-ai.macroflowai.workers.dev`.
+Override with `MACROFLOW_AI_URL` if your Worker hostname differs.
 
 ## Rate limit
 

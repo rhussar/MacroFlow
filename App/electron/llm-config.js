@@ -5,7 +5,7 @@
 const AI_PROVIDER = 'anthropic';
 const AI_MODEL = String(process.env.MACROFLOW_LLM_MODEL || 'claude-sonnet-5').trim();
 const AI_PROXY_URL = String(
-  process.env.MACROFLOW_AI_URL || 'https://macroflow-ai.rhussar.workers.dev'
+  process.env.MACROFLOW_AI_URL || 'https://macroflow-ai.macroflowai.workers.dev'
 ).trim().replace(/\/+$/, '');
 const LOCAL_AI_CONTEXT_LENGTH = 8192;
 const REQUEST_TIMEOUT_MS = 60000;

@@ -48,7 +48,7 @@ npx wrangler secret put ANTHROPIC_API_KEY
 npx wrangler deploy
 ```
 
-Default app URL: `https://macroflow-ai.rhussar.workers.dev`
+Default app URL: `https://macroflow-ai.macroflowai.workers.dev`
 
 Override with `MACROFLOW_AI_URL` if your Worker hostname differs. Details: [worker/README.md](worker/README.md).
 

@@ -1,11 +1,54 @@
-﻿const { app, BrowserWindow, screen, ipcMain } = require('electron');
+const { app, BrowserWindow, screen, ipcMain } = require('electron');
 const path = require('node:path');
 
 const iconPath = path.join(__dirname, '../assets', process.platform === 'win32' ? 'app-icon.ico' : 'app-icon.png');
 const { registerHandlers } = require('./ipc-handlers');
-const { installExcelAddin } = require('./excel-addin-installer');
+const { installExcelAddin, uninstallExcelAddin } = require('./excel-addin-installer');
+const excel = require('./excel-bridge');
+const logger = require('./logger');
+const { initAutoUpdater, stopAutoUpdater } = require('./auto-updater');
 
-// CRITICAL: Handle Squirrel installer events FIRST (must be before any other code)
+const WINDOW_STARTUP_BG = '#00000000';
+
+const WINDOW_BASELINE = {
+  displayWidth: 1920,
+  displayHeight: 1080,
+  width: 620,
+  height: 580,
+  rightMargin: 50,
+  bottomMargin: 150,
+  minScale: 0.6,
+  maxScale: 1,
+  minWidth: 420,
+  minHeight: 390,
+  minRightMargin: 16,
+  minBottomMargin: 20
+};
+
+const { spawn } = require('node:child_process');
+
+function runSquirrelUpdate(args, done) {
+  const updateExe = path.resolve(path.dirname(process.execPath), '..', 'Update.exe');
+  spawn(updateExe, args, { detached: true }).on('close', done);
+}
+
+const squirrelCommand = process.platform === 'win32' ? String(process.argv[1] || '') : '';
+if (squirrelCommand === '--squirrel-uninstall') {
+  uninstallExcelAddin()
+    .catch((error) => {
+      console.error('[AddinInstaller] uninstall during Squirrel uninstall failed', error?.message || error);
+    })
+    .finally(() => {
+      try {
+        runSquirrelUpdate([`--removeShortcut=${path.basename(process.execPath)}`], () => app.quit());
+      } catch {
+        app.quit();
+      }
+    });
+  return;
+}
+
+// CRITICAL: Handle remaining Squirrel installer events FIRST (must be before any other code)
 if (require('electron-squirrel-startup')) {
   app.quit();
   return;
@@ -16,11 +59,200 @@ if (process.platform === 'win32') {
   app.setAppUserModelId('com.macroflow.desktop');
 }
 
+// Expose V8 garbage collection in the main process so we can force COM proxy
+// cleanup on shutdown.  app.commandLine.appendSwitch only affects the renderer,
+// so we use v8.setFlagsFromString + vm.runInNewContext for the main process.
+try {
+  const v8 = require('node:v8');
+  v8.setFlagsFromString('--expose_gc');
+  const { runInNewContext } = require('node:vm');
+  global.gc = runInNewContext('gc');
+} catch {
+  // Best-effort; if this fails, shutdown GC is simply skipped.
+}
+
 // Determine if running in development mode
 const isDev = process.env.NODE_ENV === 'development';
 
 // Store reference to main window for IPC handlers
 let mainWindow = null;
+let windowFocusHelper = null;
+let helperFallbackMode = false;
+let adaptiveLayoutTimer = null;
+let lastAdaptiveLayoutKey = '';
+let detachDisplayListeners = null;
+let lastExcelDisplayId = null;
+let hasInitialContextPlacement = false;
+let helperForegroundEventTimer = null;
+let lastHelperForegroundState = { excelActive: null, excelHwnd: null };
+const GLASS_WINDOW_OPACITY = 1;
+
+function isSquirrelFirstRunLaunch() {
+  if (process.platform !== 'win32') {
+    return false;
+  }
+
+  return process.argv.some(
+    (arg) => String(arg || '').trim().toLowerCase() === '--squirrel-firstrun'
+  );
+}
+
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function getDisplayScale(display) {
+  const widthFactor = display.workArea.width / WINDOW_BASELINE.displayWidth;
+  const heightFactor = display.workArea.height / WINDOW_BASELINE.displayHeight;
+  const rawScale = Math.min(widthFactor, heightFactor);
+  return clamp(rawScale, WINDOW_BASELINE.minScale, WINDOW_BASELINE.maxScale);
+}
+
+function getAdaptiveLayout(display) {
+  const scale = getDisplayScale(display);
+  return {
+    scale,
+    width: Math.max(WINDOW_BASELINE.minWidth, Math.round(WINDOW_BASELINE.width * scale)),
+    height: Math.max(WINDOW_BASELINE.minHeight, Math.round(WINDOW_BASELINE.height * scale)),
+    rightMargin: Math.max(WINDOW_BASELINE.minRightMargin, Math.round(WINDOW_BASELINE.rightMargin * scale)),
+    bottomMargin: Math.max(WINDOW_BASELINE.minBottomMargin, Math.round(WINDOW_BASELINE.bottomMargin * scale))
+  };
+}
+
+function getDisplayById(id) {
+  if (id === null || id === undefined) {
+    return null;
+  }
+
+  return screen.getAllDisplays().find((display) => display.id === id) || null;
+}
+
+function getCursorDisplay() {
+  try {
+    const cursorPoint = screen.getCursorScreenPoint();
+    return screen.getDisplayNearestPoint(cursorPoint);
+  } catch {
+    return null;
+  }
+}
+
+function getDisplayFromRect(rect) {
+  if (!rect || typeof rect !== 'object') {
+    return null;
+  }
+
+  const left = Number(rect.left);
+  const top = Number(rect.top);
+  const right = Number(rect.right);
+  const bottom = Number(rect.bottom);
+
+  if ([left, top, right, bottom].some((value) => Number.isNaN(value))) {
+    return null;
+  }
+
+  const center = {
+    x: Math.round((left + right) / 2),
+    y: Math.round((top + bottom) / 2)
+  };
+
+  return screen.getDisplayNearestPoint(center);
+}
+
+function resolveTargetDisplay(win, options = {}) {
+  if (options.preferExcel && lastExcelDisplayId !== null) {
+    const excelDisplay = getDisplayById(lastExcelDisplayId);
+    if (excelDisplay) {
+      return excelDisplay;
+    }
+    lastExcelDisplayId = null;
+  }
+
+  if (options.preferCursor) {
+    const cursorDisplay = getCursorDisplay();
+    if (cursorDisplay) {
+      return cursorDisplay;
+    }
+  }
+
+  if (win && !win.isDestroyed()) {
+    return screen.getDisplayMatching(win.getBounds());
+  }
+
+  return screen.getPrimaryDisplay();
+}
+
+function applyAdaptiveLayout(win, reason = 'unspecified', options = {}) {
+  if (!win || win.isDestroyed()) {
+    return;
+  }
+
+  const display = resolveTargetDisplay(win, options);
+  const workArea = display.workArea;
+  const layout = getAdaptiveLayout(display);
+
+  const x = workArea.x + Math.max(0, workArea.width - layout.width - layout.rightMargin);
+  const y = workArea.y + Math.max(0, workArea.height - layout.height - layout.bottomMargin);
+  const layoutKey = `${display.id}:${layout.scale}:${layout.width}:${layout.height}:${x}:${y}`;
+
+  if (layoutKey !== lastAdaptiveLayoutKey) {
+    win.setBounds({ x, y, width: layout.width, height: layout.height });
+    lastAdaptiveLayoutKey = layoutKey;
+  }
+
+  if (win.webContents && !win.webContents.isDestroyed()) {
+    win.webContents.setZoomFactor(layout.scale);
+  }
+
+  logger.debug('[WindowScale] adaptive layout applied', {
+    reason,
+    displayId: display.id,
+    scale: layout.scale,
+    width: layout.width,
+    height: layout.height,
+    preferExcel: Boolean(options.preferExcel),
+    preferCursor: Boolean(options.preferCursor)
+  });
+}
+
+function scheduleAdaptiveLayout(win, reason, delayMs = 100, options = {}) {
+  if (adaptiveLayoutTimer) {
+    clearTimeout(adaptiveLayoutTimer);
+    adaptiveLayoutTimer = null;
+  }
+
+  adaptiveLayoutTimer = setTimeout(() => {
+    adaptiveLayoutTimer = null;
+    applyAdaptiveLayout(win, reason, options);
+  }, delayMs);
+
+  if (typeof adaptiveLayoutTimer.unref === 'function') {
+    adaptiveLayoutTimer.unref();
+  }
+}
+
+function attachAdaptiveWindowListeners(win) {
+  const onDisplayMetricsChanged = () => scheduleAdaptiveLayout(win, 'display-metrics-changed', 120, { preferExcel: true });
+  const onDisplayAdded = () => scheduleAdaptiveLayout(win, 'display-added', 120, { preferExcel: true });
+  const onDisplayRemoved = () => scheduleAdaptiveLayout(win, 'display-removed', 120, { preferExcel: true });
+  const onWindowShow = () => scheduleAdaptiveLayout(win, 'window-show', 80, { preferExcel: true, preferCursor: true });
+  const onWindowRestore = () => scheduleAdaptiveLayout(win, 'window-restore', 80, { preferExcel: true, preferCursor: true });
+
+  screen.on('display-metrics-changed', onDisplayMetricsChanged);
+  screen.on('display-added', onDisplayAdded);
+  screen.on('display-removed', onDisplayRemoved);
+  win.on('show', onWindowShow);
+  win.on('restore', onWindowRestore);
+
+  detachDisplayListeners = () => {
+    screen.removeListener('display-metrics-changed', onDisplayMetricsChanged);
+    screen.removeListener('display-added', onDisplayAdded);
+    screen.removeListener('display-removed', onDisplayRemoved);
+    if (!win.isDestroyed()) {
+      win.removeListener('show', onWindowShow);
+      win.removeListener('restore', onWindowRestore);
+    }
+  };
+}
 
 /**
  * Get the main window reference (used by ipc-handlers)
@@ -28,6 +260,275 @@ let mainWindow = null;
  */
 function getMainWindow() {
   return mainWindow;
+}
+
+function getNativeWindowHandleValue(win) {
+  if (!win || win.isDestroyed()) {
+    return null;
+  }
+  const handle = win.getNativeWindowHandle();
+  if (!handle || handle.length === 0) {
+    return null;
+  }
+  if (handle.length === 8) {
+    return handle.readBigUInt64LE(0);
+  }
+  if (handle.length === 4) {
+    return BigInt(handle.readUInt32LE(0));
+  }
+  return null;
+}
+
+function enableFallbackAlwaysOnTop(reason) {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return;
+  }
+
+  helperFallbackMode = true;
+  mainWindow.__macroflowHelperManagedTopmost = false;
+  mainWindow.setAlwaysOnTop(true);
+  logger.warn('[WindowMonitor] fallback always-on-top enabled', { reason });
+}
+
+function disableFallbackAlwaysOnTop(reason) {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    helperFallbackMode = false;
+    return;
+  }
+
+  if (!helperFallbackMode) {
+    return;
+  }
+
+  helperFallbackMode = false;
+  mainWindow.__macroflowHelperManagedTopmost = false;
+  mainWindow.setAlwaysOnTop(false);
+  logger.info('[WindowMonitor] fallback always-on-top disabled', { reason });
+}
+
+function startExcelWindowMonitor(win) {
+  if (process.platform !== 'win32') {
+    return;
+  }
+  if (!win || win.isDestroyed()) {
+    return;
+  }
+  if (windowFocusHelper) {
+    return;
+  }
+
+  // Token-based reassert mechanism: delayed setAlwaysOnTop(true) calls
+  // through Electron's API to ensure topmost sticks after window transitions.
+  // Direct Win32 SetWindowPos calls from the C# helper can be overridden by
+  // Electron's internal window management, so we mirror reasserts here.
+  let jsReassertToken = 0;
+  const JS_REASSERT_DELAYS = [50, 150, 350];
+  let helperTargetConfirmed = false;
+  const HELPER_FOREGROUND_EVENT_DEBOUNCE_MS = 120;
+
+  try {
+    const hwnd = getNativeWindowHandleValue(win);
+    if (hwnd === null) {
+      throw new Error('Main window handle unavailable.');
+    }
+
+    const targetHwnd = hwnd.toString();
+    const WindowFocusHelperClient = require('./window-focus-helper-client');
+    windowFocusHelper = new WindowFocusHelperClient({
+      logger,
+      maxRestartAttempts: 3,
+      onStateChange: (state) => {
+        const stateTargetHwnd = state && state.targetHwnd ? String(state.targetHwnd) : null;
+        if (stateTargetHwnd !== targetHwnd) {
+          if (helperTargetConfirmed) {
+            helperTargetConfirmed = false;
+          }
+          logger.debug('[WindowHelper] ignoring mismatched helper state', {
+            expectedTargetHwnd: targetHwnd,
+            stateTargetHwnd
+          });
+          return;
+        }
+
+        if (!helperTargetConfirmed) {
+          helperTargetConfirmed = true;
+          logger.debug('[WindowHelper] helper target confirmed', { targetHwnd });
+        }
+
+        logger.debug('[WindowHelper] state', state);
+
+        const nextExcelActive = Boolean(state && state.excelActive);
+        const nextExcelHwnd = state && state.excelHwnd ? String(state.excelHwnd) : null;
+        const foregroundChanged =
+          lastHelperForegroundState.excelActive !== nextExcelActive ||
+          lastHelperForegroundState.excelHwnd !== nextExcelHwnd;
+
+        if (foregroundChanged) {
+          lastHelperForegroundState = {
+            excelActive: nextExcelActive,
+            excelHwnd: nextExcelHwnd
+          };
+
+          if (helperForegroundEventTimer) {
+            clearTimeout(helperForegroundEventTimer);
+            helperForegroundEventTimer = null;
+          }
+
+          helperForegroundEventTimer = setTimeout(() => {
+            helperForegroundEventTimer = null;
+            if (excel.isShuttingDown?.()) {
+              return;
+            }
+            if (!win || win.isDestroyed()) {
+              return;
+            }
+            if (!win.webContents || win.webContents.isDestroyed()) {
+              return;
+            }
+            win.webContents.send('excel:foreground-changed', {
+              excelActive: nextExcelActive,
+              excelHwnd: nextExcelHwnd,
+              process: String((state && state.process) || ''),
+              timestamp: Date.now()
+            });
+          }, HELPER_FOREGROUND_EVENT_DEBOUNCE_MS);
+
+          if (typeof helperForegroundEventTimer.unref === 'function') {
+            helperForegroundEventTimer.unref();
+          }
+        }
+
+        if (helperFallbackMode) {
+          disableFallbackAlwaysOnTop('helper-state-received');
+        }
+
+        // Increment token on every state change to cancel stale reasserts
+        jsReassertToken += 1;
+        const currentToken = jsReassertToken;
+
+        if (win && !win.isDestroyed()) {
+          const excelActive = Boolean(state && state.excelActive);
+          const stateProcess = String((state && state.process) || '').toLowerCase();
+
+          const isSelfProcess = ['electron', 'macroflow'].includes(stateProcess);
+          const branch = excelActive
+            ? 'excel-active'
+            : (isSelfProcess ? 'electron-transient-ignored' : 'nonexcel-decisive');
+
+          if (branch === 'excel-active') {
+            logger.debug('[WindowHelper] excel-active', { process: stateProcess, token: currentToken });
+            win.setAlwaysOnTop(true);
+
+            // When Excel becomes active, schedule delayed reasserts through
+            // Electron's API. This ensures topmost sticks even if Electron
+            // overrides the C# helper's direct Win32 SetWindowPos calls.
+            for (const delay of JS_REASSERT_DELAYS) {
+              setTimeout(() => {
+                if (currentToken !== jsReassertToken) return;
+                if (!win || win.isDestroyed()) return;
+                win.setAlwaysOnTop(true);
+                logger.debug('[WindowHelper] JS reassert applied', { delay, token: currentToken });
+              }, delay);
+            }
+          } else if (branch === 'nonexcel-decisive') {
+            logger.debug('[WindowHelper] nonexcel-decisive', { process: stateProcess, token: currentToken });
+            win.setAlwaysOnTop(false);
+            // No demote reasserts — C# helper owns Z-order placement via
+            // DemoteWindow. Repeated setAlwaysOnTop(false) calls fight with
+            // the helper's SetWindowPos(target, fg) by placing the window
+            // back at the top of all non-topmost windows.
+          } else {
+            logger.debug('[WindowHelper] electron-transient-ignored', {
+              process: stateProcess,
+              token: currentToken
+            });
+          }
+        }
+
+        if (state && state.excelActive && state.excelRect) {
+          const excelDisplay = getDisplayFromRect(state.excelRect);
+          if (excelDisplay) {
+            lastExcelDisplayId = excelDisplay.id;
+
+            if (!hasInitialContextPlacement) {
+              scheduleAdaptiveLayout(win, 'excel-display-anchor', 80, { preferExcel: true });
+              hasInitialContextPlacement = true;
+            }
+          }
+        } else if (!hasInitialContextPlacement) {
+          scheduleAdaptiveLayout(win, 'initial-cursor-anchor', 80, { preferCursor: true });
+          hasInitialContextPlacement = true;
+        }
+      },
+      onError: (message, payload) => {
+        if (payload && payload.type === 'process-exit') {
+          helperTargetConfirmed = false;
+        }
+        if (payload && typeof payload === 'object') {
+          logger.warn('[WindowHelper] warning', payload);
+          return;
+        }
+        logger.warn('[WindowHelper] warning', { message });
+      },
+      onFatal: (message) => {
+        helperTargetConfirmed = false;
+        logger.error('[WindowHelper] fatal', { message });
+        if (windowFocusHelper) {
+          try {
+            windowFocusHelper.stop();
+          } catch {
+            // Ignore shutdown errors in fatal path.
+          }
+          windowFocusHelper = null;
+        }
+        if (win && !win.isDestroyed()) {
+          win.__macroflowHelperManagedTopmost = false;
+        }
+        enableFallbackAlwaysOnTop(message);
+      }
+    });
+
+    windowFocusHelper.start(targetHwnd);
+    if (windowFocusHelper) {
+      win.__macroflowHelperManagedTopmost = true;
+      excel.setFocusHelper(windowFocusHelper);
+      logger.info('[WindowMonitor] helper monitor started', { hwnd: targetHwnd });
+    }
+  } catch (error) {
+    windowFocusHelper = null;
+    win.__macroflowHelperManagedTopmost = false;
+    logger.error('[WindowMonitor] failed to start helper monitor', { error: error.message });
+    enableFallbackAlwaysOnTop(error.message);
+  }
+}
+
+function stopExcelWindowMonitor() {
+  excel.setFocusHelper(null);
+  if (helperForegroundEventTimer) {
+    clearTimeout(helperForegroundEventTimer);
+    helperForegroundEventTimer = null;
+  }
+  lastHelperForegroundState = { excelActive: null, excelHwnd: null };
+
+  if (windowFocusHelper) {
+    try {
+      windowFocusHelper.stop();
+    } catch (error) {
+      logger.error('[WindowMonitor] failed to stop helper monitor', { error: error.message });
+    } finally {
+      windowFocusHelper = null;
+    }
+  }
+
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.__macroflowHelperManagedTopmost = false;
+  }
+
+  disableFallbackAlwaysOnTop('monitor-stop');
+
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.setAlwaysOnTop(false);
+  }
 }
 
 // CRITICAL: Request single instance lock - prevent multiple windows
@@ -40,7 +541,7 @@ if (!gotLock) {
 } else {
   // We have the lock - set up the single instance behavior
 
-  // Handle second-instance attempts by focusing the existing window
+  // Handle second-instance attempts by focusing the existing window.
   app.on('second-instance', () => {
     const windows = BrowserWindow.getAllWindows();
     if (windows.length > 0) {
@@ -54,14 +555,78 @@ if (!gotLock) {
 
   // ONLY register app lifecycle events if we have the lock
   app.whenReady().then(async () => {
-    // Install Excel Add-in before anything else
-    await installExcelAddin();
+    const squirrelFirstRun = isSquirrelFirstRunLaunch();
+    if (squirrelFirstRun) {
+      // Squirrel may auto-launch the app after install. Skip full UI startup so
+      // we do not begin helper/polling activity during this installer handoff.
+      logger.info('[Lifecycle] squirrel first-run launch detected; running post-install tasks only', {
+        argv: process.argv
+      });
+
+      try {
+        await installExcelAddin();
+      } catch (error) {
+        logger.error('[AddinInstaller] first-run install failed', { error: error.message });
+      }
+
+      // Show installer completion window
+      const { exec } = require('child_process');
+      const firstRunWindow = new BrowserWindow({
+        width: 420,
+        height: 340,
+        resizable: false,
+        maximizable: false,
+        minimizable: false,
+        frame: false,
+        transparent: true,
+        center: true,
+        alwaysOnTop: true,
+        skipTaskbar: false,
+        title: 'MacroFlow Setup',
+        icon: iconPath,
+        webPreferences: {
+          preload: path.join(__dirname, 'first-run-preload.js'),
+          contextIsolation: true,
+          sandbox: true,
+          nodeIntegration: false,
+        }
+      });
+
+      firstRunWindow.loadFile(path.join(__dirname, 'first-run.html'));
+
+      firstRunWindow.once('ready-to-show', () => {
+        firstRunWindow.show();
+      });
+
+      ipcMain.on('first-run:open-excel', () => {
+        exec('start excel', { shell: true });
+        app.quit();
+      });
+
+      ipcMain.on('first-run:done', () => {
+        app.quit();
+      });
+
+      firstRunWindow.on('closed', () => {
+        app.quit();
+      });
+
+      return;
+    }
 
     // Register window control handlers BEFORE creating window
     registerWindowHandlers();
-    
+
     registerHandlers();
     createWindow();
+
+    // Start auto-updater (production only, Windows only).
+    initAutoUpdater(mainWindow);
+
+    // Install/update Excel add-in in the background so first paint is fast.
+    installExcelAddin().catch((error) => {
+      logger.error('[AddinInstaller] background install failed', { error: error.message });
+    });
 
     // On macOS, re-create window when dock icon is clicked and no windows are open
     app.on('activate', () => {
@@ -73,8 +638,34 @@ if (!gotLock) {
 
   // Quit when all windows are closed (except on macOS)
   app.on('window-all-closed', () => {
+    logger.info('[Lifecycle] window-all-closed');
     if (process.platform !== 'darwin') {
       app.quit();
+    }
+  });
+
+  app.on('before-quit', () => {
+    const excelProcessIds = excel.getExcelProcessIds?.() || [];
+    logger.info('[Lifecycle] before-quit');
+    logger.info('[Lifecycle] Excel process snapshot at main before-quit', {
+      excelProcessIds,
+      excelProcessCount: excelProcessIds.length
+    });
+    try {
+      excel.setShuttingDown(true);
+    } catch (error) {
+      logger.warn('[Excel] failed to set shutdown latch', { error: error.message });
+    }
+    stopExcelWindowMonitor();
+    stopAutoUpdater();
+
+    // Force V8 GC to release any lingering COM proxy wrappers before exit.
+    if (typeof global.gc === 'function') {
+      try {
+        global.gc();
+      } catch {
+        // Best-effort.
+      }
     }
   });
 }
@@ -88,9 +679,17 @@ function registerWindowHandlers() {
   ipcMain.handle('window:setAlwaysOnTop', (_, value) => {
     const win = getMainWindow();
     if (win && !win.isDestroyed()) {
+      // Skip if C# helper owns Z-order management
+      if (win.__macroflowHelperManagedTopmost) {
+        logger.info('[Window] setAlwaysOnTop ignored (managed by focus helper)');
+        return { success: false, message: 'Z-order managed by focus helper' };
+      }
       const wasOnTop = win.isAlwaysOnTop();
       win.setAlwaysOnTop(Boolean(value));
-      console.log(`[Window] alwaysOnTop: ${wasOnTop} -> ${value}`);
+      logger.info('[Window] alwaysOnTop changed', {
+        previousValue: wasOnTop,
+        currentValue: Boolean(value)
+      });
       return { success: true, previousValue: wasOnTop, currentValue: Boolean(value) };
     }
     return { success: false, message: 'Window not available' };
@@ -104,37 +703,78 @@ function registerWindowHandlers() {
     }
     return { success: false, message: 'Window not available' };
   });
+
+  // Move window by relative delta (used for JS-driven title bar dragging)
+  ipcMain.on('window:moveBy', (event, dx, dy) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (win && !win.isDestroyed()) {
+      const [x, y] = win.getPosition();
+      win.setPosition(x + dx, y + dy);
+    }
+  });
+}
+
+function applyWindowGlassEffect(win) {
+  if (!win || win.isDestroyed()) {
+    return;
+  }
+
+  if (typeof win.setOpacity === 'function') {
+    win.setOpacity(GLASS_WINDOW_OPACITY);
+  }
+
+  // Apply subtle native background blur while keeping renderer styling in control.
+  if (process.platform === 'win32' && typeof win.setBackgroundMaterial === 'function') {
+    try {
+      win.setBackgroundMaterial('mica');
+    } catch (error) {
+      logger.warn('[Window] failed to apply native material', { error: error.message });
+    }
+  }
 }
 
 // Window creation function
 function createWindow() {
-  const primaryDisplay = screen.getPrimaryDisplay();
-  const { width, height, x, y } = primaryDisplay.workArea;
+  const launchDisplay = resolveTargetDisplay(null, { preferExcel: true, preferCursor: true });
+  const layout = getAdaptiveLayout(launchDisplay);
+  const { workArea } = launchDisplay;
 
-  // Window dimensions
-  const WIN_WIDTH = 750;
-  const WIN_HEIGHT = 738;
-  const RIGHT_MARGIN = 21;
-  const BOTTOM_MARGIN = 55;
+  const initialX = workArea.x + Math.max(0, workArea.width - layout.width - layout.rightMargin);
+  const initialY = workArea.y + Math.max(0, workArea.height - layout.height - layout.bottomMargin);
 
   mainWindow = new BrowserWindow({
-    width: WIN_WIDTH,
-    height: WIN_HEIGHT,
-    x: x + width - WIN_WIDTH - RIGHT_MARGIN,
-    y: y + height - WIN_HEIGHT - BOTTOM_MARGIN,
+    width: layout.width,
+    height: layout.height,
+    x: initialX,
+    y: initialY,
+    minWidth: WINDOW_BASELINE.minWidth,
+    minHeight: WINDOW_BASELINE.minHeight,
     frame: false,
-    alwaysOnTop: true,
-    resizable: false,
-    movable: false,
+    show: false,
+    transparent: true,
+    roundedCorners: true,
+    hasShadow: false,
+    alwaysOnTop: false,
+    resizable: true,
+    movable: true,
     skipTaskbar: false,
+    // Keep native window background transparent; UI shell provides tint.
+    backgroundColor: WINDOW_STARTUP_BG,
     title: 'MacroFlow',
     icon: iconPath,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
-      sandbox: false
+      sandbox: true,
+      nodeIntegration: false,
+      webSecurity: true
     }
   });
+
+  mainWindow.__macroflowHelperManagedTopmost = false;
+  applyWindowGlassEffect(mainWindow);
+  mainWindow.webContents.setZoomFactor(layout.scale);
+  attachAdaptiveWindowListeners(mainWindow);
 
   // Load from Vite dev server in development, built files in production
   if (isDev) {
@@ -145,11 +785,44 @@ function createWindow() {
     mainWindow.loadFile(path.join(__dirname, '../dist/index.html'));
   }
 
+  mainWindow.once('ready-to-show', () => {
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      return;
+    }
+    applyWindowGlassEffect(mainWindow);
+    mainWindow.show();
+    mainWindow.focus();
+  });
+
+  mainWindow.webContents.on('did-finish-load', () => {
+    applyAdaptiveLayout(mainWindow, 'did-finish-load', { preferExcel: true, preferCursor: true });
+    // Start the helper AFTER the window is fully loaded so that
+    // setAlwaysOnTop toggles operate on a fully-ready native window.
+    startExcelWindowMonitor(mainWindow);
+  });
+
   // Clean up reference when window is closed
   mainWindow.on('closed', () => {
+    if (detachDisplayListeners) {
+      detachDisplayListeners();
+      detachDisplayListeners = null;
+    }
+    if (adaptiveLayoutTimer) {
+      clearTimeout(adaptiveLayoutTimer);
+      adaptiveLayoutTimer = null;
+    }
+    stopExcelWindowMonitor();
     mainWindow = null;
+    lastAdaptiveLayoutKey = '';
+    hasInitialContextPlacement = false;
+    lastExcelDisplayId = null;
   });
 }
 
 module.exports = { getMainWindow };
+
+
+
+
+
 

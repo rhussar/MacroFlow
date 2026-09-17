@@ -1,0 +1,1432 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const test = require('node:test');
+const path = require('node:path');
+const Module = require('node:module');
+
+const BRIDGE_PATH = path.resolve(__dirname, 'excel-bridge.js');
+
+function buildTasklistOutput(processIds = []) {
+  if (!Array.isArray(processIds) || processIds.length < 1) {
+    return 'INFO: No tasks are running which match the specified criteria.\r\n';
+  }
+
+  return processIds
+    .map((pid) => `"EXCEL.EXE","${pid}","Console","1","123,456 K"`)
+    .join('\r\n');
+}
+
+function buildTasklistVerboseOutput(processRows = []) {
+  if (!Array.isArray(processRows) || processRows.length < 1) {
+    return 'INFO: No tasks are running which match the specified criteria.\r\n';
+  }
+
+  return processRows
+    .map(({ pid, windowTitle }) => {
+      const safePid = Number(pid);
+      const safeTitle = String(windowTitle || 'N/A').replace(/"/g, '""');
+      return `"EXCEL.EXE","${safePid}","Console","1","123,456 K","Running","RONAN","0:00:01","${safeTitle}"`;
+    })
+    .join('\r\n');
+}
+
+function loadExcelBridge({
+  processIds = [4242],
+  objectFactory = () => ({}),
+  execSyncImpl = null
+} = {}) {
+  const originalLoad = Module._load;
+  const releaseCalls = [];
+  let objectCalls = 0;
+
+  const winaxStub = {
+    Object: function ObjectFactory(id, options) {
+      objectCalls += 1;
+      const app = objectFactory({ id, options, call: objectCalls });
+      if (app && typeof app === 'object' && !Object.prototype.hasOwnProperty.call(app, 'Windows')) {
+        app.Windows = { Count: 1 };
+      }
+      return app;
+    },
+    release: (...objects) => {
+      releaseCalls.push(objects);
+    }
+  };
+
+  const childProcessStub = {
+    execSync: (...args) => {
+      if (typeof execSyncImpl === 'function') {
+        return execSyncImpl(...args);
+      }
+      return buildTasklistOutput(processIds);
+    }
+  };
+
+  Module._load = function patchedLoad(request, parent, isMain) {
+    if (request === 'winax') {
+      return winaxStub;
+    }
+    if (request === 'node:child_process') {
+      return childProcessStub;
+    }
+    return originalLoad.call(this, request, parent, isMain);
+  };
+
+  delete require.cache[BRIDGE_PATH];
+  const bridge = require(BRIDGE_PATH);
+  Module._load = originalLoad;
+
+  return {
+    bridge,
+    releaseCalls,
+    getObjectCalls: () => objectCalls
+  };
+}
+
+function withFakeAppData(run, { createPersonalWorkbookFile = true } = {}) {
+  const originalAppData = process.env.APPDATA;
+  const appDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'macroflow-appdata-'));
+  const workbookPath = path.join(appDataDir, 'Microsoft', 'Excel', 'XLSTART', 'PERSONAL.XLSB');
+
+  try {
+    process.env.APPDATA = appDataDir;
+    if (createPersonalWorkbookFile) {
+      fs.mkdirSync(path.dirname(workbookPath), { recursive: true });
+      fs.writeFileSync(workbookPath, '');
+    }
+    return run({ appDataDir, workbookPath });
+  } finally {
+    if (typeof originalAppData === 'string') {
+      process.env.APPDATA = originalAppData;
+    } else {
+      delete process.env.APPDATA;
+    }
+    fs.rmSync(appDataDir, { recursive: true, force: true });
+  }
+}
+
+test('core operations release COM handles on completion', () => {
+  const workbook = {
+    Name: 'Book1.xlsx',
+    FullName: 'C:\\Book1.xlsx',
+    ActiveSheet: { Name: 'Sheet1' },
+    Sheets: {
+      Count: 1,
+      Item: () => ({ Name: 'Sheet1' })
+    }
+  };
+
+  const range = { Value2: 42 };
+  const excelApp = {
+    ActiveWorkbook: workbook,
+    ActiveSheet: {
+      Range: () => range
+    },
+    Workbooks: {
+      Count: 1,
+      Item: () => workbook
+    }
+  };
+
+  const { bridge, releaseCalls } = loadExcelBridge({
+    processIds: [1111],
+    objectFactory: () => excelApp
+  });
+
+  const beforeInfo = releaseCalls.length;
+  const info = bridge.getWorkbookInfo();
+  assert.equal(info.success, true);
+  assert.ok(releaseCalls.length > beforeInfo, 'getWorkbookInfo should release COM handles');
+
+  const beforeList = releaseCalls.length;
+  const list = bridge.getOpenWorkbooks();
+  assert.equal(list.success, true);
+  assert.ok(releaseCalls.length > beforeList, 'getOpenWorkbooks should release COM handles');
+
+  const beforeRead = releaseCalls.length;
+  const read = bridge.readCell('A1');
+  assert.equal(read.success, true);
+  assert.ok(releaseCalls.length > beforeRead, 'readCell should release COM handles');
+});
+
+test('failure paths release COM handles', () => {
+  const excelApp = { ActiveWorkbook: null };
+  const { bridge, releaseCalls } = loadExcelBridge({
+    processIds: [2222],
+    objectFactory: () => excelApp
+  });
+
+  const result = bridge.getWorkbookInfo();
+  assert.equal(result.success, false);
+  assert.match(result.message, /NO_WORKBOOK/);
+
+  const releasedObjects = releaseCalls.flat();
+  assert.ok(releasedObjects.includes(excelApp), 'Excel application should be released on failure');
+});
+
+test('getPersonalWorkbookStatus reports hidden PERSONAL.XLSB state', () => withFakeAppData(({ workbookPath }) => {
+  const personalWindow = { Visible: false };
+  const personalWorkbook = {
+    Name: 'PERSONAL.XLSB',
+    FullName: workbookPath,
+    Windows: {
+      Count: 1,
+      Item: () => personalWindow
+    }
+  };
+  const excelApp = {
+    Workbooks: {
+      Count: 1,
+      Item: () => personalWorkbook
+    }
+  };
+
+  const { bridge } = loadExcelBridge({
+    processIds: [3131],
+    objectFactory: () => excelApp
+  });
+
+  const result = bridge.getPersonalWorkbookStatus();
+  assert.equal(result.success, true);
+  assert.equal(result.workbookFound, true);
+  assert.equal(result.windowVisible, false);
+  assert.equal(result.windowHidden, true);
+}));
+
+test('getPersonalWorkbookLocation resolves XLSTART path without COM', () => withFakeAppData(({ workbookPath }) => {
+  const { bridge, getObjectCalls } = loadExcelBridge({
+    processIds: [3132],
+    objectFactory: () => ({})
+  });
+
+  const result = bridge.getPersonalWorkbookLocation();
+  assert.equal(result.success, true);
+  assert.equal(result.workbookPath, workbookPath);
+  assert.equal(result.fileExists, true);
+  assert.equal(getObjectCalls(), 0);
+}));
+
+test('createPersonalWorkbook hides PERSONAL.XLSB when another workbook window remains visible', () => withFakeAppData(({ workbookPath }) => {
+  let saveCalls = 0;
+  const otherWorkbook = {
+    Name: 'Budget.xlsx',
+    FullName: 'C:\\Budget.xlsx',
+    Windows: {
+      Count: 1,
+      Item: () => ({ Visible: true })
+    }
+  };
+  const personalWindow = { Visible: true };
+  const personalWorkbook = {
+    Name: 'PERSONAL.XLSB',
+    FullName: workbookPath,
+    Saved: true,
+    SaveAs: () => {},
+    Save: () => {
+      saveCalls += 1;
+    },
+    Windows: {
+      Count: 1,
+      Item: () => personalWindow
+    }
+  };
+  const workbooks = [otherWorkbook];
+  const workbooksProxy = {
+    get Count() {
+      return workbooks.length;
+    },
+    Item: (index) => workbooks[index - 1],
+    Add: () => {
+      workbooks.push(personalWorkbook);
+      return personalWorkbook;
+    }
+  };
+  const excelApp = {
+    DisplayAlerts: true,
+    Workbooks: workbooksProxy
+  };
+
+  const { bridge } = loadExcelBridge({
+    processIds: [3232],
+    objectFactory: () => excelApp
+  });
+
+  const result = bridge.createPersonalWorkbook();
+  assert.equal(result.success, true);
+  assert.equal(result.created, true);
+  assert.equal(result.windowVisible, false);
+  assert.equal(result.windowHidden, true);
+  assert.equal(result.visibilityApplied, true);
+  assert.equal(personalWindow.Visible, false);
+  assert.equal(saveCalls, 1);
+}, { createPersonalWorkbookFile: false }));
+
+test('createPersonalWorkbook keeps PERSONAL.XLSB visible when it is the only workbook window', () => withFakeAppData(({ workbookPath }) => {
+  const personalWindow = { Visible: true };
+  const personalWorkbook = {
+    Name: 'PERSONAL.XLSB',
+    FullName: workbookPath,
+    Saved: true,
+    SaveAs: () => {},
+    Save: () => {
+      throw new Error('Save should not be called when hide is blocked');
+    },
+    Windows: {
+      Count: 1,
+      Item: () => personalWindow
+    }
+  };
+  const workbooks = [];
+  const excelApp = {
+    DisplayAlerts: true,
+    Workbooks: {
+      get Count() {
+        return workbooks.length;
+      },
+      Item: (index) => workbooks[index - 1],
+      Add: () => {
+        workbooks.push(personalWorkbook);
+        return personalWorkbook;
+      }
+    }
+  };
+
+  const { bridge } = loadExcelBridge({
+    processIds: [3333],
+    objectFactory: () => excelApp
+  });
+
+  const result = bridge.createPersonalWorkbook();
+  assert.equal(result.success, true);
+  assert.equal(result.created, true);
+  assert.equal(result.windowVisible, true);
+  assert.equal(result.windowHidden, false);
+  assert.equal(result.visibilityApplied, false);
+  assert.match(result.message, /only visible workbook window/i);
+}, { createPersonalWorkbookFile: false }));
+
+test('NO_EXCEL preflight occurs before COM attach', () => {
+  const { bridge, getObjectCalls } = loadExcelBridge({
+    processIds: [],
+    objectFactory: () => {
+      throw new Error('COM attach should not be attempted');
+    }
+  });
+
+  const result = bridge.getWorkbookInfo();
+  assert.equal(result.success, false);
+  assert.match(result.message, /NO_EXCEL/);
+  assert.equal(getObjectCalls(), 0);
+});
+
+test('windowless preflight blocks COM attach when no Excel process has a visible window title', () => {
+  const processIds = [2111];
+  const { bridge, getObjectCalls } = loadExcelBridge({
+    objectFactory: () => {
+      throw new Error('COM attach should not be attempted when preflight sees no visible windows');
+    },
+    execSyncImpl: (command) => {
+      if (String(command).includes('/V')) {
+        return buildTasklistVerboseOutput([{ pid: 2111, windowTitle: 'N/A' }]);
+      }
+      return buildTasklistOutput(processIds);
+    }
+  });
+
+  const result = bridge.getWorkbookInfo();
+  assert.equal(result.success, false);
+  assert.match(result.message, /NO_VISIBLE_WINDOWS/);
+  assert.equal(getObjectCalls(), 0);
+});
+
+test('windowless Excel reports NO_VISIBLE_WINDOWS and grace-gates quit attempts', () => {
+  const originalNow = Date.now;
+  let fakeNow = 10_000;
+  Date.now = () => fakeNow;
+
+  const processIds = [2333];
+  let quitCalls = 0;
+  const excelApp = {
+    Windows: { Count: 0 },
+    Quit: () => {
+      quitCalls += 1;
+    }
+  };
+
+  try {
+    const { bridge } = loadExcelBridge({
+      processIds,
+      objectFactory: () => excelApp
+    });
+
+    const first = bridge.getWorkbookInfo();
+    assert.equal(first.success, false);
+    assert.match(first.message, /NO_VISIBLE_WINDOWS/);
+    assert.equal(quitCalls, 0);
+
+    fakeNow += 2000;
+    const second = bridge.getWorkbookInfo();
+    assert.equal(second.success, false);
+    assert.match(second.message, /NO_VISIBLE_WINDOWS/);
+    assert.equal(quitCalls, 0);
+
+    fakeNow += 600;
+    const third = bridge.getWorkbookInfo();
+    assert.equal(third.success, false);
+    assert.match(third.message, /NO_VISIBLE_WINDOWS/);
+    assert.equal(quitCalls, 1);
+
+    fakeNow += 1000;
+    const fourth = bridge.getWorkbookInfo();
+    assert.equal(fourth.success, false);
+    assert.match(fourth.message, /NO_VISIBLE_WINDOWS/);
+    assert.equal(quitCalls, 1);
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test('windowless detection resets after successful attach', () => {
+  const originalNow = Date.now;
+  let fakeNow = 20_000;
+  Date.now = () => fakeNow;
+
+  const processIds = [2444];
+  let quitCalls = 0;
+  const workbook = {
+    Name: 'Book1.xlsx',
+    FullName: 'C:\\Book1.xlsx',
+    ActiveSheet: { Name: 'Sheet1' },
+    Sheets: {
+      Count: 1,
+      Item: () => ({ Name: 'Sheet1' })
+    }
+  };
+  const windowsState = { count: 0 };
+  const excelApp = {
+    get Windows() {
+      return { Count: windowsState.count };
+    },
+    Quit: () => {
+      quitCalls += 1;
+    },
+    ActiveWorkbook: workbook
+  };
+
+  try {
+    const { bridge } = loadExcelBridge({
+      processIds,
+      objectFactory: () => excelApp
+    });
+
+    const first = bridge.getWorkbookInfo();
+    assert.equal(first.success, false);
+    assert.match(first.message, /NO_VISIBLE_WINDOWS/);
+    assert.equal(quitCalls, 0);
+
+    fakeNow += 2600;
+    const second = bridge.getWorkbookInfo();
+    assert.equal(second.success, false);
+    assert.match(second.message, /NO_VISIBLE_WINDOWS/);
+    assert.equal(quitCalls, 1);
+
+    windowsState.count = 1;
+    fakeNow += 200;
+    const success = bridge.getWorkbookInfo();
+    assert.equal(success.success, true);
+
+    windowsState.count = 0;
+    fakeNow += 200;
+    const afterReset = bridge.getWorkbookInfo();
+    assert.equal(afterReset.success, false);
+    assert.match(afterReset.message, /NO_VISIBLE_WINDOWS/);
+    assert.equal(quitCalls, 1);
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test('windowless detection resets when Excel process disappears', () => {
+  const originalNow = Date.now;
+  let fakeNow = 30_000;
+  Date.now = () => fakeNow;
+
+  const processIds = [2555];
+  let quitCalls = 0;
+  const excelApp = {
+    Windows: { Count: 0 },
+    Quit: () => {
+      quitCalls += 1;
+    }
+  };
+
+  try {
+    const { bridge } = loadExcelBridge({
+      processIds,
+      objectFactory: () => excelApp
+    });
+
+    const first = bridge.getWorkbookInfo();
+    assert.equal(first.success, false);
+    assert.match(first.message, /NO_VISIBLE_WINDOWS/);
+
+    fakeNow += 2600;
+    const second = bridge.getWorkbookInfo();
+    assert.equal(second.success, false);
+    assert.match(second.message, /NO_VISIBLE_WINDOWS/);
+    assert.equal(quitCalls, 1);
+
+    processIds.length = 0;
+    fakeNow += 200;
+    const noProcess = bridge.getWorkbookInfo();
+    assert.equal(noProcess.success, false);
+    assert.match(noProcess.message, /NO_EXCEL/);
+
+    processIds.push(2555);
+    fakeNow += 200;
+    const afterNoProcessReset = bridge.getWorkbookInfo();
+    assert.equal(afterNoProcessReset.success, false);
+    assert.match(afterNoProcessReset.message, /NO_VISIBLE_WINDOWS/);
+    assert.equal(quitCalls, 1);
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test('windowless detection does not carry stale grace window across process-id cycles', () => {
+  const originalNow = Date.now;
+  let fakeNow = 40_000;
+  Date.now = () => fakeNow;
+
+  const processIds = [2666];
+  let quitCalls = 0;
+  const excelApp = {
+    Windows: { Count: 0 },
+    Quit: () => {
+      quitCalls += 1;
+    }
+  };
+
+  try {
+    const { bridge } = loadExcelBridge({
+      processIds,
+      objectFactory: () => excelApp
+    });
+
+    const first = bridge.getWorkbookInfo();
+    assert.equal(first.success, false);
+    assert.match(first.message, /NO_VISIBLE_WINDOWS/);
+    assert.equal(quitCalls, 0);
+
+    // Simulate stale elapsed time with a different Excel process cycle.
+    fakeNow += 5000;
+    processIds[0] = 2777;
+
+    const afterPidChange = bridge.getWorkbookInfo();
+    assert.equal(afterPidChange.success, false);
+    assert.match(afterPidChange.message, /NO_VISIBLE_WINDOWS/);
+    assert.equal(
+      quitCalls,
+      0,
+      'new process-id cycle should not inherit grace elapsed from previous cycle'
+    );
+
+    fakeNow += 2600;
+    const afterGrace = bridge.getWorkbookInfo();
+    assert.equal(afterGrace.success, false);
+    assert.match(afterGrace.message, /NO_VISIBLE_WINDOWS/);
+    assert.equal(quitCalls, 1);
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test('windowless attach with process-id churn reports NO_EXCEL instead of NO_VISIBLE_WINDOWS', () => {
+  let nonVerboseTasklistCall = 0;
+  const excelApp = {
+    Windows: { Count: 0 }
+  };
+
+  const { bridge } = loadExcelBridge({
+    objectFactory: () => excelApp,
+    execSyncImpl: (command) => {
+      if (String(command).includes('/V')) {
+        // Visibility preflight should pass so this test reaches attach-time PID churn logic.
+        return buildTasklistVerboseOutput([{ pid: 3111, windowTitle: 'Book1.xlsx - Excel' }]);
+      }
+
+      nonVerboseTasklistCall += 1;
+      if (nonVerboseTasklistCall === 1) {
+        // Preflight snapshot
+        return buildTasklistOutput([3111]);
+      }
+      if (nonVerboseTasklistCall === 2) {
+        // Immediate post-attach snapshot shifted to a new process cycle
+        return buildTasklistOutput([4222]);
+      }
+      // Failure-path snapshots keep reporting the replacement process
+      return buildTasklistOutput([4222]);
+    }
+  });
+
+  const result = bridge.getWorkbookInfo();
+  assert.equal(result.success, false);
+  assert.match(result.message, /NO_EXCEL/);
+});
+
+test('getOpenWorkbooks uses fresh COM attach for each call (no persistent cache)', () => {
+  let nextPid = 3000;
+  const { bridge, getObjectCalls } = loadExcelBridge({
+    processIds: [3333],
+    objectFactory: () => ({
+      id: nextPid++,
+      Workbooks: {
+        Count: 0
+      }
+    })
+  });
+
+  const first = bridge.getOpenWorkbooks();
+  const second = bridge.getOpenWorkbooks();
+
+  assert.equal(first.success, true);
+  assert.equal(second.success, true);
+  assert.equal(getObjectCalls(), 2);
+});
+
+test('auditShortcuts releases workbook property COM handles', () => {
+  const shortcutProp = { Value: '{}' };
+  const customProps = {
+    Item: () => shortcutProp,
+    Add: () => {}
+  };
+  const vbComponents = { Count: 0 };
+  const vbProject = { VBComponents: vbComponents };
+  const workbook = {
+    Name: 'Book1.xlsx',
+    FullName: 'C:\\Book1.xlsx',
+    VBProject: vbProject,
+    CustomDocumentProperties: customProps
+  };
+  const excelApp = {
+    ActiveWorkbook: workbook
+  };
+
+  const { bridge, releaseCalls } = loadExcelBridge({
+    processIds: [4444],
+    objectFactory: () => excelApp
+  });
+
+  const result = bridge.auditShortcuts();
+  assert.equal(result.success, true);
+
+  const releasedObjects = releaseCalls.flat();
+  assert.ok(releasedObjects.includes(customProps), 'CustomDocumentProperties should be released');
+  assert.ok(releasedObjects.includes(shortcutProp), 'Shortcut registry property should be released');
+});
+
+test('shutdown latch blocks COM attach immediately', () => {
+  const { bridge, getObjectCalls } = loadExcelBridge({
+    processIds: [5555],
+    objectFactory: () => {
+      throw new Error('COM attach should not be attempted during shutdown');
+    }
+  });
+
+  bridge.setShuttingDown(true);
+  const result = bridge.getWorkbookInfo();
+  assert.equal(result.success, false);
+  assert.match(result.message, /APP_SHUTTING_DOWN/);
+  assert.equal(getObjectCalls(), 0);
+});
+
+test('getActiveWorkbookContext releases COM handles and returns combined payload', () => {
+  const shortcutProp = { Value: '{}' };
+  const customProps = {
+    Item: () => shortcutProp,
+    Add: () => {}
+  };
+  const vbComponents = { Count: 0 };
+  const vbProject = { VBComponents: vbComponents };
+  const workbook = {
+    Name: 'Book1.xlsx',
+    FullName: 'C:\\Book1.xlsx',
+    ActiveSheet: { Name: 'Sheet1' },
+    Sheets: {
+      Count: 1,
+      Item: () => ({ Name: 'Sheet1' })
+    },
+    VBProject: vbProject,
+    CustomDocumentProperties: customProps
+  };
+  const excelApp = { ActiveWorkbook: workbook };
+
+  const { bridge, releaseCalls } = loadExcelBridge({
+    processIds: [6666],
+    objectFactory: () => excelApp
+  });
+
+  const result = bridge.getActiveWorkbookContext();
+  assert.equal(result.success, true);
+  assert.equal(result.workbook?.name, 'Book1.xlsx');
+  assert.ok(Array.isArray(result.modules));
+  assert.ok(Array.isArray(result.procedures));
+  assert.equal(result.shortcutAudit?.success, true);
+
+  const releasedObjects = releaseCalls.flat();
+  assert.ok(releasedObjects.includes(excelApp), 'Excel application should be released');
+  assert.ok(releasedObjects.includes(workbook), 'Active workbook should be released');
+  assert.ok(releasedObjects.includes(customProps), 'CustomDocumentProperties should be released');
+});
+
+test('getOpenWorkbookListContext releases COM handles and returns list payload', () => {
+  const vbProject = { VBComponents: { Count: 0 } };
+  const workbook = {
+    Name: 'Book1.xlsx',
+    FullName: 'C:\\Book1.xlsx',
+    VBProject: vbProject
+  };
+  const workbooksCollection = {
+    Count: 1,
+    Item: () => workbook
+  };
+  const excelApp = {
+    Workbooks: workbooksCollection
+  };
+
+  const { bridge, releaseCalls } = loadExcelBridge({
+    processIds: [7777],
+    objectFactory: () => excelApp
+  });
+
+  const result = bridge.getOpenWorkbookListContext();
+  assert.equal(result.success, true);
+  assert.equal(result.workbooks.length, 1);
+  assert.ok(Array.isArray(result.allFilesModules));
+
+  const releasedObjects = releaseCalls.flat();
+  assert.ok(releasedObjects.includes(excelApp), 'Excel application should be released');
+  assert.ok(releasedObjects.includes(workbook), 'Workbook should be released');
+  assert.ok(releasedObjects.includes(workbooksCollection), 'Workbook collection should be released');
+});
+
+test('injectModuleByWorkbookName creates a module in the requested workbook', () => {
+  let insertedLine = 0;
+  let insertedCode = '';
+  const codeModule = {
+    CountOfLines: 0,
+    InsertLines: (line, code) => {
+      insertedLine = line;
+      insertedCode = code;
+    }
+  };
+  const newModule = {
+    Name: '',
+    CodeModule: codeModule
+  };
+  const existingComponent = {
+    Name: 'OtherModule',
+    CodeModule: { CountOfLines: 0 }
+  };
+  const vbComponents = {
+    Count: 1,
+    Item: () => existingComponent,
+    Add: () => newModule,
+    Remove: () => {}
+  };
+  const vbProject = { VBComponents: vbComponents };
+  const targetWorkbook = {
+    Name: 'Client.xlsm',
+    FullName: 'C:\\Client.xlsm',
+    VBProject: vbProject
+  };
+  const otherWorkbook = {
+    Name: 'Other.xlsm',
+    FullName: 'C:\\Other.xlsm'
+  };
+  const excelApp = {
+    Workbooks: {
+      Count: 2,
+      Item: (index) => (index === 1 ? otherWorkbook : targetWorkbook)
+    }
+  };
+
+  const { bridge } = loadExcelBridge({
+    processIds: [8888],
+    objectFactory: () => excelApp
+  });
+
+  const result = bridge.injectModuleByWorkbookName(
+    'Client.xlsm',
+    'MacroFlowModule1',
+    'Sub RunA()\nEnd Sub',
+    { workbookPath: 'C:\\Client.xlsm' }
+  );
+
+  assert.equal(result.success, true);
+  assert.equal(result.workbookFound, true);
+  assert.equal(result.workbook?.name, 'Client.xlsm');
+  assert.equal(result.moduleName, 'MacroFlowModule1');
+  assert.equal(newModule.Name, 'MacroFlowModule1');
+  assert.equal(insertedLine, 1);
+  assert.equal(insertedCode, 'Sub RunA()\nEnd Sub');
+});
+
+test('injectModuleByWorkbookName returns workbookFound false when workbook is missing', () => {
+  const workbook = {
+    Name: 'Open.xlsm',
+    FullName: 'C:\\Open.xlsm'
+  };
+  const excelApp = {
+    Workbooks: {
+      Count: 1,
+      Item: () => workbook
+    }
+  };
+
+  const { bridge } = loadExcelBridge({
+    processIds: [9999],
+    objectFactory: () => excelApp
+  });
+
+  const result = bridge.injectModuleByWorkbookName(
+    'Missing.xlsm',
+    'MacroFlowModule1',
+    'Sub RunA()\nEnd Sub',
+    { workbookPath: 'C:\\Missing.xlsm' }
+  );
+
+  assert.equal(result.success, true);
+  assert.equal(result.workbookFound, false);
+  assert.equal(result.workbook, null);
+});
+
+test('moduleCodeByWorkbookName returns code, lineCount, and hash for target module', () => {
+  const codeModule = {
+    CountOfLines: 3,
+    Lines: () => 'Option Explicit\r\nSub RunA()\r\nEnd Sub'
+  };
+  const component = {
+    Name: 'MacroFlowModule1',
+    CodeModule: codeModule
+  };
+  const vbComponents = {
+    Count: 1,
+    Item: () => component
+  };
+  const vbProject = { VBComponents: vbComponents };
+  const workbook = {
+    Name: 'Client.xlsm',
+    FullName: 'C:\\Client.xlsm',
+    VBProject: vbProject
+  };
+  const excelApp = {
+    Workbooks: {
+      Count: 1,
+      Item: () => workbook
+    }
+  };
+
+  const { bridge } = loadExcelBridge({
+    processIds: [10001],
+    objectFactory: () => excelApp
+  });
+
+  const result = bridge.getModuleCodeByWorkbookName(
+    'Client.xlsm',
+    'MacroFlowModule1',
+    { workbookPath: 'C:\\Client.xlsm' }
+  );
+
+  assert.equal(result.success, true);
+  assert.equal(result.workbookFound, true);
+  assert.equal(result.moduleFound, true);
+  assert.equal(result.moduleName, 'MacroFlowModule1');
+  assert.equal(result.lineCount, 3);
+  assert.equal(result.code, 'Option Explicit\nSub RunA()\nEnd Sub');
+  assert.equal(result.hash, '8b823a0a');
+});
+
+test('moduleSignatureByWorkbookName omits code and reports missing module/workbook surfaces', () => {
+  const vbComponents = { Count: 0 };
+  const vbProject = { VBComponents: vbComponents };
+  const workbook = {
+    Name: 'Client.xlsm',
+    FullName: 'C:\\Client.xlsm',
+    VBProject: vbProject
+  };
+  const excelApp = {
+    Workbooks: {
+      Count: 1,
+      Item: () => workbook
+    }
+  };
+
+  const { bridge } = loadExcelBridge({
+    processIds: [10002],
+    objectFactory: () => excelApp
+  });
+
+  const missingModuleResult = bridge.getModuleSignatureByWorkbookName(
+    'Client.xlsm',
+    'MissingModule',
+    { workbookPath: 'C:\\Client.xlsm' }
+  );
+  assert.equal(missingModuleResult.success, true);
+  assert.equal(missingModuleResult.workbookFound, true);
+  assert.equal(missingModuleResult.moduleFound, false);
+  assert.equal(Object.prototype.hasOwnProperty.call(missingModuleResult, 'code'), false);
+
+  const missingWorkbookResult = bridge.getModuleSignatureByWorkbookName(
+    'Missing.xlsm',
+    'MissingModule',
+    { workbookPath: 'C:\\Missing.xlsm' }
+  );
+  assert.equal(missingWorkbookResult.success, true);
+  assert.equal(missingWorkbookResult.workbookFound, false);
+  assert.equal(missingWorkbookResult.moduleFound, false);
+});
+
+test('setModuleCodeByWorkbookName updates existing module and can create when missing', () => {
+  const existingCodeState = { text: 'Sub Old()\nEnd Sub' };
+  const existingCodeModule = {
+    get CountOfLines() {
+      return existingCodeState.text ? existingCodeState.text.split('\n').length : 0;
+    },
+    Lines: () => existingCodeState.text,
+    DeleteLines: () => {
+      existingCodeState.text = '';
+    },
+    InsertLines: (_line, text) => {
+      existingCodeState.text = String(text || '');
+    }
+  };
+  const existingComponent = {
+    Name: 'MacroFlowModule1',
+    CodeModule: existingCodeModule
+  };
+
+  const createdCodeState = { text: '' };
+  const createdCodeModule = {
+    get CountOfLines() {
+      return createdCodeState.text ? createdCodeState.text.split('\n').length : 0;
+    },
+    Lines: () => createdCodeState.text,
+    DeleteLines: () => {
+      createdCodeState.text = '';
+    },
+    InsertLines: (_line, text) => {
+      createdCodeState.text = String(text || '');
+    }
+  };
+
+  const components = [existingComponent];
+  const vbComponents = {
+    get Count() {
+      return components.length;
+    },
+    Item: (index) => components[index - 1],
+    Add: () => {
+      const createdComponent = { Name: '', CodeModule: createdCodeModule };
+      components.push(createdComponent);
+      return createdComponent;
+    },
+    Remove: () => {}
+  };
+  const vbProject = { VBComponents: vbComponents };
+  const workbook = {
+    Name: 'Client.xlsm',
+    FullName: 'C:\\Client.xlsm',
+    VBProject: vbProject
+  };
+  const excelApp = {
+    Workbooks: {
+      Count: 1,
+      Item: () => workbook
+    }
+  };
+
+  const { bridge } = loadExcelBridge({
+    processIds: [10003],
+    objectFactory: () => excelApp
+  });
+
+  const updated = bridge.setModuleCodeByWorkbookName(
+    'Client.xlsm',
+    'MacroFlowModule1',
+    'Option Explicit\nSub Updated()\nEnd Sub',
+    { workbookPath: 'C:\\Client.xlsm', createIfMissing: false }
+  );
+  assert.equal(updated.success, true);
+  assert.equal(updated.workbookFound, true);
+  assert.equal(updated.moduleFound, true);
+  assert.equal(updated.moduleName, 'MacroFlowModule1');
+  assert.equal(existingCodeState.text, 'Option Explicit\nSub Updated()\nEnd Sub');
+  assert.equal(updated.lineCount, 3);
+  assert.equal(updated.hash, '2bae8529');
+
+  const missingWithoutCreate = bridge.setModuleCodeByWorkbookName(
+    'Client.xlsm',
+    'MacroFlowModule2',
+    'Option Explicit',
+    { workbookPath: 'C:\\Client.xlsm', createIfMissing: false }
+  );
+  assert.equal(missingWithoutCreate.success, false);
+  assert.equal(missingWithoutCreate.workbookFound, true);
+  assert.equal(missingWithoutCreate.moduleFound, false);
+
+  const created = bridge.setModuleCodeByWorkbookName(
+    'Client.xlsm',
+    'MacroFlowModule2',
+    'Option Explicit',
+    { workbookPath: 'C:\\Client.xlsm', createIfMissing: true }
+  );
+  assert.equal(created.success, true);
+  assert.equal(created.workbookFound, true);
+  assert.equal(created.moduleFound, false);
+  assert.equal(created.moduleName, 'MacroFlowModule2');
+  assert.equal(components.length, 2);
+  assert.equal(components[1].Name, 'MacroFlowModule2');
+  assert.equal(createdCodeState.text, 'Option Explicit');
+  assert.equal(created.hash, '621fb430');
+});
+
+test('module code operations release COM handles for workbook/code module paths', () => {
+  const codeModule = {
+    CountOfLines: 1,
+    Lines: () => 'Option Explicit'
+  };
+  const component = {
+    Name: 'MacroFlowModule1',
+    CodeModule: codeModule
+  };
+  const vbComponents = {
+    Count: 1,
+    Item: () => component,
+    Add: () => component
+  };
+  const vbProject = { VBComponents: vbComponents };
+  const workbook = {
+    Name: 'Client.xlsm',
+    FullName: 'C:\\Client.xlsm',
+    VBProject: vbProject
+  };
+  const workbooksCollection = {
+    Count: 1,
+    Item: () => workbook
+  };
+  const excelApp = {
+    Workbooks: workbooksCollection
+  };
+
+  const { bridge, releaseCalls } = loadExcelBridge({
+    processIds: [10004],
+    objectFactory: () => excelApp
+  });
+
+  const before = releaseCalls.length;
+  const result = bridge.getModuleCodeByWorkbookName(
+    'Client.xlsm',
+    'MacroFlowModule1',
+    { workbookPath: 'C:\\Client.xlsm' }
+  );
+  assert.equal(result.success, true);
+  assert.ok(releaseCalls.length > before, 'module code read should release COM handles');
+
+  const released = releaseCalls.flat();
+  assert.ok(released.includes(excelApp), 'Excel app should be released');
+  assert.ok(released.includes(workbook), 'Workbook should be released');
+  assert.ok(released.includes(vbProject), 'VBProject should be released');
+  assert.ok(released.includes(codeModule), 'CodeModule should be released');
+});
+
+test('renameModuleByWorkbookName renames only standard modules and blocks duplicates/invalid names', () => {
+  const standardComponent = {
+    Name: 'ModuleOne',
+    Type: 1
+  };
+  const existingComponent = {
+    Name: 'ModuleTwo',
+    Type: 1
+  };
+  const classComponent = {
+    Name: 'ClassOne',
+    Type: 2
+  };
+  const components = [standardComponent, existingComponent, classComponent];
+  const vbComponents = {
+    get Count() {
+      return components.length;
+    },
+    Item: (index) => components[index - 1],
+    Remove: () => {}
+  };
+  const vbProject = { VBComponents: vbComponents };
+  const workbook = {
+    Name: 'Client.xlsm',
+    FullName: 'C:\\Client.xlsm',
+    VBProject: vbProject
+  };
+  const excelApp = {
+    Workbooks: {
+      Count: 1,
+      Item: () => workbook
+    }
+  };
+
+  const { bridge } = loadExcelBridge({
+    processIds: [11001],
+    objectFactory: () => excelApp
+  });
+
+  const renamed = bridge.renameModuleByWorkbookName(
+    'Client.xlsm',
+    'ModuleOne',
+    'RenamedModule',
+    { workbookPath: 'C:\\Client.xlsm' }
+  );
+  assert.equal(renamed.success, true);
+  assert.equal(renamed.workbookFound, true);
+  assert.equal(renamed.moduleFound, true);
+  assert.equal(renamed.renamed, true);
+  assert.equal(standardComponent.Name, 'RenamedModule');
+
+  const duplicate = bridge.renameModuleByWorkbookName(
+    'Client.xlsm',
+    'RenamedModule',
+    'ModuleTwo',
+    { workbookPath: 'C:\\Client.xlsm' }
+  );
+  assert.equal(duplicate.success, false);
+  assert.equal(duplicate.renamed, false);
+
+  const invalidName = bridge.renameModuleByWorkbookName(
+    'Client.xlsm',
+    'RenamedModule',
+    '1-invalid',
+    { workbookPath: 'C:\\Client.xlsm' }
+  );
+  assert.equal(invalidName.success, false);
+  assert.equal(invalidName.renamed, false);
+
+  const nonStandard = bridge.renameModuleByWorkbookName(
+    'Client.xlsm',
+    'ClassOne',
+    'ClassRenamed',
+    { workbookPath: 'C:\\Client.xlsm' }
+  );
+  assert.equal(nonStandard.success, false);
+  assert.equal(nonStandard.moduleFound, true);
+  assert.equal(nonStandard.renamed, false);
+});
+
+test('deleteModuleByWorkbookName deletes standard modules and blocks non-standard modules', () => {
+  const standardComponent = {
+    Name: 'DeleteMe',
+    Type: 1
+  };
+  const classComponent = {
+    Name: 'ClassKeep',
+    Type: 2
+  };
+  const components = [standardComponent, classComponent];
+  const vbComponents = {
+    get Count() {
+      return components.length;
+    },
+    Item: (index) => components[index - 1],
+    Remove: (component) => {
+      const index = components.indexOf(component);
+      if (index >= 0) {
+        components.splice(index, 1);
+      }
+    }
+  };
+  const vbProject = { VBComponents: vbComponents };
+  const workbook = {
+    Name: 'Client.xlsm',
+    FullName: 'C:\\Client.xlsm',
+    VBProject: vbProject
+  };
+  const excelApp = {
+    Workbooks: {
+      Count: 1,
+      Item: () => workbook
+    }
+  };
+
+  const { bridge } = loadExcelBridge({
+    processIds: [11002],
+    objectFactory: () => excelApp
+  });
+
+  const deleted = bridge.deleteModuleByWorkbookName(
+    'Client.xlsm',
+    'DeleteMe',
+    { workbookPath: 'C:\\Client.xlsm' }
+  );
+  assert.equal(deleted.success, true);
+  assert.equal(deleted.deleted, true);
+  assert.equal(components.some((component) => component.Name === 'DeleteMe'), false);
+
+  const nonStandard = bridge.deleteModuleByWorkbookName(
+    'Client.xlsm',
+    'ClassKeep',
+    { workbookPath: 'C:\\Client.xlsm' }
+  );
+  assert.equal(nonStandard.success, false);
+  assert.equal(nonStandard.deleted, false);
+  assert.equal(nonStandard.moduleFound, true);
+});
+
+test('module rename/delete operations release COM handles', () => {
+  const standardComponent = {
+    Name: 'ModuleOne',
+    Type: 1
+  };
+  const components = [standardComponent];
+  const vbComponents = {
+    get Count() {
+      return components.length;
+    },
+    Item: (index) => components[index - 1],
+    Remove: () => {}
+  };
+  const vbProject = { VBComponents: vbComponents };
+  const workbook = {
+    Name: 'Client.xlsm',
+    FullName: 'C:\\Client.xlsm',
+    VBProject: vbProject
+  };
+  const excelApp = {
+    Workbooks: {
+      Count: 1,
+      Item: () => workbook
+    }
+  };
+
+  const { bridge, releaseCalls } = loadExcelBridge({
+    processIds: [11003],
+    objectFactory: () => excelApp
+  });
+
+  const renameBefore = releaseCalls.length;
+  const renameResult = bridge.renameModuleByWorkbookName(
+    'Client.xlsm',
+    'ModuleOne',
+    'ModuleRenamed',
+    { workbookPath: 'C:\\Client.xlsm' }
+  );
+  assert.equal(renameResult.success, true);
+  assert.ok(releaseCalls.length > renameBefore);
+
+  const deleteBefore = releaseCalls.length;
+  const deleteResult = bridge.deleteModuleByWorkbookName(
+    'Client.xlsm',
+    'ModuleRenamed',
+    { workbookPath: 'C:\\Client.xlsm' }
+  );
+  assert.equal(deleteResult.success, true);
+  assert.ok(releaseCalls.length > deleteBefore);
+
+  const released = releaseCalls.flat();
+  assert.ok(released.includes(excelApp), 'Excel app should be released');
+  assert.ok(released.includes(workbook), 'Workbook should be released');
+  assert.ok(released.includes(vbProject), 'VBProject should be released');
+});
+
+test('runMacroWithTrap uses add-in runtime first when available', () => {
+  const vbComponents = { Count: 0 };
+  const vbProject = { VBComponents: vbComponents };
+  const workbook = {
+    Name: 'Book1.xlsx',
+    FullName: 'C:\\Book1.xlsx',
+    VBProject: vbProject,
+    Activate: () => {}
+  };
+
+  const runCalls = [];
+  const excelApp = {
+    ActiveWorkbook: workbook,
+    ActiveWindow: { Activate: () => {} },
+    Ready: true,
+    Run: (...args) => {
+      runCalls.push(args);
+      return 'OK';
+    }
+  };
+
+  const { bridge } = loadExcelBridge({
+    processIds: [12001],
+    objectFactory: () => excelApp
+  });
+
+  let ensureCalls = 0;
+  bridge._ensureRuntimeModule = () => {
+    ensureCalls += 1;
+  };
+
+  const result = bridge.runMacroWithTrap('Module1.RunA');
+
+  assert.equal(result.success, true);
+  assert.equal(runCalls.length, 1);
+  assert.equal(runCalls[0][0], 'MacroFlow.xlam!MacroFlow_Runtime.MacroFlow_RunMacro');
+  assert.equal(ensureCalls, 0);
+});
+
+test('runMacroWithTrap falls back to workbook runtime when add-in runtime is unavailable', () => {
+  const vbComponents = { Count: 0 };
+  const vbProject = { VBComponents: vbComponents };
+  const workbook = {
+    Name: 'Book1.xlsx',
+    FullName: 'C:\\Book1.xlsx',
+    VBProject: vbProject,
+    Activate: () => {}
+  };
+
+  const runCalls = [];
+  const excelApp = {
+    ActiveWorkbook: workbook,
+    ActiveWindow: { Activate: () => {} },
+    Ready: true,
+    Run: (...args) => {
+      runCalls.push(args);
+      if (runCalls.length === 1) {
+        throw new Error('Cannot run the macro "MacroFlow_Runtime.MacroFlow_RunMacro".');
+      }
+      return 'OK';
+    }
+  };
+
+  const { bridge } = loadExcelBridge({
+    processIds: [12002],
+    objectFactory: () => excelApp
+  });
+
+  let ensureCalls = 0;
+  bridge._ensureRuntimeModule = () => {
+    ensureCalls += 1;
+  };
+
+  const result = bridge.runMacroWithTrap('Module1.RunA');
+
+  assert.equal(result.success, true);
+  assert.equal(runCalls.length, 2);
+  assert.equal(runCalls[0][0], 'MacroFlow.xlam!MacroFlow_Runtime.MacroFlow_RunMacro');
+  assert.equal(runCalls[1][0], 'Book1.xlsx!MacroFlow_Runtime.MacroFlow_RunMacro');
+  assert.equal(ensureCalls, 1);
+});
+
+test('runMacroWithTrap parses add-in runtime ERR payload without fallback', () => {
+  const vbComponents = { Count: 0 };
+  const vbProject = { VBComponents: vbComponents };
+  const workbook = {
+    Name: 'Book1.xlsx',
+    FullName: 'C:\\Book1.xlsx',
+    VBProject: vbProject,
+    Activate: () => {}
+  };
+
+  const runCalls = [];
+  const excelApp = {
+    ActiveWorkbook: workbook,
+    ActiveWindow: { Activate: () => {} },
+    Ready: true,
+    Run: (...args) => {
+      runCalls.push(args);
+      return 'ERR|11|Runtime exploded|VBAProject';
+    }
+  };
+
+  const { bridge } = loadExcelBridge({
+    processIds: [12003],
+    objectFactory: () => excelApp
+  });
+
+  let ensureCalls = 0;
+  bridge._ensureRuntimeModule = () => {
+    ensureCalls += 1;
+  };
+
+  const result = bridge.runMacroWithTrap('Module1.RunA');
+
+  assert.equal(result.success, false);
+  assert.match(result.message, /VBA error 11/);
+  assert.equal(runCalls.length, 1);
+  assert.equal(ensureCalls, 0);
+});
+
+test('runMacroWithTrap does not fallback for non-availability add-in runtime failures', () => {
+  const vbComponents = { Count: 0 };
+  const vbProject = { VBComponents: vbComponents };
+  const workbook = {
+    Name: 'Book1.xlsx',
+    FullName: 'C:\\Book1.xlsx',
+    VBProject: vbProject,
+    Activate: () => {}
+  };
+
+  const runCalls = [];
+  const excelApp = {
+    ActiveWorkbook: workbook,
+    ActiveWindow: { Activate: () => {} },
+    Ready: true,
+    Run: (...args) => {
+      runCalls.push(args);
+      throw new Error('0x800a9c68: compile error in hidden module');
+    }
+  };
+
+  const { bridge } = loadExcelBridge({
+    processIds: [12004],
+    objectFactory: () => excelApp
+  });
+
+  let ensureCalls = 0;
+  bridge._ensureRuntimeModule = () => {
+    ensureCalls += 1;
+  };
+
+  const result = bridge.runMacroWithTrap('Module1.RunA');
+
+  assert.equal(result.success, false);
+  assert.equal(result.error?.kind, 'excel-run-failed');
+  assert.equal(runCalls.length, 1);
+  assert.equal(ensureCalls, 0);
+});
+
+test('runMacroWithTrap releases COM handles on fallback failures', () => {
+  const vbComponents = { Count: 0 };
+  const vbProject = { VBComponents: vbComponents };
+  const workbook = {
+    Name: 'Book1.xlsx',
+    FullName: 'C:\\Book1.xlsx',
+    VBProject: vbProject,
+    Activate: () => {}
+  };
+
+  const excelApp = {
+    ActiveWorkbook: workbook,
+    ActiveWindow: { Activate: () => {} },
+    Ready: true,
+    Run: () => {
+      throw new Error('Cannot run the macro "MacroFlow_Runtime.MacroFlow_RunMacro".');
+    }
+  };
+
+  const { bridge, releaseCalls } = loadExcelBridge({
+    processIds: [12005],
+    objectFactory: () => excelApp
+  });
+
+  const result = bridge.runMacroWithTrap('Module1.RunA');
+
+  assert.equal(result.success, false);
+  assert.equal(result.error?.fallbackUsed, true);
+  assert.deepEqual(result.error?.runtimeSourceTried, ['addin', 'workbook']);
+
+  const released = releaseCalls.flat();
+  assert.ok(released.includes(excelApp), 'Excel app should be released');
+  assert.ok(released.includes(workbook), 'Workbook should be released');
+});

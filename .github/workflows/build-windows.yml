@@ -1,0 +1,119 @@
+name: Build & Sign Windows
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-2022
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Configure MSVC for native modules
+        shell: bash
+        run: |
+          echo "npm_config_msvs_version=2022" >> "$GITHUB_ENV"
+          echo "GYP_MSVS_VERSION=2022" >> "$GITHUB_ENV"
+
+      - name: Detect code signing credentials
+        id: signing
+        shell: bash
+        run: |
+          if [ -n "${{ secrets.ES_USERNAME }}" ] && [ -n "${{ secrets.ES_PASSWORD }}" ] && [ -n "${{ secrets.ES_CREDENTIAL_ID }}" ] && [ -n "${{ secrets.ES_TOTP_SECRET }}" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "Signing secrets not set; building unsigned installer."
+          fi
+
+      - uses: actions/setup-java@v4
+        if: steps.signing.outputs.enabled == 'true'
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Download CodeSignTool
+        if: steps.signing.outputs.enabled == 'true'
+        shell: powershell
+        run: |
+          Invoke-WebRequest -Uri "https://ssl.com/download/codesigntool-for-windows/" -OutFile "CodeSignTool.zip"
+          Expand-Archive -Path "CodeSignTool.zip" -DestinationPath "C:\CodeSignTool" -Force
+          $nested = Get-ChildItem "C:\CodeSignTool" -Directory | Select-Object -First 1
+          if ($nested) { Move-Item "$($nested.FullName)\*" "C:\CodeSignTool\" -Force }
+
+      - name: Install dependencies
+        working-directory: App
+        run: npm ci
+
+      - name: Build installer
+        working-directory: App
+        env:
+          ES_USERNAME: ${{ secrets.ES_USERNAME }}
+          ES_PASSWORD: ${{ secrets.ES_PASSWORD }}
+          ES_CREDENTIAL_ID: ${{ secrets.ES_CREDENTIAL_ID }}
+          ES_TOTP_SECRET: ${{ secrets.ES_TOTP_SECRET }}
+          CODESIGNTOOL_PATH: 'C:\CodeSignTool\CodeSignTool.bat'
+        run: npm run make
+
+      - name: Stage stable Setup.exe name
+        shell: powershell
+        run: |
+          $squirrel = Get-ChildItem -Path "App\out\make\squirrel.windows" -Recurse -Filter "*Setup.exe" | Select-Object -First 1
+          if (-not $squirrel) { throw "Setup.exe not found under App/out/make/squirrel.windows" }
+          New-Item -ItemType Directory -Force -Path "App\out\installer" | Out-Null
+          Copy-Item $squirrel.FullName "App\out\installer\MacroFlow-Setup.exe" -Force
+          Write-Host "Staged $($squirrel.FullName) -> App\out\installer\MacroFlow-Setup.exe"
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: |
+            App/out/installer/MacroFlow-Setup.exe
+            App/out/make/squirrel.windows/**/*
+
+      - name: Detect R2 publish credentials
+        id: r2
+        shell: bash
+        run: |
+          if [ -n "${{ secrets.AWS_ACCESS_KEY_ID }}" ] && [ -n "${{ secrets.AWS_SECRET_ACCESS_KEY }}" ] && [ -n "${{ secrets.S3_ENDPOINT }}" ] && [ -n "${{ secrets.S3_BUCKET }}" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "R2 secrets not set; skipping public installer upload."
+          fi
+
+      - name: Install AWS CLI
+        if: steps.r2.outputs.enabled == 'true'
+        shell: powershell
+        run: |
+          if (Get-Command aws -ErrorAction SilentlyContinue) { aws --version; exit 0 }
+          msiexec.exe /i https://awscli.amazonaws.com/AWSCLIV2.msi /qn
+          $env:Path = "C:\Program Files\Amazon\AWSCLIV2;" + $env:Path
+          aws --version
+
+      - name: Publish installer to R2
+        if: steps.r2.outputs.enabled == 'true'
+        working-directory: App
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          S3_ENDPOINT: ${{ secrets.S3_ENDPOINT }}
+          S3_BUCKET: ${{ secrets.S3_BUCKET }}
+          MACROFLOW_PUBLIC_DOWNLOAD_BASE: ${{ secrets.MACROFLOW_PUBLIC_DOWNLOAD_BASE }}
+        shell: bash
+        run: |
+          export PATH="/c/Program Files/Amazon/AWSCLIV2:$PATH"
+          node scripts/publish-update.js --upload

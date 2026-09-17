@@ -28,10 +28,30 @@ Inject VBA code into a module.
 
 Returns: `{ success: boolean, message: string }`
 
+### `vba.injectByWorkbook({ workbookName?: string, workbookPath?: string, moduleName: string, code: string, createIfMissing?: boolean })`
+Inject VBA code into a module in a specific open workbook.
+
+Returns: `{ success: boolean, workbookFound: boolean, workbook?: object, moduleName?: string, message: string }`
+
+### `vba.moduleCodeByWorkbook({ workbookName?: string, workbookPath?: string, moduleName: string })`
+Read module code in a specific open workbook.
+
+Returns: `{ success: boolean, workbookFound: boolean, moduleFound: boolean, workbook?: object, moduleName?: string, lineCount?: number, hash?: string, code?: string, message?: string }`
+
+### `vba.moduleSignatureByWorkbook({ workbookName?: string, workbookPath?: string, moduleName: string })`
+Read module signature (line count + hash) in a specific open workbook.
+
+Returns: `{ success: boolean, workbookFound: boolean, moduleFound: boolean, workbook?: object, moduleName?: string, lineCount?: number, hash?: string, message?: string }`
+
+### `vba.setModuleCodeByWorkbook({ workbookName?: string, workbookPath?: string, moduleName: string, code: string, createIfMissing?: boolean })`
+Set module code in a specific open workbook.
+
+Returns: `{ success: boolean, workbookFound: boolean, moduleFound: boolean, workbook?: object, moduleName?: string, lineCount?: number, hash?: string, message?: string }`
+
 ### `vba.run({ macroName: string })`
 Run a VBA macro.
 
-Returns: `{ success: boolean, message: string }`
+Returns: `{ success: boolean, reasonCode?: string, message: string }`
 
 ### `vba.modules()`
 List VBA modules in the active workbook.
@@ -105,3 +125,34 @@ Returns: `{ success: boolean, sheet?: object, structuralContext?: object, dataCo
 Get metadata for a closed workbook path.
 
 Returns: `{ success: boolean, sheet?: object, structuralContext?: object, dataContext?: object }`
+
+---
+
+## AI Operations
+
+### `ai.getStatus()`
+Get local AI runtime/model setup status.
+
+Returns: `{ success: boolean, provider: string, model: string, ready: boolean, needsSetup: boolean, setupInProgress: boolean, runtimeInstalled: boolean, serverReachable: boolean, modelInstalled: boolean, stage: string, progress?: number | null, statusText: string, lastError?: string }`
+
+### `ai.setup()`
+Start local AI setup. Progress updates are delivered through `ai.onStatus(...)`.
+
+Returns: `{ success: boolean, started: boolean, status: object }`
+
+### `ai.generateVba({ prompt: string, workbookName?: string, moduleName?: string, currentCode?: string, includeCurrentCode?: boolean })`
+Generate VBA module code with the local AI runtime.
+
+- `includeCurrentCode` defaults to `false`
+- `currentCode` is only used when `includeCurrentCode` is `true`
+
+Returns: `{ success: boolean, code?: string, model?: string, usage?: object, reason?: string, message?: string }`
+
+---
+
+## Security Operations
+
+### `security.setSelectedWorkbook({ workbookName?: string, workbookPath?: string })`
+Sets the selected workbook scope used by high-risk IPC actions (inject/run/module code set).
+
+Returns: `{ success: boolean, selected: boolean, workbookName?: string, workbookPath?: string, message?: string }`
